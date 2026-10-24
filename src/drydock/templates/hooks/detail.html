@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% from "_macros.html" import alerts, submit, when %}
+{% from "hooks/_fields.html" import hook_fields %}
+{% block title %}Hook {{ hook.name }}{% endblock %}
+{% block content %}
+<div class="mb-4 flex flex-wrap items-center gap-3">
+  <h1 class="text-3xl font-bold break-all">Hook {{ hook.name }}</h1>
+  {% if hook.log_output %}<span class="badge badge-soft badge-warning">output logged</span>{% endif %}
+</div>
+{{ alerts([error] if error else []) }}
+
+<div class="grid gap-4 md:grid-cols-2">
+  <section class="card bg-base-100 shadow-sm" aria-labelledby="summary-heading">
+    <div class="card-body">
+      <h2 id="summary-heading" class="card-title">Summary</h2>
+      <dl class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
+        <dt class="opacity-70">Host</dt><dd>{{ host.name if host else "?" }}</dd>
+        <dt class="opacity-70">Bound to</dt><dd>{% if hook.project %}Compose project <span class="font-mono">{{ hook.project }}</span>{% else %}container hook{% endif %}</dd>
+        <dt class="opacity-70">Container</dt><dd class="font-mono break-all">{{ hook.container }}</dd>
+        <dt class="opacity-70">User</dt><dd class="font-mono break-all">{{ hook.user or "the container's user" }}</dd>
+        <dt class="opacity-70">Working directory</dt><dd class="font-mono break-all">{{ hook.workdir or "the container's" }}</dd>
+        <dt class="opacity-70">Timeout</dt><dd>{{ hook.timeout_s }} s</dd>
+        <dt class="opacity-70">Output</dt><dd>{{ "logged, up to 64 KiB" if hook.log_output else "not logged (byte counts, and the end of standard error on failure)" }}</dd>
+        <dt class="opacity-70">Changed (UTC)</dt><dd>{{ when(hook.updated_at) }}</dd>
+      </dl>
+      <h3 class="mt-2 font-semibold">Command</h3>
+      <pre class="overflow-x-auto rounded-box bg-base-200 p-2 text-sm whitespace-pre-wrap break-all">{{ argv }}</pre>
+    </div>
+  </section>
+
+  <section class="card bg-base-100 shadow-sm" aria-labelledby="jobs-heading">
+    <div class="card-body">
+      <h2 id="jobs-heading" class="card-title">Jobs using it</h2>
+      {% if jobs %}
+      <ul class="list-disc pl-5 text-sm">{% for job, phase in jobs %}<li><a class="link" href="/jobs/{{ job.id }}">{{ job.name }}</a> <span class="opacity-70">{{ phase }} the backup</span></li>{% endfor %}</ul>
+      {% else %}
+      <p class="text-sm opacity-70">None.</p>
+      {% endif %}
+    </div>
+  </section>
+
+  {% if auth.user.role >= Role.superadmin %}
+  <section class="card bg-base-100 shadow-sm md:col-span-2" aria-labelledby="edit-heading">
+    <div class="card-body">
+      <h2 id="edit-heading" class="card-title">Edit hook</h2>
+      <p class="text-sm opacity-70">Changes need your password from the last 10 minutes and are recorded in the audit log. A run waiting for its turn fails if its hooks change.</p>
+      {{ alerts(errors) }}
+      <form method="post" action="/hooks/{{ hook.id }}" hx-post="/hooks/{{ hook.id }}" hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-1">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        {{ hook_fields(form, "edit", hosts) }}
+        <div class="mt-2">{{ submit("Save") }}</div>
+      </form>
+    </div>
+  </section>
+
+  <section class="card border border-error/40 bg-base-100 shadow-sm md:col-span-2" aria-labelledby="danger-heading">
+    <div class="card-body">
+      <h2 id="danger-heading" class="card-title">Delete hook</h2>
+      <p class="text-sm">A hook attached to a job cannot be deleted; detach it from the job first. Changes need your password from the last 10 minutes.</p>
+      <form method="post" action="/hooks/{{ hook.id }}/delete" hx-post="/hooks/{{ hook.id }}/delete" hx-nonce="{{ csp_nonce }}" hx-confirm="Delete this hook?" class="card-actions">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        {{ submit("Delete hook", "btn-error") }}
+      </form>
+    </div>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

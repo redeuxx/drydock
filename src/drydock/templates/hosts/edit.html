@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% from "_macros.html" import alerts, host_status_badge, submit %}
+{% from "hosts/_fields.html" import connection_fields, key_fields %}
+{% block title %}Host {{ host.name }}{% endblock %}
+{% block content %}
+<div class="mb-4 flex flex-wrap items-center gap-3">
+  <h1 class="text-3xl font-bold">Host {{ host.name }}</h1>
+  {{ host_status_badge(status) }}
+  {% if host.kind == "ssh" %}<span class="badge badge-soft badge-neutral">SSH</span>{% endif %}
+</div>
+{{ alerts([error] if error else []) }}
+{# Not role=alert: it is part of the page, and focus after a submit goes to the new error. #}
+{% if status.state == "hostkey_mismatch" %}
+<section class="alert alert-error mb-4" aria-labelledby="mismatch-heading">
+  <div>
+    <h2 id="mismatch-heading" class="font-semibold">Host key mismatch: drydock refused to connect.</h2>
+    <p>{{ status.error }}</p>
+    <p class="text-sm">Trusted fingerprint: <code class="break-all">{{ host.host_key_fingerprint }}</code>. Scan the host key below and trust a new key only after confirming it on the host itself. This event is in the audit log.</p>
+  </div>
+</section>
+{% elif status.state in ("error", "disconnected") and status.error %}
+<div role="status" class="alert alert-warning alert-soft mb-4">
+  <span>{{ status.error }}</span>
+</div>
+{% endif %}
+<p class="mb-4 opacity-70">Changes to the connection, the key or the trusted host key need your password from the last 10 minutes.</p>
+
+<div class="grid gap-4 md:grid-cols-2">
+  <section class="card bg-base-100 shadow-sm" aria-labelledby="connection-heading">
+    <div class="card-body">
+      <h2 id="connection-heading" class="card-title">Connection</h2>
+      {{ alerts(errors) }}
+      <form method="post" action="/hosts/{{ host.id }}" hx-post="/hosts/{{ host.id }}" hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-1">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        {{ connection_fields(form, "edit") }}
+        <div class="mt-2">{{ submit("Save") }}</div>
+      </form>
+      <dl class="mt-2 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
+        <dt class="opacity-70">API version</dt><dd>{{ host.api_version or "not seen yet" }}</dd>
+        <dt class="opacity-70">Last seen</dt><dd>{{ host.last_seen.strftime("%Y-%m-%d %H:%M UTC") if host.last_seen else "never" }}</dd>
+      </dl>
+    </div>
+  </section>
+
+  <section class="card bg-base-100 shadow-sm" aria-labelledby="test-heading">
+    <div class="card-body">
+      <h2 id="test-heading" class="card-title">Connection test</h2>
+      <p class="text-sm opacity-70">Reads the daemon's version and negotiates the API version drydock will use.</p>
+      {% if test %}
+      {% if test.error %}
+      {{ alerts(["Test failed: " ~ test.error]) }}
+      {% else %}
+      <div role="status" class="alert alert-success alert-soft" data-focus-result>
+        <dl class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1">
+          <dt>Engine</dt><dd>Docker {{ test.engine }}</dd>
+          <dt>API</dt><dd>{{ test.api }} (negotiated)</dd>
+          <dt>Platform</dt><dd>{{ test.os }}/{{ test.arch }}</dd>
+        </dl>
+      </div>
+      {% endif %}
+      {% endif %}
+      <form method="post" action="/hosts/{{ host.id }}/test" hx-post="/hosts/{{ host.id }}/test" hx-nonce="{{ csp_nonce }}" class="card-actions">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        {{ submit("Test connection", "btn-outline") }}
+      </form>
+    </div>
+  </section>
+
+  {% if host.kind == "ssh" %}
+  <section class="card bg-base-100 shadow-sm" aria-labelledby="hostkey-heading">
+    <div class="card-body">
+      <h2 id="hostkey-heading" class="card-title">Host key</h2>
+      {% if host.host_key_fingerprint %}
+      <p class="text-sm">Trusted: <code class="break-all">{{ host.host_key_fingerprint }}</code></p>
+      {% else %}
+      <p class="text-sm">No host key is trusted yet, so drydock will not connect.</p>
+      {% endif %}
+      {% if scan %}
+      <div role="status" class="alert {{ 'alert-success' if scan.trusted else 'alert-info' }} alert-soft" data-focus-result>
+        <div>
+          <p>The server presents this {{ scan.algorithm }} key:</p>
+          <p><code class="break-all">{{ scan.fingerprint }}</code></p>
+          {% if scan.trusted %}<p class="text-sm">It matches the trusted key.</p>{% endif %}
+        </div>
+      </div>
+      {% if not scan.trusted %}
+      <form method="post" action="/hosts/{{ host.id }}/trust-hostkey" hx-post="/hosts/{{ host.id }}/trust-hostkey" hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-1">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        <div class="fieldset">
+          <label class="fieldset-legend" for="trust-fingerprint">Fingerprint to trust</label>
+          <input id="trust-fingerprint" class="input w-full font-mono text-sm" name="fingerprint" value="{{ scan.fingerprint }}" autocomplete="off" required maxlength="80" aria-describedby="trust-fingerprint-hint">
+          <p id="trust-fingerprint-hint" class="label whitespace-normal">Compare it with the output of <code>ssh-keygen -lf /etc/ssh/ssh_host_{{ scan.algorithm.removeprefix("ssh-").split("-")[0] }}_key.pub</code> on the host. Drydock scans again and trusts the key only if it still matches.</p>
+        </div>
+        {{ submit("Trust this key", "btn-warning") }}
+      </form>
+      {% endif %}
+      {% endif %}
+      <form method="post" action="/hosts/{{ host.id }}/scan-hostkey" hx-post="/hosts/{{ host.id }}/scan-hostkey" hx-nonce="{{ csp_nonce }}" class="card-actions">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        {{ submit("Scan host key", "btn-outline") }}
+      </form>
+    </div>
+  </section>
+
+  <section class="card bg-base-100 shadow-sm" aria-labelledby="key-heading">
+    <div class="card-body">
+      <h2 id="key-heading" class="card-title">SSH key</h2>
+      {% if host.ssh_public_key %}
+      <p class="text-sm">Add this public key to the SSH user's <code>~/.ssh/authorized_keys</code> on the host:</p>
+      <pre class="rounded-box bg-base-200 p-3 text-xs whitespace-pre-wrap break-all" tabindex="0">{{ authorized_key_options }} {{ host.ssh_public_key }}</pre>
+      <p class="text-xs opacity-70">The options allow only forwarding and refuse shells and commands.</p>
+      {% else %}
+      <p class="text-sm">No key is set.</p>
+      {% endif %}
+      {{ alerts(key_errors) }}
+      <details class="mt-2">
+        <summary class="cursor-pointer text-sm font-semibold">Replace the key</summary>
+        <form method="post" action="/hosts/{{ host.id }}/key" hx-post="/hosts/{{ host.id }}/key" hx-nonce="{{ csp_nonce }}" class="mt-2 flex flex-col gap-1">
+          <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+          {{ key_fields("key", "generate") }}
+          <div class="mt-2">{{ submit("Replace key", "btn-warning btn-outline") }}</div>
+        </form>
+      </details>
+    </div>
+  </section>
+  {% endif %}
+
+  <section class="card bg-base-100 shadow-sm md:col-span-2" aria-labelledby="containers-heading">
+    <div class="card-body">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 id="containers-heading" class="card-title">Containers</h2>
+        <a class="link text-sm" href="/hosts/{{ host.id }}/containers">Open as a page</a>
+      </div>
+      {% if host.enabled %}
+      {# A persistent live region: the fragment replaces its content, and app.ts writes any failure into it. #}
+      <div id="inventory-region" aria-live="polite" aria-busy="true" hx-get="/hosts/{{ host.id }}/containers" hx-trigger="load" hx-target="this" hx-select="#inventory" hx-swap="innerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}">
+        <p class="text-sm opacity-70"><span class="spinner" aria-hidden="true"></span> Loading containers</p>
+      </div>
+      {% else %}
+      <p class="text-sm opacity-70">This host is disabled.</p>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="card border border-error/40 bg-base-100 shadow-sm md:col-span-2" aria-labelledby="danger-heading">
+    <div class="card-body">
+      <h2 id="danger-heading" class="card-title">Remove host</h2>
+      <p class="text-sm">Drydock forgets the host and its key. Nothing on the host changes.</p>
+      <form method="post" action="/hosts/{{ host.id }}/delete" hx-post="/hosts/{{ host.id }}/delete" hx-nonce="{{ csp_nonce }}" hx-confirm="Remove this host from drydock?" class="card-actions">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        {{ submit("Remove " ~ host.name, "btn-error") }}
+      </form>
+    </div>
+  </section>
+</div>
+{% endblock %}

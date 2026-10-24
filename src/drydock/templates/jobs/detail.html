@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% from "_macros.html" import alerts, run_status_badge, submit, when %}
+{% from "jobs/_fields.html" import job_fields %}
+{% block title %}Job {{ job.name }}{% endblock %}
+{% block content %}
+<div class="mb-4 flex flex-wrap items-center gap-3">
+  <h1 class="text-3xl font-bold break-all">Job {{ job.name }}</h1>
+  {% if not job.enabled %}<span class="badge badge-soft badge-neutral">disabled</span>{% endif %}
+  {% if auth.user.role >= Role.operator and job.enabled %}
+  <form method="post" action="/jobs/{{ job.id }}/run" hx-post="/jobs/{{ job.id }}/run" hx-nonce="{{ csp_nonce }}" class="ml-auto">
+    <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+    {{ submit("Run now") }}
+  </form>
+  {% endif %}
+</div>
+{{ alerts([error] if error else []) }}
+{% if job.consistency_mode == "live" %}
+{# After a swap, frontend/app.ts focuses the first role="alert" in #main, so this standing
+   warning steps aside when the page carries form errors or a revealed passphrase. #}
+<div role="{{ 'note' if errors or passphrases else 'alert' }}" class="alert alert-warning alert-soft mb-4">
+  <span>{{ live_warning }}</span>
+</div>
+{% endif %}
+{% if not job.encrypted %}
+<div role="status" class="alert alert-warning alert-soft mb-4">
+  <span>Archives of this job are not encrypted. They hold the container's environment values and Compose .env files in plain text.</span>
+</div>
+{% endif %}
+
+<div class="grid gap-4 md:grid-cols-2">
+  <section class="card bg-base-100 shadow-sm" aria-labelledby="summary-heading">
+    <div class="card-body">
+      <h2 id="summary-heading" class="card-title">Summary</h2>
+      <dl class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
+        <dt class="opacity-70">Host</dt><dd>{{ host.name if host else "?" }}</dd>
+        <dt class="opacity-70">Backs up</dt><dd class="break-all">{{ "Compose project" if job.target_type == "stack" else "Container" }} <span class="font-mono">{{ job.target }}</span></dd>
+        <dt class="opacity-70">Scope</dt><dd>{{ scope_labels.get(job.scope, job.scope) }}</dd>
+        <dt class="opacity-70">Consistency</dt><dd>{{ mode_labels.get(job.consistency_mode, job.consistency_mode) }}</dd>
+        {% for phase, label in (("before", "Hooks before"), ("after", "Hooks after")) %}
+        {% set names = hooks|selectattr(0, "equalto", phase)|map(attribute=1)|list %}
+        <dt class="opacity-70">{{ label }}</dt>
+        <dd>{% for hook in names %}{% if auth.user.role >= Role.admin %}<a class="link font-mono" href="/hooks/{{ hook.id }}">{{ hook.name }}</a>{% else %}<span class="font-mono">{{ hook.name }}</span>{% endif %}{{ ", " if not loop.last }}{% else %}none{% endfor %}</dd>
+        {% endfor %}
+        <dt class="opacity-70">Storage</dt><dd>{{ storage.name if storage else "?" }}</dd>
+        <dt class="opacity-70">Schedule</dt><dd class="break-all">{{ schedule_text }}</dd>
+        <dt class="opacity-70">Retention</dt><dd>{{ retention_text }}</dd>
+        <dt class="opacity-70">Notifications</dt><dd>{{ notifications|join(", ") if notifications else "none" }}</dd>
+        <dt class="opacity-70">Encryption</dt><dd>{{ "age, passphrase derived from the secret key" if job.encrypted else "none" }}</dd>
+        <dt class="opacity-70">Images</dt><dd>{{ "reference only when the registry confirms the digest (scope Everything)" if job.images_reference_only_if_pullable else "saved" }}</dd>
+        <dt class="opacity-70">Job ID</dt><dd class="font-mono text-xs break-all">{{ job.uuid }}</dd>
+      </dl>
+    </div>
+  </section>
+
+  <section class="card bg-base-100 shadow-sm" aria-labelledby="runs-heading">
+    <div class="card-body">
+      <h2 id="runs-heading" class="card-title">Recent runs</h2>
+      {% if runs %}
+      <div class="overflow-x-auto">
+        <table class="table table-sm">
+          <thead><tr><th scope="col">Run</th><th scope="col">Status</th><th scope="col">Created (UTC)</th><th scope="col">Size</th></tr></thead>
+          <tbody>
+            {% for run in runs %}
+            <tr>
+              <td><a class="link" href="/runs/{{ run.id }}">#{{ run.id }}</a></td>
+              <td>{{ run_status_badge(run.status) }}</td>
+              <td class="whitespace-nowrap">{{ when(run.created_at) }}</td>
+              <td class="whitespace-nowrap">{{ run.size|filesize }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="text-sm opacity-70">This job has not run yet.</p>
+      {% endif %}
+    </div>
+  </section>
+
+  {% if auth.user.role >= Role.admin %}
+  <section class="card bg-base-100 shadow-sm md:col-span-2" aria-labelledby="edit-heading">
+    <div class="card-body">
+      <h2 id="edit-heading" class="card-title">Edit job</h2>
+      {{ alerts(errors) }}
+      {% if retention_invalid %}
+      <div role="note" class="alert alert-warning alert-soft">
+        <span>The stored retention policy is not valid, so retention deletes nothing. The form shows the default policy; saving stores the policy it shows.</span>
+      </div>
+      {% endif %}
+      <form method="post" action="/jobs/{{ job.id }}" hx-post="/jobs/{{ job.id }}" hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-1">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        {{ job_fields(form, "edit", hosts, targets, scope_labels, mode_labels, target_labels, available_hooks, live_warning, retention_labels, default_tz, csp_nonce, notification_targets) }}
+        <div class="mt-2">{{ submit("Save") }}</div>
+      </form>
+    </div>
+  </section>
+  {% endif %}
+
+  {% if auth.user.role >= Role.superadmin %}
+  <section class="card bg-base-100 shadow-sm md:col-span-2" aria-labelledby="passphrase-heading">
+    <div class="card-body">
+      <h2 id="passphrase-heading" class="card-title">Archive passphrase</h2>
+      <p class="text-sm">Encrypted archives of this job decrypt outside drydock with <code>age -d</code> and this passphrase. It is derived from the secret key and the job ID, so it is never stored. Revealing it needs your password from the last 10 minutes and is recorded in the audit log.</p>
+      {% if passphrases %}
+      <div role="status" class="alert alert-warning alert-soft" data-focus-result>
+        <div class="w-full">
+          <p>Treat this like the secret key. Anyone with it can read this job's archives.</p>
+          <dl class="mt-2 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1">
+            {% for passphrase in passphrases %}
+            <dt>{{ "Current key" if loop.first else "Older key " ~ loop.index0 }}</dt>
+            <dd><code class="break-all select-all">{{ passphrase }}</code></dd>
+            {% endfor %}
+          </dl>
+          {% if passphrases|length > 1 %}<p class="mt-2 text-sm">Archives made before a key rotation use an older key's passphrase.</p>{% endif %}
+        </div>
+      </div>
+      {% else %}
+      <form method="post" action="/jobs/{{ job.id }}/passphrase" hx-post="/jobs/{{ job.id }}/passphrase" hx-nonce="{{ csp_nonce }}" class="card-actions">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        {{ submit("Reveal passphrase", "btn-warning btn-outline") }}
+      </form>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% if auth.user.role >= Role.admin %}
+  <section class="card border border-error/40 bg-base-100 shadow-sm md:col-span-2" aria-labelledby="danger-heading">
+    <div class="card-body">
+      <h2 id="danger-heading" class="card-title">Delete job</h2>
+      <p class="text-sm">Its runs and catalog entries stay. Archives already stored are not deleted, and the secret key still decrypts them.</p>
+      <form method="post" action="/jobs/{{ job.id }}/delete" hx-post="/jobs/{{ job.id }}/delete" hx-nonce="{{ csp_nonce }}" hx-confirm="Delete this job?" class="card-actions">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        {{ submit("Delete job", "btn-error") }}
+      </form>
+    </div>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

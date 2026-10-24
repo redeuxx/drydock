@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Notifications{% endblock %}
+{% block content %}
+<div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+  <h1 class="text-3xl font-bold">Notifications</h1>
+  {% if auth.user.role >= Role.superadmin %}<a href="/notifications/new" class="btn btn-primary btn-sm">Add target</a>{% endif %}
+</div>
+<p class="mb-4 opacity-70">Targets get a message when a job's run ends. Admins attach them to jobs on the job page; only superadmins add, change or delete targets.</p>
+<div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
+  <table class="table table-zebra">
+    <thead><tr><th scope="col">Name</th><th scope="col">Kind</th><th scope="col">Jobs</th><th scope="col">Status</th></tr></thead>
+    <tbody>
+      {% for target, jobs in rows %}
+      <tr>
+        <td><a class="link" href="/notifications/{{ target.id }}">{{ target.name }}</a></td>
+        <td>{{ kind_labels.get(target.kind, target.kind) }}</td>
+        <td>{{ jobs|join(", ") if jobs else "none" }}</td>
+        <td><span class="badge badge-soft {{ 'badge-success' if target.enabled else 'badge-neutral' }}">{{ "enabled" if target.enabled else "disabled" }}</span></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4">No notification targets yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

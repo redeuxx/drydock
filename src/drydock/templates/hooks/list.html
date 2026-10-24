@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Hooks{% endblock %}
+{% block content %}
+<div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+  <h1 class="text-3xl font-bold">Hooks</h1>
+  {% if auth.user.role >= Role.superadmin %}<a href="/hooks/new" class="btn btn-primary btn-sm">Add hook</a>{% endif %}
+</div>
+<p class="mb-4 opacity-70">Commands that jobs run with exec in a container before and after their data is read. Each hook is bound to one host and one container or Compose project. Admins attach hooks to jobs; only superadmins add, change or delete them.</p>
+<div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
+  <table class="table table-zebra">
+    <thead><tr><th scope="col">Name</th><th scope="col">Host</th><th scope="col">Bound to</th><th scope="col">Container</th><th scope="col">Timeout</th><th scope="col">Jobs</th></tr></thead>
+    <tbody>
+      {% for hook, host_name, jobs in rows %}
+      <tr>
+        <td>
+          <a class="link" href="/hooks/{{ hook.id }}">{{ hook.name }}</a>
+          {% if hook.log_output %}<span class="badge badge-soft badge-warning ml-1">output logged</span>{% endif %}
+        </td>
+        <td>{{ host_name or "?" }}</td>
+        <td>{% if hook.project %}Project <span class="font-mono">{{ hook.project }}</span>{% else %}Container{% endif %}</td>
+        <td class="font-mono text-sm break-all">{{ hook.container }}</td>
+        <td class="whitespace-nowrap">{{ hook.timeout_s }} s</td>
+        <td>{{ "used by " ~ jobs ~ (" job" if jobs == 1 else " jobs") if jobs else "unused" }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6">No hooks yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

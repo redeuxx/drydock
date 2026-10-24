@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% from "_macros.html" import host_status_badge %}
+{% block title %}Hosts{% endblock %}
+{% block content %}
+<div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+  <h1 class="text-3xl font-bold">Hosts</h1>
+  <div class="flex flex-wrap gap-2">
+    <a href="/hosts/new?kind=ssh" class="btn btn-primary btn-sm">Add SSH host</a>
+    <a href="/hosts/new?kind=local" class="btn btn-outline btn-sm">Add local host</a>
+  </div>
+</div>
+<p class="mb-4 opacity-70">Drydock is root-equivalent on every host listed here. It never adds a host by itself, not even the local one.</p>
+<div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
+  <table class="table table-zebra">
+    <thead><tr><th scope="col">Name</th><th scope="col">Kind</th><th scope="col">Target</th><th scope="col">Status</th><th scope="col">API</th><th scope="col">Last seen (UTC)</th></tr></thead>
+    <tbody>
+      {% for host, status, target in rows %}
+      <tr>
+        <td><a class="link" href="/hosts/{{ host.id }}">{{ host.name }}</a></td>
+        <td>{{ "SSH" if host.kind == "ssh" else "local" }}</td>
+        <td class="font-mono text-sm break-all">{{ target }}</td>
+        <td>{{ host_status_badge(status) }}</td>
+        <td>{{ host.api_version or "" }}</td>
+        <td class="whitespace-nowrap">{{ host.last_seen.strftime("%Y-%m-%d %H:%M") if host.last_seen else "never" }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6">No hosts yet. Add the local host (through the socket proxy) or a remote host over SSH.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

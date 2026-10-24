@@ -1,0 +1,520 @@
+"""Storage, jobs and runs without a Docker daemon: routes, the passphrase, run logs, the
+dispatcher's queueing, cancellation, shutdown and startup recovery.
+
+The backup itself is replaced by a stand-in that waits for its cancel event; the tests
+against real daemons are in test_runs_docker.py.
+"""
+
+import json
+import time
+import uuid
+from pathlib import Path
+
+import anyio
+import pytest
+
+from drydock.archive.writer import Cancelled
+from drydock.config import Settings
+from drydock.hosts import client as docker_client
+from drydock.hosts import helper
+from drydock.hosts.manager import HostManager
+from drydock.jobs import dispatcher as dispatcher_module
+from drydock.jobs import runlog
+from drydock.jobs.dispatcher import Dispatcher, DispatchError, Target
+from drydock.models import Host, Run
+from tests.conftest import Browser, add_user, running
+from tests.docker_support import wait_until
+from tests.test_routes import FakeDocker
+
+pytestmark = pytest.mark.anyio
+
+# RUN LOGS
+
+
+def test_run_log_redacts_secrets_and_escapes_control_characters(tmp_path: Path) -> None:
+    log = runlog.RunLog(tmp_path / "logs" / "7.log")
+    log.add_secrets(runlog.env_values(["PASSWORD=hunter22", "FLAG=1", "EMPTY=", "NOEQUALS"]))
+    log("Connecting with hunter22 now")
+    log("forged\n2026-01-01 00:00:00 Run done.\x1b[31m")
+    text = (tmp_path / "logs" / "7.log").read_text()
+    assert "hunter22" not in text and "[redacted]" in text
+    assert text.count("\n") == 2  # the forged line stayed on its own line
+    assert "\x1b" not in text
+    assert oct((tmp_path / "logs" / "7.log").stat().st_mode & 0o777) == "0o600"
+    assert oct((tmp_path / "logs").stat().st_mode & 0o777) == "0o700"
+    # Short values (flags, ports) are not treated as secrets.
+    assert log.redact("FLAG is 1") == "FLAG is 1"
+
+
+def test_read_log_returns_complete_lines_only(tmp_path: Path) -> None:
+    path = tmp_path / "1.log"
+    assert runlog.read_log(path, 0) == ("", 0)
+    path.write_bytes(b"one\ntwo\npart")
+    text, offset = runlog.read_log(path, 0)
+    assert (text, offset) == ("one\ntwo\n", 8)
+    assert runlog.read_log(path, offset) == ("", 8)
+    with path.open("ab") as handle:
+        handle.write(b"ial\n")
+    assert runlog.read_log(path, offset) == ("partial\n", 16)
+    assert runlog.read_log(path, 10**9) == ("", 10**9)
+    assert runlog.log_path(Path("/data"), 12) == Path("/data/logs/12.log")
+
+
+def test_read_tail_returns_the_last_complete_lines(tmp_path: Path) -> None:
+    path = tmp_path / "1.log"
+    assert runlog.read_tail(path, 100) == ("", False)
+    path.write_bytes(b"first line\nsecond line\nthe outcome\n")
+    assert runlog.read_tail(path, 1000) == ("first line\nsecond line\nthe outcome\n", False)
+    # The cut lands inside "second line": that partial line is dropped.
+    assert runlog.read_tail(path, 20) == ("the outcome\n", True)
+
+
+# FIXTURES
+
+
+def blocking_backup(self, plan, handle, targets, cancel, run_log) -> None:
+    """Stands in for the backup: runs until cancelled (or 30 s), then stops."""
+    run_log("Working.")
+    if cancel.wait(30):
+        raise Cancelled("The run was cancelled.")
+
+
+@pytest.fixture
+def fake_docker(monkeypatch) -> dict:
+    """Every job runs against container "web" through a fake daemon."""
+    targets = {"refs": ["web"]}
+    monkeypatch.setattr(HostManager, "docker_url", lambda self, host: "unix:///nonexistent")
+    monkeypatch.setattr(docker_client, "open_client", lambda url, timeout=60: FakeDocker())
+    # Container IDs are unique across daemons, so each host gets its own.
+    monkeypatch.setattr(
+        Dispatcher,
+        "_resolve",
+        lambda self, handle, plan, refs, log: [
+            Target(f"id-{plan.host.id}-{r}", r, False) for r in targets["refs"]
+        ],
+    )
+    monkeypatch.setattr(Dispatcher, "_backup", blocking_backup)
+    return targets
+
+
+def add_host(browser: Browser, name: str = "local") -> int:
+    with browser.app.state.sessionmaker() as db, db.begin():
+        host = Host(name=name, kind="local", docker_url="tcp://127.0.0.1:9", enabled=True)
+        db.add(host)
+        db.flush()
+        return host.id
+
+
+async def add_storage(browser: Browser, name: str = "backups") -> int:
+    root = str(browser.settings.local_storage_roots[0])
+    response = await browser.post("/storage", {"name": name, "path": root, "enabled": "1"})
+    assert response.status_code == 303, response.text
+    return int(response.headers["location"].rsplit("/", 1)[1])
+
+
+async def add_job(browser: Browser, name: str = "web backup", **fields: str) -> int:
+    host_id = fields.pop("host_id", None) or str(add_host(browser, f"h-{uuid.uuid4().hex[:6]}"))
+    storage_id = fields.pop("storage_id", None) or str(
+        await add_storage(browser, f"s-{uuid.uuid4().hex[:6]}")
+    )
+    form = {
+        "name": name,
+        "host_id": host_id,
+        "target": "web",
+        "storage_target_id": storage_id,
+        "scope": "config",
+        "encrypted": "1",
+        "enabled": "1",
+    } | fields
+    response = await browser.post("/jobs", form)
+    assert response.status_code == 303, response.text
+    return int(response.headers["location"].rsplit("/", 1)[1])
+
+
+def run_status(browser: Browser, run_id: int) -> str:
+    return browser.sql("SELECT status FROM runs WHERE id = ?", (run_id,))[0][0]
+
+
+async def start_run(browser: Browser, job_id: int) -> int:
+    response = await browser.post(f"/jobs/{job_id}/run")
+    assert response.status_code == 303, response.text
+    return int(response.headers["location"].rsplit("/", 1)[1])
+
+
+# STORAGE
+
+
+async def test_storage_root_must_be_inside_the_allowlist(admin: Browser, tmp_path: Path) -> None:
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (tmp_path / "storage" / "link").symlink_to(outside)
+    for path in (str(outside), str(tmp_path / "storage" / "link"), "relative", "/nonexistent"):
+        response = await admin.post("/storage", {"name": "x", "path": path, "enabled": "1"})
+        assert response.status_code == 422, path
+    response = await admin.post(
+        "/storage", {"name": "x", "path": str(admin.settings.data_dir), "enabled": "1"}
+    )
+    assert response.status_code == 422
+    assert admin.sql("SELECT COUNT(*) FROM storage_targets") == [(0,)]
+    storage_id = await add_storage(admin)
+    page = await admin.get(f"/storage/{storage_id}")
+    assert str(admin.settings.local_storage_roots[0]) in page.text
+    # The path is stored encrypted.
+    stored = admin.sql("SELECT config_enc FROM storage_targets")[0][0]
+    assert str(admin.settings.local_storage_roots[0]) not in stored
+    tested = await admin.post(f"/storage/{storage_id}/test")
+    assert tested.status_code == 200 and "The directory is writable" in tested.text
+    assert [p.name for p in admin.settings.local_storage_roots[0].iterdir()] == ["link"]
+
+
+async def test_storage_and_host_in_use_cannot_be_deleted(admin: Browser) -> None:
+    host_id = add_host(admin)
+    storage_id = await add_storage(admin)
+    job_id = await add_job(admin, host_id=str(host_id), storage_id=str(storage_id))
+    response = await admin.post(f"/storage/{storage_id}/delete")
+    assert response.status_code == 409 and "web backup" in response.text
+    response = await admin.post(f"/hosts/{host_id}/delete")
+    assert response.status_code == 409 and "web backup" in response.text
+    assert (await admin.post(f"/jobs/{job_id}/delete")).status_code == 303
+    assert (await admin.post(f"/storage/{storage_id}/delete")).status_code == 303
+    assert (await admin.post(f"/hosts/{host_id}/delete")).status_code == 303
+
+
+# JOBS
+
+
+async def test_job_validation(admin: Browser) -> None:
+    host_id, storage_id = str(add_host(admin)), str(await add_storage(admin))
+    base = {"host_id": host_id, "storage_id": storage_id}
+    for bad in (
+        {"target": "-rm"},
+        {"target": "web; rm -rf /"},
+        {"scope": "everything"},
+        {"host_id": "999"},
+        {"storage_target_id": "abc"},
+        # Non-ASCII digits pass str.isdigit() but not int(): a 422, never a 500.
+        {"host_id": "\u00b2"},
+        {"storage_target_id": "\u00b2"},
+        {"name": ""},
+        {"name": "tab\there"},
+    ):
+        form = {
+            "name": "job",
+            "host_id": host_id,
+            "target": "web",
+            "storage_target_id": storage_id,
+            "scope": "config",
+        } | bad
+        response = await admin.post("/jobs", form)
+        assert response.status_code == 422, bad
+    # Names are free text: archive names only ever use a slug of them.
+    job_id = await add_job(admin, "../../x", **base)
+    page = await admin.get(f"/jobs/{job_id}")
+    assert "Job ../../x" in page.text
+    response = await admin.post(
+        "/jobs",
+        {"name": "../../x", "host_id": host_id, "target": "web", "storage_target_id": storage_id},
+    )
+    assert response.status_code == 422 and "exists" in response.text
+    uuid.UUID(admin.sql("SELECT uuid FROM jobs")[0][0])
+    # Defaults when a client omits the Phase 4 fields: a container in stop mode, no hooks.
+    assert admin.sql("SELECT target_type, consistency_mode, pre_hooks, post_hooks FROM jobs") == [
+        ("container", "stop", "[]", "[]")
+    ]
+
+    # Stacks: Compose's own project rule, one character included.
+    stack = {"target_type": "stack", "consistency_mode": "pause"}
+    stack_id = await add_job(admin, "stack a", target="a", **stack, **base)
+    for bad in ("A", "a" * 64, "-app", "app.x"):
+        response = await admin.post(
+            "/jobs",
+            {
+                "name": "stack bad",
+                "host_id": host_id,
+                "target": bad,
+                "storage_target_id": storage_id,
+                "scope": "config",
+            }
+            | stack,
+        )
+        assert response.status_code == 422 and "1 to 63" in response.text, bad
+    assert admin.sql(
+        "SELECT target_type, target, consistency_mode FROM jobs WHERE id = ?", (stack_id,)
+    ) == [("stack", "a", "pause")]
+    page = await admin.get(f"/jobs/{stack_id}")
+    assert "Compose project" in page.text and "Pause: freeze the containers" in page.text
+
+    # Modes and target types outside the lists.
+    for bad, message in (
+        ({"consistency_mode": "snapshot"}, "Choose a consistency mode."),
+        ({"target_type": "volume"}, "Choose what to back up."),
+    ):
+        form = {
+            "name": "job",
+            "host_id": host_id,
+            "target": "web",
+            "storage_target_id": storage_id,
+            "scope": "config",
+        } | bad
+        response = await admin.post("/jobs", form)
+        assert response.status_code == 422 and message in response.text, bad
+    live_id = await add_job(admin, "live", consistency_mode="live", **base)
+    assert admin.sql("SELECT consistency_mode FROM jobs WHERE id = ?", (live_id,)) == [("live",)]
+
+    # Hooks: unknown names are refused.
+    response = await admin.post(
+        "/jobs",
+        {
+            "name": "hooked",
+            "host_id": host_id,
+            "target": "web",
+            "storage_target_id": storage_id,
+            "pre_hooks": "nonexistent",
+        },
+    )
+    assert response.status_code == 422 and "There is no hook named nonexistent." in response.text
+    assert admin.sql("SELECT COUNT(*) FROM jobs WHERE name = 'hooked'") == [(0,)]
+
+
+async def test_passphrase_reveal_needs_superadmin_and_recent_auth(admin: Browser) -> None:
+    await add_user(admin, "other-admin", "admin")
+    job_id = await add_job(admin)
+    job_uuid = admin.sql("SELECT uuid FROM jobs WHERE id = ?", (job_id,))[0][0]
+    crypto = admin.app.state.crypto
+    passphrase = crypto.job_passphrase(uuid.UUID(job_uuid))
+    for path in ("/jobs", f"/jobs/{job_id}", "/runs", "/backups", "/audit"):
+        assert passphrase not in (await admin.get(path)).text, path
+
+    # Superadmin, recent auth (setup just happened): revealed and audited.
+    response = await admin.post(f"/jobs/{job_id}/passphrase")
+    assert response.status_code == 200 and passphrase in response.text
+    assert response.headers["cache-control"] == "no-store"
+    events = admin.sql(
+        "SELECT actor, details FROM audit_events WHERE action = 'job.passphrase_reveal'"
+    )
+    assert len(events) == 1 and events[0][0] == "admin"
+    assert passphrase not in events[0][1]
+    assert passphrase not in (await admin.get("/audit")).text
+
+    # Without recent auth: the re-auth form, no passphrase.
+    admin.sql("UPDATE sessions SET reauth_at = NULL")
+    response = await admin.post(f"/jobs/{job_id}/passphrase")
+    assert response.status_code == 403 and passphrase not in response.text
+    assert "Re-enter your password" in response.text
+
+    # Admins cannot reveal it at all.
+    await admin.login("other-admin")
+    response = await admin.post(f"/jobs/{job_id}/passphrase")
+    assert response.status_code == 403 and passphrase not in response.text
+    assert admin.sql(
+        "SELECT COUNT(*) FROM audit_events WHERE action = 'job.passphrase_reveal'"
+    ) == [(1,)]
+
+
+# DISPATCHER
+
+
+async def test_runs_queue_per_container_and_cancel(admin: Browser, fake_docker: dict) -> None:
+    first_job = await add_job(admin, "first")
+    second_job = await add_job(admin, "second")
+    first = await start_run(admin, first_job)
+    await wait_until(lambda: run_status(admin, first) == "running", 5, "first run starts")
+    second = await start_run(admin, second_job)
+    await anyio.sleep(0.5)
+    # Different hosts: both run. The same container on one host would queue (below).
+    assert run_status(admin, second) == "running"
+    for run_id in (first, second):
+        assert (await admin.post(f"/runs/{run_id}/cancel")).status_code == 303
+        await admin.app.state.dispatcher.wait(run_id)
+        assert run_status(admin, run_id) == "cancelled"
+    response = await admin.post(f"/runs/{first}/cancel")
+    assert response.status_code == 409
+
+
+async def test_overlapping_runs_wait_and_a_queued_run_can_be_cancelled(
+    admin: Browser, fake_docker: dict
+) -> None:
+    host_id, storage_id = str(add_host(admin)), str(await add_storage(admin))
+    job_id = await add_job(admin, host_id=host_id, storage_id=storage_id)
+    other_job = await add_job(admin, "same container", host_id=host_id, storage_id=storage_id)
+    first = await start_run(admin, job_id)
+    await wait_until(lambda: run_status(admin, first) == "running", 5, "first run starts")
+    # A job has one run at a time: Run now refuses a second one.
+    response = await admin.post(f"/jobs/{job_id}/run")
+    assert response.status_code == 409 and "already has a run in progress" in response.text
+    assert response.headers["HX-Replace-Url"] == f"/jobs/{job_id}"
+    second = await start_run(admin, other_job)
+    await anyio.sleep(0.5)
+    assert run_status(admin, second) == "queued"
+    log = runlog.log_path(admin.settings.data_dir, second).read_text()
+    assert f"Waiting for run {first}" in log
+    assert (await admin.post(f"/runs/{second}/cancel")).status_code == 303
+    await admin.app.state.dispatcher.wait(second)
+    assert run_status(admin, second) == "cancelled"
+    assert run_status(admin, first) == "running"
+    third = await start_run(admin, other_job)
+    await anyio.sleep(0.3)
+    assert run_status(admin, third) == "queued"
+    await admin.post(f"/runs/{first}/cancel")
+    await wait_until(lambda: run_status(admin, third) == "running", 5, "third run starts")
+    await admin.post(f"/runs/{third}/cancel")
+    await admin.app.state.dispatcher.wait(third)
+
+
+async def test_log_polling_fragment(admin: Browser, fake_docker: dict) -> None:
+    job_id = await add_job(admin)
+    run_id = await start_run(admin, job_id)
+    await wait_until(lambda: run_status(admin, run_id) == "running", 5, "run starts")
+    page = await admin.get(f"/runs/{run_id}")
+    assert 'id="log-poller"' in page.text and "Working." in page.text
+    htmx = {"HX-Request": "true"}
+    response = await admin.get(f"/runs/{run_id}/log?offset=0", headers=htmx)
+    assert response.status_code == 200
+    assert 'id="log-chunk"' in response.text and "Working." in response.text
+    size = runlog.log_path(admin.settings.data_dir, run_id).stat().st_size
+    assert f"/runs/{run_id}/log?offset={size}" in response.text
+    # Nothing new: 204, which htmx does not swap, so the poller keeps its offset.
+    response = await admin.get(f"/runs/{run_id}/log?offset={size}", headers=htmx)
+    assert response.status_code == 204 and not response.content
+    assert (await admin.get(f"/runs/{run_id}/log?offset=-1")).status_code == 422
+    await admin.post(f"/runs/{run_id}/cancel")
+    await admin.app.state.dispatcher.wait(run_id)
+    response = await admin.get(f"/runs/{run_id}/log?offset={size}", headers=htmx)
+    assert response.status_code == 204 and response.headers["HX-Refresh"] == "true"
+    page = await admin.get(f"/runs/{run_id}")
+    assert 'id="log-poller"' not in page.text and "Run cancelled" in page.text
+    assert "<title>Run #" in page.text and "(cancelled)" in page.text
+    # Cancelling a run that has ended shows the run page with the reason.
+    response = await admin.post(f"/runs/{run_id}/cancel")
+    assert response.status_code == 409
+    assert "This run is not in progress." in response.text and "Run cancelled" in response.text
+
+
+async def test_disabled_job_and_non_primary_process_do_not_run(
+    admin: Browser, fake_docker: dict
+) -> None:
+    job_id = await add_job(admin, enabled="")
+    response = await admin.post(f"/jobs/{job_id}/run")
+    assert response.status_code == 409 and "disabled" in response.text
+    app = admin.app
+    secondary = Dispatcher(
+        admin.settings, app.state.sessionmaker, app.state.crypto, app.state.hosts, enabled=False
+    )
+    with pytest.raises(DispatchError, match="lock"):
+        await secondary.submit(job_id, "admin")
+    await secondary.shutdown()
+    assert admin.sql("SELECT COUNT(*) FROM runs") == [(0,)]
+
+
+async def test_shutdown_cancels_runs(settings: Settings, fake_docker: dict) -> None:
+    async with running(settings) as browser:
+        await browser.setup()
+        job_id = await add_job(browser)
+        run_id = await start_run(browser, job_id)
+        await wait_until(lambda: run_status(browser, run_id) == "running", 5, "run starts")
+    assert run_status(browser, run_id) == "cancelled"
+    error = browser.sql("SELECT error FROM runs WHERE id = ?", (run_id,))[0][0]
+    assert error == "Drydock is shutting down."
+
+
+async def test_startup_recovery(settings: Settings) -> None:
+    async with running(settings) as browser:
+        await browser.setup()
+        job_id = await add_job(browser)
+        stopped = [{"host_id": 999, "id": "c" * 64, "name": "web"}]
+        with browser.app.state.sessionmaker() as db, db.begin():
+            db.add(
+                Run(job_id=job_id, status="running", stopped_containers_json=json.dumps(stopped))
+            )
+            db.add(Run(job_id=job_id, status="queued"))
+            db.add(Run(job_id=job_id, status="done"))
+    staging = settings.staging_dir
+    staging.mkdir(exist_ok=True)
+    (staging / f"member-{'a' * 32}").write_bytes(b"x")
+    (staging / f"probe-{'b' * 32}.tar").write_bytes(b"x")
+    # The staging directory may be a shared disk: nothing else in it is touched.
+    (staging / "member-x").write_bytes(b"x")
+    (staging / "dir").mkdir()
+    (staging / "dir" / "f").write_bytes(b"y")
+    root = settings.local_storage_roots[0]
+    (root / f".partial-{'c' * 32}").write_bytes(b"z")
+    (root / ".partial-0123").write_bytes(b"z")
+    (root / "keep.txt").write_bytes(b"k")
+    async with running(settings) as browser:
+        statuses = browser.sql("SELECT id, status FROM runs ORDER BY id")
+        assert [s for _, s in statuses] == ["interrupted", "interrupted", "done"]
+        assert sorted(p.name for p in staging.iterdir()) == ["dir", "member-x"]
+        assert sorted(p.name for p in root.iterdir()) == [".partial-0123", "keep.txt"]
+        log = runlog.log_path(settings.data_dir, statuses[0][0])
+        await wait_until(lambda: "could not reach" in log.read_text(), 10, "recovery log")
+        assert "Interrupted" in log.read_text()
+
+
+async def test_a_run_waits_for_startup_recovery_of_its_container(
+    settings: Settings, fake_docker: dict, monkeypatch
+) -> None:
+    """Recovery holds the container's lock until it runs again, so a run started right
+    after startup cannot capture it while recovery starts it mid-capture."""
+    async with running(settings) as browser:
+        await browser.setup()
+        host_id = add_host(browser)
+        job_id = await add_job(browser, host_id=str(host_id))
+        stopped = [{"host_id": host_id, "id": f"id-{host_id}-web", "name": "web"}]
+        with browser.app.state.sessionmaker() as db, db.begin():
+            db.add(
+                Run(job_id=job_id, status="running", stopped_containers_json=json.dumps(stopped))
+            )
+    events: list[str] = []
+
+    def slow_restart(api, targets, run_log) -> list[str]:
+        time.sleep(1.5)
+        events.append("restarted")
+        return []
+
+    monkeypatch.setattr(dispatcher_module, "restart", slow_restart)
+    monkeypatch.setattr(helper, "reap", lambda client, instance_id: 0)  # a fake daemon
+    async with running(settings) as browser:
+        await browser.login("admin")
+        run_id = await start_run(browser, job_id)
+        await anyio.sleep(0.5)
+        assert run_status(browser, run_id) == "queued"
+        log = runlog.log_path(settings.data_dir, run_id).read_text()
+        assert "Waiting for startup recovery to finish" in log
+        await wait_until(lambda: run_status(browser, run_id) == "running", 10, "the run")
+        assert events == ["restarted"]
+        await browser.post(f"/runs/{run_id}/cancel")
+        await browser.app.state.dispatcher.wait(run_id)
+
+
+async def test_a_run_waits_for_the_startup_reap_of_its_host(
+    settings: Settings, fake_docker: dict, monkeypatch
+) -> None:
+    """The reaper removes every helper of this installation on the host, so a run must not
+    create one before the startup reap has finished."""
+    async with running(settings) as browser:
+        await browser.setup()
+        job_id = await add_job(browser)
+    events: list[str] = []
+
+    async def fake_connect(url: str, *args, **kwargs) -> FakeDocker:
+        return FakeDocker()
+
+    def slow_reap(client, instance_id: str) -> int:
+        time.sleep(1.5)
+        events.append("reaped")
+        return 0
+
+    def open_client(url: str, timeout: int = 60) -> FakeDocker:
+        events.append("opened")
+        return FakeDocker()
+
+    monkeypatch.setattr(docker_client, "connect", fake_connect)
+    monkeypatch.setattr(helper, "reap", slow_reap)
+    monkeypatch.setattr(docker_client, "open_client", open_client)
+    async with running(settings) as browser:
+        await browser.login("admin")
+        run_id = await start_run(browser, job_id)
+        await wait_until(lambda: run_status(browser, run_id) == "running", 10, "the run")
+        assert events[:2] == ["reaped", "opened"]
+        await browser.post(f"/runs/{run_id}/cancel")
+        await browser.app.state.dispatcher.wait(run_id)

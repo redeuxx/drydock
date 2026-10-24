@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% from "_macros.html" import alerts, submit %}
+{% from "notifications/_fields.html" import target_fields %}
+{% block title %}Add notification target{% endblock %}
+{% block content %}
+<section class="card mx-auto max-w-2xl bg-base-100 shadow-sm">
+  <div class="card-body">
+    <h1 class="card-title text-2xl">Add notification target</h1>
+    {{ alerts(errors) }}
+    <form method="post" action="/notifications" hx-post="/notifications" hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-1">
+      <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+      {{ target_fields(form, "new", kind_labels) }}
+      <div class="mt-2">{{ submit("Add target") }}</div>
+    </form>
+  </div>
+</section>
+{% endblock %}

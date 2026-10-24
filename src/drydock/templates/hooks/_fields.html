@@ -1,0 +1,51 @@
+{# Hook settings, shared by the add form and the hook page (superadmins only). #}
+{% macro hook_fields(form, prefix, hosts) -%}
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-name">Name</label>
+  <input id="{{ prefix }}-name" class="input w-full" name="name" value="{{ form.name }}" autocomplete="off" required maxlength="64" aria-describedby="{{ prefix }}-name-hint">
+  <p id="{{ prefix }}-name-hint" class="label whitespace-normal">Admins attach the hook to jobs by this name.</p>
+</div>
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-host">Host</label>
+  <select id="{{ prefix }}-host" class="select w-full" name="host_id" required>
+    <option value="">Choose a host</option>
+    {% for host in hosts %}
+    <option value="{{ host.id }}"{% if form.host_id == host.id|string %} selected{% endif %}>{{ host.name }}</option>
+    {% endfor %}
+  </select>
+</div>
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-project">Compose project</label>
+  <input id="{{ prefix }}-project" class="input w-full font-mono" name="project" value="{{ form.project }}" autocomplete="off" maxlength="63" aria-describedby="{{ prefix }}-project-hint">
+  <p id="{{ prefix }}-project-hint" class="label whitespace-normal">Leave empty for a container hook: it runs only for container jobs on this host whose target is exactly the container below (a name, or an ID if the job uses one). Set a Compose project for a stack job's hook: the container below is then a service or container name of that project.</p>
+</div>
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-container">Container</label>
+  <input id="{{ prefix }}-container" class="input w-full font-mono" name="container" value="{{ form.container }}" autocomplete="off" required maxlength="128">
+</div>
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-argv">Command</label>
+  <textarea id="{{ prefix }}-argv" class="textarea w-full font-mono text-sm" name="argv" rows="3" autocomplete="off" spellcheck="false" required aria-describedby="{{ prefix }}-argv-hint">{{ form.argv }}</textarea>
+  <p id="{{ prefix }}-argv-hint" class="label whitespace-normal">A JSON array: the program and its arguments, passed as they are with no shell, so $(...), ${...} and quotes are not interpreted. Docker cannot stop a command that outlives its timeout; wrap long commands in timeout. Write dumps to a file, not to standard output, for example ["timeout", "250", "pg_dump", "-U", "postgres", "-f", "/var/lib/postgresql/data/dump.sql", "app"].</p>
+</div>
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-user">User</label>
+  <input id="{{ prefix }}-user" class="input w-full font-mono" name="user" value="{{ form.user }}" autocomplete="off" maxlength="65" aria-describedby="{{ prefix }}-user-hint">
+  <p id="{{ prefix }}-user-hint" class="label whitespace-normal">Name, uid, name:group or uid:gid. Empty: the container's own user.</p>
+</div>
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-workdir">Working directory</label>
+  <input id="{{ prefix }}-workdir" class="input w-full font-mono" name="workdir" value="{{ form.workdir }}" autocomplete="off" maxlength="1024" aria-describedby="{{ prefix }}-workdir-hint">
+  <p id="{{ prefix }}-workdir-hint" class="label whitespace-normal">An absolute path inside the container. Empty: the container's own.</p>
+</div>
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-timeout">Timeout (seconds)</label>
+  <input id="{{ prefix }}-timeout" class="input w-full" type="number" name="timeout_s" value="{{ form.timeout_s }}" min="1" max="3600" step="1" required>
+</div>
+<label class="label mt-2 gap-2 whitespace-normal">
+  <input type="checkbox" class="checkbox checkbox-sm" name="log_output" value="1"{% if form.log_output %} checked{% endif %} aria-describedby="{{ prefix }}-log-output-hint">
+  Log the hook's output
+</label>
+<p id="{{ prefix }}-log-output-hint" class="label whitespace-normal">Run logs are visible to every role that can see runs, viewers included. When off, drydock logs only how many bytes the hook wrote and, if it fails, the last 4 KiB of its standard error.</p>
+<p class="label mt-2 whitespace-normal">Post-hooks run even when a pre-hook or the backup failed, so they must be safe to run when the pre-hooks did not all finish.</p>
+{%- endmacro %}

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="htmx-config" content='{{ htmx_config|tojson }}'>
+  <title>{% block title %}Drydock{% endblock %} | Drydock</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <script nonce="{{ csp_nonce }}" src="/static/vendor/htmx/htmx.min.js" defer></script>
+  <script nonce="{{ csp_nonce }}" src="/static/vendor/htmx/ext/hx-csp.min.js" defer></script>
+  <script nonce="{{ csp_nonce }}" src="/static/js/app.js" defer></script>
+</head>
+{# Logged-in pages: htmx requests carry the CSRF header, and every response (including 4xx
+   error pages) is swapped by selecting its #main. Submit buttons are disabled in flight. #}
+<body class="min-h-screen bg-base-200 text-base-content"
+  {%- if auth %} hx-nonce="{{ csp_nonce }}" hx-headers:inherited='{{ {"X-CSRF-Token": auth.csrf_token}|tojson }}' hx-target:inherited="#main" hx-select:inherited="#main" hx-swap:inherited="outerHTML" hx-disable:inherited="findAll button"{% endif %}>
+  <a href="#main" class="btn btn-sm btn-primary sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2">Skip to content</a>
+  <header class="navbar flex-wrap gap-2 border-b border-base-300 bg-base-100 px-4">
+    <div class="flex-1">
+      <a href="/" class="text-xl font-bold tracking-tight">Drydock</a>
+    </div>
+    {% if auth %}
+    {% set current = request.url.path %}
+    {% set links = [("/", "Home", Role.viewer), ("/jobs", "Jobs", Role.viewer), ("/hooks", "Hooks", Role.admin),("/runs", "Runs", Role.viewer), ("/backups", "Backups", Role.viewer), ("/restore", "Restore", Role.admin), ("/hosts", "Hosts", Role.admin), ("/storage", "Storage", Role.admin), ("/notifications", "Notifications", Role.admin), ("/audit", "Audit log", Role.admin), ("/users", "Users", Role.superadmin), ("/account", "Account", Role.viewer)] %}
+    <nav aria-label="Main">
+      <ul class="menu menu-horizontal gap-1 p-0">
+        {% for href, label, minimum in links if auth.user.role >= minimum %}
+        {% set active = current == href or (href != "/" and current.startswith(href + "/")) %}
+        <li><a href="{{ href }}"{% if active %} class="menu-active" aria-current="page"{% endif %}>{{ label }}</a></li>
+        {% endfor %}
+      </ul>
+    </nav>
+    <div class="flex items-center gap-2">
+      <span class="hidden text-sm opacity-70 sm:inline">{{ auth.user.username }}</span>
+      <form method="post" action="/logout" hx-post="/logout" hx-nonce="{{ csp_nonce }}">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        <button type="submit" class="btn btn-ghost btn-sm">Log out</button>
+      </form>
+    </div>
+    {% endif %}
+  </header>
+  <div class="mx-auto w-full max-w-5xl px-4 sm:px-6">
+    <div id="client-error" role="alert" class="alert alert-error mt-4" hidden>
+      <span data-message></span>
+    </div>
+  </div>
+  <main id="main" class="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

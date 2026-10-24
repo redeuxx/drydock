@@ -1,0 +1,246 @@
+{% extends "base.html" %}
+{% from "_macros.html" import alerts, log_poller, run_status_badge, submit, when %}
+{% block title %}Restore #{{ run.id }} ({{ run.status|replace("_", " ") }}){% endblock %}
+{% block content %}
+<div class="mb-2 flex flex-wrap items-center gap-3">
+  <h1 class="text-3xl font-bold">Restore #{{ run.id }}</h1>
+  {{ run_status_badge(run.status) }}
+  {% if "signed" in doc %}
+  {% if signed %}<span class="badge badge-soft badge-success">signed</span>{% else %}<span class="badge badge-soft badge-warning">not signed by this drydock</span>{% endif %}
+  {% endif %}
+  {% if doc.get("encrypted") %}<span class="badge badge-soft badge-info">encrypted</span>{% endif %}
+</div>
+<p class="mb-4">Archive <span class="font-mono text-sm break-all">{{ run.archive_name }}</span>. <a class="link" href="/runs/{{ run.id }}">Run page</a></p>
+{{ alerts(errors) }}
+
+{% if active %}
+<section class="card bg-base-100 shadow-sm" aria-labelledby="log-heading">
+  <div class="card-body">
+    <h2 id="log-heading" class="card-title">{% if run.status == "verifying" %}2. Verify{% else %}Restoring{% endif %} <span class="text-sm font-normal opacity-70">(updates every 2 seconds)</span></h2>
+    {% if run.status == "verifying" %}<p class="text-sm">Drydock reads the whole archive and checks every member before anything else happens. No host is contacted until it has passed. This page shows the plan form when it is done.</p>{% endif %}
+    <pre id="run-log" role="log" class="max-h-[32rem] overflow-auto rounded-box bg-base-200 p-3 text-xs whitespace-pre-wrap break-all" tabindex="0" aria-labelledby="log-heading">{{ log_text }}{{ log_poller(run.id, offset, csp_nonce) }}</pre>
+  </div>
+</section>
+
+{% elif awaiting and stage_error %}
+{{ alerts([stage_error]) }}
+<form method="post" action="/runs/{{ run.id }}/cancel" hx-post="/runs/{{ run.id }}/cancel" hx-nonce="{{ csp_nonce }}">
+  <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+  {{ submit("Discard", "btn-warning") }}
+</form>
+
+{% elif awaiting %}
+{% if not signed and auth.user.role < Role.superadmin %}
+<div role="alert" class="alert alert-warning alert-soft mb-4"><span>Only a superadmin can restore an archive that is not signed by this drydock.</span></div>
+{% elif not signed %}
+<div role="status" class="alert alert-warning alert-soft mb-4"><span>This archive is not signed by this drydock's secret keys: anyone with access to the storage could have made it. Restoring it needs your password from the last 10 minutes.</span></div>
+{% endif %}
+
+<section class="card mb-4 bg-base-100 shadow-sm" aria-labelledby="contents-heading">
+  <div class="card-body">
+    <h2 id="contents-heading" class="card-title">Verified contents</h2>
+    <dl class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
+      <dt class="opacity-70">Job</dt><dd class="break-all">{{ manifest.job.name }} (scope {{ manifest.job.scope }})</dd>
+      <dt class="opacity-70">Source host</dt><dd class="break-all">{{ manifest.source.host_name }} ({{ manifest.source.os }}/{{ manifest.source.arch }})</dd>
+      <dt class="opacity-70">Captured</dt><dd>{{ when(manifest.created_at) }} UTC</dd>
+      {% if stack %}<dt class="opacity-70">Stack</dt><dd class="break-all">Compose project <span class="font-mono">{{ manifest.job.project }}</span>, {{ manifest.containers|length }} containers</dd>{% endif %}
+      <dt class="opacity-70">Containers</dt><dd class="font-mono break-all">{{ manifest.containers|map(attribute="name")|join(", ") or "none" }}</dd>
+      <dt class="opacity-70">Volumes</dt><dd class="font-mono break-all">{{ manifest.volumes|map(attribute="name")|join(", ") or "none" }}</dd>
+      <dt class="opacity-70">Bind mounts</dt><dd class="font-mono break-all">{{ manifest.binds|map(attribute="source")|join(", ") or "none" }}</dd>
+      <dt class="opacity-70">Images</dt><dd class="font-mono break-all">{% for image in manifest.images %}{{ image.refs|join(", ") or image.id[:19] }}{% if not image.saved %} (by reference){% endif %}{% if not loop.last %}; {% endif %}{% else %}none{% endfor %}</dd>
+      {% if manifest.compose_files %}
+      <dt class="opacity-70">Compose files</dt>
+      <dd><ul class="list-none">{% for file in manifest.compose_files %}<li class="break-all"><span class="font-mono">{{ file.host_path }}</span> ({{ file.role|replace("_", " ") }}, {{ file.size }} bytes)</li>{% endfor %}</ul></dd>
+      {% endif %}
+    </dl>
+  </div>
+</section>
+
+{% if signed or auth.user.role >= Role.superadmin %}
+<section class="card mb-4 bg-base-100 shadow-sm" aria-labelledby="plan-heading">
+  <div class="card-body">
+    <h2 id="plan-heading" class="card-title">3. Plan</h2>
+    <p class="text-sm">Planning reads the target host's current state and changes nothing. You confirm the result below.</p>
+    {% if modes %}
+    <form method="post" action="/restore/runs/{{ run.id }}/plan" hx-post="/restore/runs/{{ run.id }}/plan" hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-1">
+      <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+      <div class="fieldset">
+        <label class="fieldset-legend" for="plan-host">Target host</label>
+        <select id="plan-host" class="select w-full" name="host_id" required>
+          <option value="">Choose a host</option>
+          {% for host_id, host_name in hosts %}
+          <option value="{{ host_id }}"{% if form.host_id == host_id|string %} selected{% endif %}>{{ host_name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <fieldset class="fieldset">
+        <legend class="fieldset-legend">Mode</legend>
+        {% for mode in modes %}
+        <label class="label gap-2 whitespace-normal">
+          <input type="radio" class="radio radio-sm" name="mode" value="{{ mode }}"{% if form.mode == mode or (form.mode not in modes and loop.first) %} checked{% endif %}>
+          {{ mode_labels[mode] }}
+        </label>
+        {% endfor %}
+      </fieldset>
+      {% if stack and modes %}
+      <p class="text-sm">This archive is a stack. New name restores it as a new Compose project beside the original; overwrite replaces the containers of project <span class="font-mono">{{ manifest.job.project }}</span>. Containers stop dependents first and start in dependency order.</p>
+      {% endif %}
+      {% if "new-name" in modes %}
+      <div class="fieldset">
+        {% if stack %}
+        <label class="fieldset-legend" for="plan-new-name">New project name (new-name mode)</label>
+        <input id="plan-new-name" class="input w-full font-mono" name="new_name" value="{{ form.new_name }}" autocomplete="off" maxlength="63" aria-describedby="plan-new-name-hint">
+        <p id="plan-new-name-hint" class="label whitespace-normal">1 to 63 lowercase letters, digits, '_' or '-'. Containers become &lt;name&gt;-&lt;service&gt;-&lt;number&gt;; volumes and networks &lt;name&gt;_&lt;volume&gt;.</p>
+        {% else %}
+        <label class="fieldset-legend" for="plan-new-name">New name (new-name mode)</label>
+        <input id="plan-new-name" class="input w-full font-mono" name="new_name" value="{{ form.new_name }}" autocomplete="off" maxlength="63" aria-describedby="plan-new-name-hint">
+        <p id="plan-new-name-hint" class="label whitespace-normal">The restored container's name. Its volumes and networks are named after it. Published ports, IP and MAC addresses and explicit subnets are dropped, so the copy cannot clash with the original.</p>
+        {% endif %}
+      </div>
+      {% endif %}
+      {% if manifest.compose_files and ("new-name" in modes or "overwrite" in modes) %}
+      <div class="fieldset">
+        <label class="fieldset-legend" for="plan-compose-dir">Write the compose files to (new-name and overwrite modes)</label>
+        <input id="plan-compose-dir" class="input w-full font-mono" name="compose_dir" value="{{ form.compose_dir }}" autocomplete="off" maxlength="4096" aria-describedby="plan-compose-dir-hint">
+        <p id="plan-compose-dir-hint" class="label whitespace-normal">A new directory on the target host. Drydock creates it (owner root, mode 0700) and never writes into an existing one. Containers that mount a directory above it can read the .env files. Leave empty to skip.</p>
+      </div>
+      {% endif %}
+      {% if "new-name" in modes or "overwrite" in modes %}
+      {% if manifest.binds %}
+      <fieldset class="fieldset">
+        <legend class="fieldset-legend">Bind mounts (new-name and overwrite modes)</legend>
+        <p class="label whitespace-normal">Data is written only into a host directory that already exists. Writing to another path or another host than the archive's is a flagged field.</p>
+        {% for bind in manifest.binds %}
+        <div class="rounded-box border border-base-300 p-3">
+          <p class="font-mono text-sm break-all">{{ bind.source }}</p>
+          <p class="text-xs opacity-70">{{ bind.kind or "kind unknown" }}{% if bind.skipped %}; data not captured: {{ bind.skipped }}{% elif not bind.data_member %}; no data in this archive{% endif %}</p>
+          <label class="fieldset-legend" for="remap-{{ bind.n }}">Host path</label>
+          <input id="remap-{{ bind.n }}" class="input w-full font-mono" name="remap_{{ bind.n }}" value="{{ form.remaps.get(bind.n, bind.source) }}" autocomplete="off" maxlength="4096">
+          <label class="label mt-1 gap-2 whitespace-normal"><input type="checkbox" class="checkbox checkbox-sm" name="skip_{{ bind.n }}" value="1"{% if bind.n in form.skip %} checked{% endif %}> Do not restore its data</label>
+          <label class="label gap-2 whitespace-normal"><input type="checkbox" class="checkbox checkbox-sm" name="share_{{ bind.n }}" value="1"{% if bind.n in form.share %} checked{% endif %}> New name: share this path with the original container</label>
+          {% if bind.kind == "dir" %}
+          <label class="label gap-2 whitespace-normal"><input type="checkbox" class="checkbox checkbox-sm" name="wipe_{{ bind.n }}" value="1"{% if bind.n in form.wipe %} checked{% endif %}> Overwrite: delete everything in it before writing the data</label>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </fieldset>
+      {% endif %}
+      {% endif %}
+      {% if "data-only" in modes %}
+      <fieldset class="fieldset">
+        <legend class="fieldset-legend">Target volumes (data-only mode)</legend>
+        <p class="label whitespace-normal">Data goes only into volumes that already exist on the target host, never into host paths, and nothing is wiped. Name a volume for each item, or a container whose volumes to use by mount destination.</p>
+        <label class="fieldset-legend" for="plan-data-container">Container</label>
+        <input id="plan-data-container" class="input w-full font-mono" name="data_container" value="{{ form.data_container }}" autocomplete="off" maxlength="255">
+        {% for volume in manifest.volumes %}
+        {% if volume.data_member %}
+        <label class="fieldset-legend" for="volmap-{{ loop.index0 }}">Volume for <span class="font-mono break-all">{{ volume.name }}</span></label>
+        <input id="volmap-{{ loop.index0 }}" class="input w-full font-mono" name="volmap_{{ loop.index0 }}" value="{{ form.volumes.get(loop.index0, '') }}" autocomplete="off" maxlength="255">
+        {% endif %}
+        {% endfor %}
+        {% for bind in manifest.binds %}
+        {% if bind.data_member %}
+        <label class="fieldset-legend" for="bind-volume-{{ bind.n }}">Volume for bind mount <span class="font-mono break-all">{{ bind.source }}</span></label>
+        <input id="bind-volume-{{ bind.n }}" class="input w-full font-mono" name="bind_volume_{{ bind.n }}" value="{{ form.bind_volumes.get(bind.n, '') }}" autocomplete="off" maxlength="255">
+        {% endif %}
+        {% endfor %}
+      </fieldset>
+      {% endif %}
+      <div class="mt-2">{{ submit("Plan the restore") }}</div>
+    </form>
+    {% else %}
+    <p>This archive holds nothing drydock can restore.</p>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+{% if summary %}
+<section class="card mb-4 border border-warning/40 bg-base-100 shadow-sm" aria-labelledby="confirm-heading">
+  <div class="card-body">
+    <h2 id="confirm-heading" class="card-title">4. Confirm</h2>
+    <p class="text-sm">This is what the restore will do. Drydock plans it again right before it runs and stops if anything differs.</p>
+    <dl class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
+      <dt class="opacity-70">Mode</dt><dd>{{ summary.get("mode", "") }}</dd>
+      <dt class="opacity-70">Host</dt><dd class="break-all">{{ summary.get("host_name", "") }}</dd>
+      {% if summary.get("project") %}<dt class="opacity-70">Project</dt><dd class="font-mono break-all">{{ summary.get("project") }}</dd>{% endif %}
+      {% if summary.get("containers") %}<dt class="opacity-70">Creates</dt><dd class="break-all"><span class="font-mono">{{ summary.get("containers")|join(", ") }}</span>{% if summary.get("containers")|length > 1 %} (created and started in this order){% endif %}</dd>{% endif %}
+      {% if summary.get("originals") %}<dt class="opacity-70">Replaces</dt><dd class="break-all"><span class="font-mono">{{ summary.get("originals")|join(", ") }}</span> (stopped{% if summary.get("originals")|length > 1 %} in this order{% endif %}, renamed, removed once the restore is done)</dd>{% endif %}
+      {% if summary.get("compose") %}<dt class="opacity-70">Compose files</dt><dd class="break-all">Written to <span class="font-mono">{{ summary.get("compose").get("dir") }}</span>: <span class="font-mono">{{ summary.get("compose").get("files", [])|join(", ") }}</span></dd>{% endif %}
+      {% for image in summary.get("images", []) %}
+      <dt class="opacity-70">Image</dt><dd class="break-all"><span class="font-mono">{{ image.get("label") }}</span>: {{ image.get("action") }}{% if image.get("moves") %}; moves the tags {{ image.get("moves")|join(", ") }}{% endif %}</dd>
+      {% endfor %}
+      {% for network in summary.get("networks", []) %}
+      <dt class="opacity-70">Network</dt><dd class="break-all"><span class="font-mono">{{ network.get("name") }}</span>: {{ network.get("action") }}{% if network.get("differences") %} (differs: {{ network.get("differences")|join("; ") }}){% endif %}</dd>
+      {% endfor %}
+      {% for volume in summary.get("volumes", []) %}
+      <dt class="opacity-70">Volume</dt><dd class="break-all"><span class="font-mono">{{ volume.get("name") }}</span>: {{ volume.get("action") }}</dd>
+      {% endfor %}
+      {% for wipe in summary.get("wipes", []) %}
+      <dt class="opacity-70">Wipes</dt><dd class="break-all">{{ wipe }}</dd>
+      {% endfor %}
+      {% for item in summary.get("data", []) %}
+      <dt class="opacity-70">Writes</dt><dd class="break-all">{{ item.get("label") }}</dd>
+      {% endfor %}
+    </dl>
+    {% if summary.get("warnings") %}
+    <div role="status" class="alert alert-warning alert-soft mt-2">
+      <ul class="list-disc pl-5">
+        {% for warning in summary.get("warnings") %}<li>{{ warning }}</li>{% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+    {% if flags and auth.user.role < Role.superadmin %}
+    <div role="alert" class="alert alert-warning alert-soft mt-2"><span>Flagged fields need a superadmin.</span></div>
+    {% endif %}
+    {% if flags and not may_execute %}
+    <h3 class="font-semibold">Flagged fields</h3>
+    <ul class="list-disc pl-5 text-sm">
+      {% for flag in flags %}<li><span class="font-mono break-all">{{ flag.get("subject") }}</span> {{ flag.get("field") }}: <span class="font-mono break-all">{{ flag.get("value") }}</span></li>{% endfor %}
+    </ul>
+    {% endif %}
+    {% if may_execute %}
+    <form method="post" action="/restore/runs/{{ run.id }}/execute" hx-post="/restore/runs/{{ run.id }}/execute" hx-nonce="{{ csp_nonce }}" class="mt-2 flex flex-col gap-1">
+      <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+      <input type="hidden" name="plan_digest" value="{{ plan_digest }}">
+      {% if flags %}
+      <fieldset class="fieldset">
+        <legend class="fieldset-legend">Flagged fields: acknowledge each one</legend>
+        <p class="label whitespace-normal">Each of these can give the restored container or its data control over the host.</p>
+        {% for flag in flags %}
+        <label class="label gap-2 whitespace-normal">
+          <input type="checkbox" class="checkbox checkbox-sm" name="ack" value="{{ flag.get('key') }}">
+          <span><span class="font-mono break-all">{{ flag.get("subject") }}</span> {{ flag.get("field") }}: <span class="font-mono break-all">{{ flag.get("value") }}</span></span>
+        </label>
+        {% endfor %}
+      </fieldset>
+      {% endif %}
+      {% if summary.get("mode") == "overwrite" and summary.get("containers") %}
+      <div class="fieldset">
+        <label class="fieldset-legend" for="confirm-name">Type <span class="font-mono">{{ summary.get("project") or summary.get("containers")[0] }}</span> to confirm</label>
+        <input id="confirm-name" class="input w-full font-mono" name="confirm_name" autocomplete="off" required maxlength="255">
+      </div>
+      {% endif %}
+      {% if reauth_hint %}<p class="text-sm">Drydock asks for your password before it runs this restore.</p>{% endif %}
+      <div class="mt-2">{{ submit("Restore now", "btn-error" if summary.get("mode") == "overwrite" else "btn-primary") }}</div>
+    </form>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+<section class="card bg-base-100 shadow-sm" aria-labelledby="discard-heading">
+  <div class="card-body">
+    <h2 id="discard-heading" class="card-title">Discard</h2>
+    <p class="text-sm">Removes the verified data drydock staged for this restore. Unconfirmed restores are discarded after 24 hours.</p>
+    <form method="post" action="/runs/{{ run.id }}/cancel" hx-post="/runs/{{ run.id }}/cancel" hx-nonce="{{ csp_nonce }}" hx-confirm="Discard this restore?" class="card-actions">
+      <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+      {{ submit("Discard", "btn-warning btn-outline") }}
+    </form>
+  </div>
+</section>
+
+{% else %}
+<p>This restore is {{ run.status|replace("_", " ") }}. <a class="link" href="/runs/{{ run.id }}">See its run page</a> for the log and the outcome.</p>
+{% endif %}
+{% endblock %}

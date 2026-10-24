@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Containers on {{ host.name }}{% endblock %}
+{% block content %}
+<div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+  <h1 class="text-3xl font-bold">Containers on {{ host.name }}</h1>
+  {% if auth.user.role >= Role.admin %}<a class="btn btn-outline btn-sm" href="/hosts/{{ host.id }}">Back to the host</a>{% endif %}
+</div>
+{# The host page loads this element alone (hx-select="#inventory"), under its h2. #}
+{% set heading = "h3" if embedded else "h2" %}
+<div id="inventory" class="flex flex-col gap-4">
+  {% if error %}
+  <div role="status" class="alert alert-warning alert-soft">
+    <span>Could not list containers: {{ error }}</span>
+  </div>
+  {% else %}
+  {% for group in groups %}
+  <section aria-label="{{ group.project or 'Standalone containers' }}">
+    <{{ heading }} class="mb-2 font-semibold">
+      {% if group.project %}Compose project <code>{{ group.project }}</code>{% else %}Standalone containers{% endif %}
+      <span class="badge badge-soft badge-neutral ml-1">{{ group.containers|length }}</span>
+    </{{ heading }}>
+    <div class="overflow-x-auto rounded-box border border-base-300">
+      <table class="table table-zebra table-sm">
+        <thead><tr><th scope="col">Container</th><th scope="col">Image</th><th scope="col">State</th><th scope="col">Mounts</th><th scope="col">Networks</th></tr></thead>
+        <tbody>
+          {% for c in group.containers %}
+          <tr>
+            <td>
+              <span class="font-semibold">{{ c.name }}</span>
+              {% if c.service %}<br><span class="text-xs opacity-70">service {{ c.service }}</span>{% endif %}
+            </td>
+            <td class="font-mono text-xs break-all">{{ c.image }}</td>
+            <td><span class="badge badge-soft {{ 'badge-success' if c.state == 'running' else 'badge-neutral' }}">{{ c.state }}</span><br><span class="text-xs opacity-70">{{ c.status }}</span></td>
+            <td class="text-xs">
+              {% for m in c.mounts %}
+              <div class="break-all">
+                {% if m.type == "volume" %}volume <code>{{ m.name }}</code>
+                {% elif m.type == "bind" %}bind <code>{{ m.source }}</code>
+                {% else %}{{ m.type }}{% endif %}
+                &rarr; <code>{{ m.destination }}</code>{% if m.read_only %} (ro){% endif %}
+              </div>
+              {% else %}<span class="opacity-70">none</span>{% endfor %}
+            </td>
+            <td class="text-xs">{{ c.networks|join(", ") }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% else %}
+  <p class="text-sm opacity-70">No containers on this host.</p>
+  {% endfor %}
+  {% endif %}
+</div>
+{% endblock %}

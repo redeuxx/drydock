@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% from "_macros.html" import alerts, submit %}
+{% from "hosts/_fields.html" import connection_fields, key_fields %}
+{% block title %}Add {{ "SSH host" if form.kind == "ssh" else "local host" }}{% endblock %}
+{% block content %}
+<section class="card mx-auto max-w-xl bg-base-100 shadow-sm">
+  <div class="card-body">
+    <h1 class="card-title text-2xl">Add {{ "SSH host" if form.kind == "ssh" else "local host" }}</h1>
+    {% if form.kind == "ssh" %}
+    <p class="opacity-70">After adding the host, put its public key in the SSH user's authorized_keys, then scan and trust the host key.</p>
+    {% else %}
+    <p class="opacity-70">The Docker host drydock runs on, reached through the socket proxy.</p>
+    {% endif %}
+    {{ alerts(errors) }}
+    <form method="post" action="/hosts" hx-post="/hosts" hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-1">
+      <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+      <input type="hidden" name="kind" value="{{ form.kind }}">
+      {{ connection_fields(form, "new") }}
+      {% if form.kind == "ssh" %}{{ key_fields("new", key_source) }}{% endif %}
+      <div class="mt-2">{{ submit("Add host") }}</div>
+    </form>
+  </div>
+</section>
+{% endblock %}

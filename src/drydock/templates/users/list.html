@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% from "_macros.html" import role_badge, status_badge %}
+{% block title %}Users{% endblock %}
+{% block content %}
+<div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+  <h1 class="text-3xl font-bold">Users</h1>
+  <a href="/users/new" class="btn btn-primary btn-sm">Add user</a>
+</div>
+<div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
+  <table class="table table-zebra">
+    <thead><tr><th scope="col">Username</th><th scope="col">Role</th><th scope="col">Status</th></tr></thead>
+    <tbody>
+      {% for user in users %}
+      <tr>
+        <td><a class="link" href="/users/{{ user.id }}">{{ user.username }}</a></td>
+        <td>{{ role_badge(user.role) }}</td>
+        <td>{{ status_badge(user.disabled) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

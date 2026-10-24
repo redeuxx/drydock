@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% from "_macros.html" import role_badge, status_badge, submit %}
+{% block title %}User {{ user.username }}{% endblock %}
+{% block content %}
+<div class="mb-4 flex flex-wrap items-center gap-3">
+  <h1 class="text-3xl font-bold">User {{ user.username }}</h1>
+  {{ role_badge(user.role) }} {{ status_badge(user.disabled) }}
+</div>
+{% include "_errors.html" %}
+<p class="mb-4 opacity-70">Changes on this page need your password from the last 10 minutes.</p>
+
+<div class="grid gap-4 md:grid-cols-2">
+  <section class="card bg-base-100 shadow-sm" aria-labelledby="role-heading">
+    <div class="card-body">
+      <h2 id="role-heading" class="card-title">Role</h2>
+      <form method="post" action="/users/{{ user.id }}/role" hx-post="/users/{{ user.id }}/role" hx-nonce="{{ csp_nonce }}" class="flex flex-wrap items-end gap-2">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        <div class="fieldset grow">
+          <label class="fieldset-legend" for="edit-role">New role</label>
+          <select id="edit-role" class="select w-full" name="role">
+            {% for r in Role %}
+            <option value="{{ r.name }}"{% if r == user.role %} selected{% endif %}>{{ r.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        {{ submit("Change role") }}
+      </form>
+    </div>
+  </section>
+
+  <section class="card bg-base-100 shadow-sm" aria-labelledby="password-heading">
+    <div class="card-body">
+      <h2 id="password-heading" class="card-title">Reset password</h2>
+      <form method="post" action="/users/{{ user.id }}/password" hx-post="/users/{{ user.id }}/password" hx-nonce="{{ csp_nonce }}" class="flex flex-wrap items-end gap-2">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        <div class="fieldset grow">
+          <label class="fieldset-legend" for="edit-password">New password</label>
+          <input id="edit-password" class="input w-full" type="password" name="password" autocomplete="new-password" required minlength="12">
+        </div>
+        {{ submit("Set password") }}
+      </form>
+    </div>
+  </section>
+
+  <section class="card bg-base-100 shadow-sm md:col-span-2" aria-labelledby="sessions-heading">
+    <div class="card-body">
+      <h2 id="sessions-heading" class="card-title">Sessions ({{ sessions|length }})</h2>
+      <div class="overflow-x-auto">
+        <table class="table table-zebra">
+          <thead><tr><th scope="col">Signed in</th><th scope="col">Last seen</th><th scope="col">IP</th></tr></thead>
+          <tbody>
+            {% for s in sessions %}
+            <tr>
+              <td>{{ s.created_at.strftime("%Y-%m-%d %H:%M UTC") }}</td>
+              <td>{{ s.last_seen_at.strftime("%Y-%m-%d %H:%M UTC") }}</td>
+              <td>{{ s.ip or "" }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="3">No active sessions.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <form method="post" action="/users/{{ user.id }}/sessions/revoke" hx-post="/users/{{ user.id }}/sessions/revoke" hx-nonce="{{ csp_nonce }}" class="card-actions">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        {{ submit("Revoke all sessions", "btn-outline") }}
+      </form>
+    </div>
+  </section>
+
+  <section class="card border border-error/40 bg-base-100 shadow-sm md:col-span-2" aria-labelledby="danger-heading">
+    <div class="card-body">
+      <h2 id="danger-heading" class="card-title">Account status</h2>
+      <div class="flex flex-wrap gap-2">
+        <form method="post" action="/users/{{ user.id }}/disabled" hx-post="/users/{{ user.id }}/disabled" hx-nonce="{{ csp_nonce }}">
+          <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+          <input type="hidden" name="disabled" value="{{ "0" if user.disabled else "1" }}">
+          {{ submit("Enable" if user.disabled else "Disable", "btn-warning btn-outline") }}
+        </form>
+        <form method="post" action="/users/{{ user.id }}/delete" hx-post="/users/{{ user.id }}/delete" hx-nonce="{{ csp_nonce }}" hx-confirm="Delete this user? This cannot be undone.">
+          <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+          {{ submit("Delete " ~ user.username, "btn-error") }}
+        </form>
+      </div>
+    </div>
+  </section>
+</div>
+{% endblock %}

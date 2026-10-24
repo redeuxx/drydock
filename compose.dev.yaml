@@ -1,0 +1,49 @@
+# Development loop, including on Windows with the repo on NTFS:
+#   npm ci && npm run build          (once, on the host; rerun build:css after class changes)
+#   docker compose -f compose.dev.yaml up --build
+# The source is bind-mounted over the installed package and uvicorn reloads on change.
+# Inotify events do not cross from NTFS into the Linux VM, so watchfiles polls.
+name: drydock-dev
+
+services:
+  drydock:
+    build: .
+    image: drydock:dev
+    command:
+      - uvicorn
+      - drydock.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload
+      - --reload-dir
+      - /app/src/drydock
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      # Puts the bind-mounted source ahead of the copy installed in the image.
+      PYTHONPATH: /app/src
+      WATCHFILES_FORCE_POLLING: "true"
+      DRYDOCK_SECRET_KEY_FILE: /run/secrets/drydock_secret_key
+      DRYDOCK_BASE_URL: http://localhost:8000
+    secrets:
+      - drydock_secret_key
+    volumes:
+      - ./src:/app/src:ro
+      - drydock-dev-data:/data
+    tmpfs:
+      - /run/drydock:uid=10001,gid=10001,mode=0700
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 90s
+
+secrets:
+  drydock_secret_key:
+    file: ./secrets/drydock_secret_key
+
+volumes:
+  drydock-dev-data:

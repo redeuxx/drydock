@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% from "_macros.html" import alerts, submit, when %}
+{% block title %}Archives in {{ target.name }}{% endblock %}
+{% block content %}
+<h1 class="mb-4 text-3xl font-bold break-all">Archives in {{ target.name }}</h1>
+<p class="mb-4"><a class="link" href="/restore">Back to Restore</a></p>
+{{ alerts([error] if error else []) }}
+<p class="mb-4 opacity-70">Read from the storage directory itself, newest first. What an archive holds is read from its first bytes and is not verified until you choose it; an encrypted archive shows only its name, size and time.</p>
+{% if rows and (page > 1 or more) %}<p class="mb-4 text-sm">Showing archives {{ first + 1 }} to {{ first + rows|length }} of {{ total }}, newest first.</p>{% endif %}
+<div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
+  <table class="table table-zebra table-sm">
+    <thead><tr><th scope="col">Created (UTC)</th><th scope="col">Archive</th><th scope="col">Contents (unverified preview)</th><th scope="col"><span class="sr-only">Action</span></th></tr></thead>
+    <tbody>
+      {% for obj, created, preview in rows %}
+      <tr>
+        <td class="whitespace-nowrap">{{ when(created) }}</td>
+        <td class="font-mono text-xs break-all">{{ obj.name }}<br><span class="opacity-70">{{ obj.size|filesize }}</span></td>
+        <td>
+          {% if preview.state == "manifest" %}
+          {% set manifest = preview.manifest %}
+          <dl class="grid grid-cols-[max-content_1fr] gap-x-3 text-xs">
+            <dt class="opacity-70">Job</dt><dd class="break-all">{{ manifest.job.name }}</dd>
+            <dt class="opacity-70">Scope</dt><dd>{{ manifest.job.scope }}</dd>
+            <dt class="opacity-70">Source host</dt><dd class="break-all">{{ manifest.source.host_name }}</dd>
+            <dt class="opacity-70">Containers</dt><dd class="break-all">{{ manifest.containers|map(attribute="name")|join(", ") or "none" }}</dd>
+            <dt class="opacity-70">Captured</dt><dd>{{ when(manifest.created_at) }}</dd>
+          </dl>
+          <span class="badge badge-soft badge-neutral mt-1">unverified preview</span>
+          {% elif preview.state == "encrypted" %}
+          <span class="badge badge-soft badge-info">encrypted</span>
+          {% else %}
+          <span class="text-sm opacity-70">Cannot be previewed: {{ preview.reason }}</span>
+          {% endif %}
+        </td>
+        <td>
+          <form method="post" action="/restore/from-storage" hx-post="/restore/from-storage" hx-nonce="{{ csp_nonce }}">
+            <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+            <input type="hidden" name="storage_id" value="{{ target.id }}">
+            <input type="hidden" name="name" value="{{ obj.name }}">
+            {{ submit("Verify and restore", "btn-primary btn-sm", obj.name) }}
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4">No archives{% if error %} could be listed{% endif %}.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% if page > 1 or more %}
+<nav class="mt-4 flex gap-2" aria-label="Archive pages">
+  {% if page > 1 %}<a class="btn btn-outline btn-sm" href="/restore/storage/{{ target.id }}?page={{ page - 1 }}">Newer archives</a>{% endif %}
+  {% if more %}<a class="btn btn-outline btn-sm" href="/restore/storage/{{ target.id }}?page={{ page + 1 }}">Older archives</a>{% endif %}
+</nav>
+{% endif %}
+{% endblock %}

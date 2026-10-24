@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% from "_macros.html" import alerts, submit %}
+{% from "storage/_fields.html" import storage_fields, remote_fields %}
+{% block title %}Add storage{% endblock %}
+{% block content %}
+<section class="card mx-auto max-w-xl bg-base-100 shadow-sm">
+  <div class="card-body">
+    <h1 class="card-title text-2xl">Add storage</h1>
+    <nav class="flex flex-wrap gap-1" aria-label="Kind of storage">
+      {% for value, label in kind_labels.items() if value == "local" or auth.user.role >= Role.superadmin %}
+      <a class="btn btn-sm {{ 'btn-primary' if value == kind else 'btn-ghost' }}" href="/storage/new{{ '' if value == 'local' else '?type=' ~ value }}"{% if value == kind %} aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </nav>
+    {% if kind != "local" %}
+    <p class="text-sm opacity-70">Drydock connects from its own container, to any host it can reach. Settings are stored encrypted, and passwords and keys are never shown again. Backups to remote storage arrive in a later release.{% if kind == "drive" %} So does connecting to Google with your OAuth client.{% endif %}</p>
+    {% endif %}
+    {{ alerts(errors) }}
+    <form method="post" action="/storage" hx-post="/storage" hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-1">
+      <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+      <input type="hidden" name="kind" value="{{ kind }}">
+      {% if kind == "local" %}{{ storage_fields(form, "new", roots) }}{% else %}{{ remote_fields(form, "new", backend, helps) }}{% endif %}
+      <div class="mt-2">{{ submit("Add storage") }}</div>
+    </form>
+  </div>
+</section>
+{% endblock %}

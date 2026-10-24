@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Ruff and pytest (Linux container)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # uv sync --locked, ruff check, ruff format --check, pytest. Starts the socket proxy
+      # and the sshhost (docker:dind with sshd) the integration tests use.
+      - run: docker compose -f compose.test.yaml run --rm tests
+      - if: always()
+        run: docker compose -f compose.test.yaml down --volumes
+
+  frontend:
+    name: TypeScript and npm audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.21.0
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run check
+      - run: npm run build
+      # Blocking: the only npm package that ships in the image is htmx.org.
+      - name: npm audit (shipped dependencies)
+        run: npm audit --omit=dev --audit-level=low
+      # Report only: build tooling never reaches the image.
+      - name: npm audit (build tooling)
+        run: npm audit --audit-level=high || echo "::warning::npm audit reports issues in build tooling"
+
+  python-audit:
+    name: pip-audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: >-
+          docker compose -f compose.test.yaml run --rm --no-deps -e HOME=/tmp -e UV_TOOL_DIR=/tmp/uv-tools
+          tests sh -c 'uv export --locked --no-dev --no-emit-project --format requirements-txt
+          -o /tmp/requirements.txt -q
+          && uvx pip-audit==2.10.1 --strict --require-hashes --disable-pip -r /tmp/requirements.txt'
+
+  image:
+    name: Image build and CSP smoke test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: docker compose -f compose.test.yaml build app smoke
+      - run: >-
+          docker compose -f compose.test.yaml up
+          --abort-on-container-exit --exit-code-from smoke app smoke
+      - if: always()
+        run: docker compose -f compose.test.yaml down --volumes

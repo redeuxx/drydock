@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% from "_macros.html" import role_badge %}
+{% block title %}Account{% endblock %}
+{% block content %}
+<div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+  <h1 class="text-3xl font-bold">Account</h1>
+  <a href="/account/password" class="btn btn-outline btn-sm">Change password</a>
+</div>
+<section class="card mb-6 bg-base-100 shadow-sm">
+  <div class="card-body">
+    <dl class="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2">
+      <dt class="font-semibold">Username</dt><dd>{{ auth.user.username }}</dd>
+      <dt class="font-semibold">Role</dt><dd>{{ role_badge(auth.user.role) }}</dd>
+    </dl>
+  </div>
+</section>
+<h2 class="mb-2 text-xl font-semibold">Active sessions</h2>
+<div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
+  <table class="table table-zebra">
+    <thead><tr><th scope="col">Signed in</th><th scope="col">Last seen</th><th scope="col">IP</th><th scope="col"><span class="sr-only">Current</span></th></tr></thead>
+    <tbody>
+      {% for s in sessions %}
+      <tr>
+        <td>{{ s.created_at.strftime("%Y-%m-%d %H:%M UTC") }}</td>
+        <td>{{ s.last_seen_at.strftime("%Y-%m-%d %H:%M UTC") }}</td>
+        <td>{{ s.ip or "" }}</td>
+        <td>{% if s.id == auth.session.id %}<span class="badge badge-soft badge-primary">this session</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

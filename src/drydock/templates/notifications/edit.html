@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% from "_macros.html" import alerts, submit %}
+{% from "notifications/_fields.html" import target_fields %}
+{% block title %}Notification target {{ target.name }}{% endblock %}
+{% block content %}
+<div class="mb-4 flex flex-wrap items-center gap-3">
+  <h1 class="text-3xl font-bold break-all">Notification target {{ target.name }}</h1>
+  <span class="badge badge-soft badge-neutral">{{ kind_labels.get(target.kind, target.kind) }}</span>
+  {% if not target.enabled %}<span class="badge badge-soft badge-neutral">disabled</span>{% endif %}
+</div>
+<div class="grid gap-4 md:grid-cols-2">
+  {% if auth.user.role >= Role.superadmin %}
+  <section class="card bg-base-100 shadow-sm" aria-labelledby="settings-heading">
+    <div class="card-body">
+      <h2 id="settings-heading" class="card-title">Settings</h2>
+      {{ alerts(errors) }}
+      <form method="post" action="/notifications/{{ target.id }}" hx-post="/notifications/{{ target.id }}" hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-1">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        {{ target_fields(form, "edit", kind_labels, editing=true) }}
+        <div class="mt-2">{{ submit("Save") }}</div>
+      </form>
+    </div>
+  </section>
+
+  <section class="card bg-base-100 shadow-sm" aria-labelledby="test-heading">
+    <div class="card-body">
+      <h2 id="test-heading" class="card-title">Test</h2>
+      <p class="text-sm opacity-70">Sends a test message now and shows whether the service accepted it.</p>
+      {% if test %}
+      {% if test.ok %}
+      <div role="status" class="alert alert-success alert-soft" data-focus-result><span>Sent ({{ test.detail }}).</span></div>
+      {% else %}
+      {{ alerts(["Test failed: " ~ test.detail]) }}
+      {% endif %}
+      {% endif %}
+      <form method="post" action="/notifications/{{ target.id }}/test" hx-post="/notifications/{{ target.id }}/test" hx-nonce="{{ csp_nonce }}" class="card-actions">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        {{ submit("Send a test message", "btn-outline") }}
+      </form>
+    </div>
+  </section>
+  {% endif %}
+
+  <section class="card bg-base-100 shadow-sm" aria-labelledby="jobs-heading">
+    <div class="card-body">
+      <h2 id="jobs-heading" class="card-title">Jobs using it</h2>
+      {% if jobs %}
+      <ul class="list-disc pl-5 text-sm">{% for name in jobs %}<li>{{ name }}</li>{% endfor %}</ul>
+      {% else %}
+      <p class="text-sm opacity-70">None. Attach it on a job's page.</p>
+      {% endif %}
+    </div>
+  </section>
+
+  {% if auth.user.role >= Role.superadmin %}
+  <section class="card border border-error/40 bg-base-100 shadow-sm md:col-span-2" aria-labelledby="danger-heading">
+    <div class="card-body">
+      <h2 id="danger-heading" class="card-title">Delete target</h2>
+      <p class="text-sm">Jobs using it stop sending to it.</p>
+      <form method="post" action="/notifications/{{ target.id }}/delete" hx-post="/notifications/{{ target.id }}/delete" hx-nonce="{{ csp_nonce }}" hx-confirm="Delete this notification target?" class="card-actions">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        {{ submit("Delete " ~ target.name, "btn-error") }}
+      </form>
+    </div>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

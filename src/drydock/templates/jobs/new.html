@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% from "_macros.html" import alerts, submit %}
+{% from "jobs/_fields.html" import job_fields %}
+{% block title %}Add job{% endblock %}
+{% block content %}
+<section class="card mx-auto max-w-xl bg-base-100 shadow-sm">
+  <div class="card-body">
+    <h1 class="card-title text-2xl">Add job</h1>
+    {{ alerts(errors) }}
+    {% if not hosts or not targets %}
+    <div role="status" class="alert alert-info alert-soft"><span>A job needs a <a class="link" href="/hosts">host</a> and a <a class="link" href="/storage">storage target</a>. Add them first.</span></div>
+    {% endif %}
+    <form method="post" action="/jobs" hx-post="/jobs" hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-1">
+      <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+      {{ job_fields(form, "new", hosts, targets, scope_labels, mode_labels, target_labels, available_hooks, live_warning, retention_labels, default_tz, csp_nonce, notification_targets) }}
+      <div class="mt-2">{{ submit("Add job") }}</div>
+    </form>
+  </div>
+</section>
+{% endblock %}

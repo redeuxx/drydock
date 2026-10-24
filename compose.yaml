@@ -1,0 +1,145 @@
+# Production deployment. See README.md before the first start:
+#   1. Create the secret key file (chown 10001, chmod 0400).
+#   2. docker compose up -d
+#   3. Open an SSH tunnel (ssh -L 8000:127.0.0.1:8000 host) and complete /setup at once.
+name: drydock
+
+services:
+  drydock:
+    build: .
+    image: drydock:local
+    restart: unless-stopped
+    # Loopback only. Reach the UI through an SSH tunnel or a reverse proxy on this host.
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      DRYDOCK_SECRET_KEY_FILE: /run/secrets/drydock_secret_key
+      DRYDOCK_BASE_URL: http://localhost:8000
+      # Suggested when an admin adds the local host. Drydock never registers it on its own.
+      DRYDOCK_LOCAL_DOCKER_URL: tcp://socket-proxy:2375
+      TZ: UTC
+      # Backup storage: list each directory mounted below (see README.md, Backups).
+      # DRYDOCK_LOCAL_STORAGE_ROOTS: /backups
+      # Behind a reverse proxy, published ports deliver the proxy's connections from this
+      # project's network gateway, not 127.0.0.1. Trust that address (see README.md), or
+      # every client shares one IP for the login limiter and the audit log.
+      # FORWARDED_ALLOW_IPS: 172.18.0.1
+    secrets:
+      - drydock_secret_key
+    # docker-proxy reaches only the socket proxy. egress carries SSH to remote hosts,
+    # image pulls and the published port (an internal network cannot publish ports).
+    networks:
+      - docker-proxy
+      - egress
+    depends_on:
+      - socket-proxy
+    # Drydock never mounts docker.sock; the local daemon is reachable only through the proxy.
+    volumes:
+      - drydock-data:/data
+      # A host directory owned by uid 10001, mode 0700.
+      # - /srv/drydock-backups:/backups
+    tmpfs:
+      - /run/drydock:uid=10001,gid=10001,mode=0700
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Docker's 10 s default would SIGKILL drydock while containers it stopped are still down.
+    stop_grace_period: 90s
+
+  # Filters the local Docker API down to what drydock uses. Every flag is listed so the
+  # image's defaults (EVENTS=1, the libpod PING and VERSION) never apply. Note that POST=1
+  # also allows PUT and DELETE on the enabled sections.
+  socket-proxy:
+    image: lscr.io/linuxserver/socket-proxy:3.4.6-r0-ls102@sha256:8c059dcb7f496212967dcf1d4136f727f2a23eea4da881945c12b1414aafdf4c
+    restart: unless-stopped
+    environment:
+      ALLOW_ARCHIVE: "1"
+      ALLOW_PAUSE: "1"
+      ALLOW_RESTARTS: "1"
+      ALLOW_START: "1"
+      ALLOW_STOP: "1"
+      ALLOW_UNPAUSE: "1"
+      CONTAINERS: "1"
+      # Read-only registry lookup (GET /distribution/<ref>/json): drydock stores an image by
+      # reference only when the registry confirms its exact digest (PLAN.md decision 9).
+      DISTRIBUTION: "1"
+      EXEC: "1"
+      IMAGES: "1"
+      INFO: "1"
+      NETWORKS: "1"
+      PING: "1"
+      POST: "1"
+      VERSION: "1"
+      VOLUMES: "1"
+      ALLOW_CHANGES: "0"
+      ALLOW_EXPORT: "0"
+      ALLOW_LOGS: "0"
+      ALLOW_TOP: "0"
+      AUTH: "0"
+      BUILD: "0"
+      COMMIT: "0"
+      CONFIGS: "0"
+      EVENTS: "0"
+      GRPC: "0"
+      NODES: "0"
+      PLUGINS: "0"
+      SECRETS: "0"
+      SERVICES: "0"
+      SESSION: "0"
+      SWARM: "0"
+      SYSTEM: "0"
+      TASKS: "0"
+      LIBPOD_ALLOW_PAUSE: "0"
+      LIBPOD_ALLOW_POD_PAUSE: "0"
+      LIBPOD_ALLOW_POD_RESTARTS: "0"
+      LIBPOD_ALLOW_POD_START: "0"
+      LIBPOD_ALLOW_POD_STOP: "0"
+      LIBPOD_ALLOW_POD_UNPAUSE: "0"
+      LIBPOD_ALLOW_RESTARTS: "0"
+      LIBPOD_ALLOW_START: "0"
+      LIBPOD_ALLOW_STOP: "0"
+      LIBPOD_ALLOW_UNPAUSE: "0"
+      LIBPOD_CONTAINERS: "0"
+      LIBPOD_EVENTS: "0"
+      LIBPOD_EXEC: "0"
+      LIBPOD_GENERATE: "0"
+      LIBPOD_IMAGES: "0"
+      LIBPOD_INFO: "0"
+      LIBPOD_MANIFESTS: "0"
+      LIBPOD_NETWORKS: "0"
+      LIBPOD_PING: "0"
+      LIBPOD_PLAY: "0"
+      LIBPOD_PODS: "0"
+      LIBPOD_SECRETS: "0"
+      LIBPOD_SYSTEM: "0"
+      LIBPOD_VERSION: "0"
+      LIBPOD_VOLUMES: "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - docker-proxy
+    read_only: true
+    tmpfs:
+      - /run
+    # haproxy runs as root to open the socket (root owns it) and needs no capabilities.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  # No route out: only drydock and the proxy are attached.
+  docker-proxy:
+    internal: true
+  egress:
+
+# Outside swarm a file secret is a plain bind mount: uid and mode settings are ignored, so
+# the host file itself must be owned by 10001 with mode 0400 (see README.md).
+secrets:
+  drydock_secret_key:
+    file: ./secrets/drydock_secret_key
+
+volumes:
+  drydock-data:

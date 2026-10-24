@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023", "dom", "dom.iterable"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "moduleDetection": "auto",
+    "types": ["htmx.org"],
+    "rootDir": "frontend",
+    "outDir": "src/drydock/static/js",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+    "noEmitOnError": true,
+    "forceConsistentCasingInFileNames": true,
+    "newLine": "lf",
+    "removeComments": false,
+    "sourceMap": false
+  },
+  "include": ["frontend/**/*.ts"]
+}

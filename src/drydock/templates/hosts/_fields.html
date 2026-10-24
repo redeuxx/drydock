@@ -1,0 +1,67 @@
+{# Form fields shared by the add and edit pages. Key fields never carry a value: a pasted
+   private key or passphrase is never sent back to the browser. #}
+
+{% macro connection_fields(form, prefix) -%}
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-name">Name</label>
+  <input id="{{ prefix }}-name" class="input w-full" name="name" value="{{ form.name }}" autocomplete="off" required maxlength="64" aria-describedby="{{ prefix }}-name-hint">
+  <p id="{{ prefix }}-name-hint" class="label">Letters, digits, dots, dashes and underscores.</p>
+</div>
+{% if form.kind == "local" %}
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-docker-url">Docker URL</label>
+  <input id="{{ prefix }}-docker-url" class="input w-full font-mono" name="docker_url" value="{{ form.docker_url }}" autocomplete="off" required maxlength="255" aria-describedby="{{ prefix }}-docker-url-hint">
+  <p id="{{ prefix }}-docker-url-hint" class="label whitespace-normal">The socket proxy from compose.yaml is tcp://socket-proxy:2375. Drydock never mounts docker.sock itself.</p>
+</div>
+{% else %}
+<div class="grid gap-x-4 sm:grid-cols-[1fr_8rem]">
+  <div class="fieldset">
+    <label class="fieldset-legend" for="{{ prefix }}-address">Address</label>
+    <input id="{{ prefix }}-address" class="input w-full" name="address" value="{{ form.address }}" autocomplete="off" required maxlength="253" aria-describedby="{{ prefix }}-address-hint">
+  </div>
+  <div class="fieldset">
+    <label class="fieldset-legend" for="{{ prefix }}-port">Port</label>
+    <input id="{{ prefix }}-port" class="input w-full" name="port" value="{{ form.port }}" inputmode="numeric" required maxlength="5">
+  </div>
+</div>
+<p id="{{ prefix }}-address-hint" class="label whitespace-normal">Changing the address or port clears the trusted host key.</p>
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-username">SSH user</label>
+  <input id="{{ prefix }}-username" class="input w-full" name="username" value="{{ form.username }}" autocomplete="off" required maxlength="32" aria-describedby="{{ prefix }}-username-hint">
+  <p id="{{ prefix }}-username-hint" class="label whitespace-normal">Needs access to the Docker socket, which is root-equivalent on that host.</p>
+</div>
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-socket">Remote Docker socket</label>
+  <input id="{{ prefix }}-socket" class="input w-full font-mono" name="remote_socket_path" value="{{ form.remote_socket_path }}" autocomplete="off" required maxlength="255" aria-describedby="{{ prefix }}-socket-hint">
+  <p id="{{ prefix }}-socket-hint" class="label whitespace-normal">For rootless Docker, for example /run/user/1000/docker.sock.</p>
+</div>
+{% endif %}
+<label class="label mt-2 gap-2">
+  <input type="checkbox" class="checkbox checkbox-sm" name="enabled" value="1"{% if form.enabled %} checked{% endif %}>
+  Enabled
+</label>
+{%- endmacro %}
+
+{% macro key_fields(prefix, key_source) -%}
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">SSH key</legend>
+  <label class="label gap-2">
+    <input type="radio" class="radio radio-sm" name="key_source" value="generate"{% if key_source != "paste" %} checked{% endif %}>
+    Generate a new ed25519 key (recommended)
+  </label>
+  <label class="label gap-2">
+    <input type="radio" class="radio radio-sm" name="key_source" value="paste"{% if key_source == "paste" %} checked{% endif %}>
+    Use the private key pasted below
+  </label>
+</fieldset>
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-private-key">Private key (only when pasting)</label>
+  <textarea id="{{ prefix }}-private-key" class="textarea w-full font-mono text-xs" name="private_key" rows="4" autocomplete="off" spellcheck="false" aria-describedby="{{ prefix }}-private-key-hint"></textarea>
+  <p id="{{ prefix }}-private-key-hint" class="label whitespace-normal">Stored encrypted and never shown again. Only the public key is displayed.</p>
+</div>
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-passphrase">Key passphrase (if the pasted key has one)</label>
+  <input id="{{ prefix }}-passphrase" class="input w-full" type="password" name="key_passphrase" autocomplete="new-password" maxlength="1024" aria-describedby="{{ prefix }}-passphrase-hint">
+  <p id="{{ prefix }}-passphrase-hint" class="label whitespace-normal">Used once to decrypt the key, then discarded.</p>
+</div>
+{%- endmacro %}

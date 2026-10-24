@@ -1,0 +1,137 @@
+{% macro storage_fields(form, prefix, roots) -%}
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-name">Name</label>
+  <input id="{{ prefix }}-name" class="input w-full" name="name" value="{{ form.name }}" autocomplete="off" required maxlength="64" aria-describedby="{{ prefix }}-name-hint">
+  <p id="{{ prefix }}-name-hint" class="label">Letters, digits, dots, dashes and underscores.</p>
+</div>
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-path">Directory</label>
+  <input id="{{ prefix }}-path" class="input w-full font-mono" name="path" value="{{ form.path }}" autocomplete="off" required maxlength="1024" aria-describedby="{{ prefix }}-path-hint">
+  <p id="{{ prefix }}-path-hint" class="label whitespace-normal">
+    {% if roots %}A directory inside {% for root in roots %}<code>{{ root }}</code>{{ ", " if not loop.last }}{% endfor %} (DRYDOCK_LOCAL_STORAGE_ROOTS).
+    {% else %}No directory is allowed yet: mount one into the container and list it in DRYDOCK_LOCAL_STORAGE_ROOTS.{% endif %}
+  </p>
+</div>
+<label class="label mt-2 gap-2">
+  <input type="checkbox" class="checkbox checkbox-sm" name="enabled" value="1"{% if form.enabled %} checked{% endif %}>
+  Enabled
+</label>
+{%- endmacro %}
+
+{# Remote storage options, one macro per option type. The help text is rclone's own unless
+   drydock overrides it (Option.help). Secret
+   fields never carry a value: a stored secret shows the placeholder "unchanged" and a box to
+   clear it. #}
+
+{% macro hint(prefix, option, helps) -%}
+{% set text = option.help or helps.get(option.name, "") %}
+{% if text %}<p id="{{ prefix }}-{{ option.name }}-hint" class="label whitespace-normal">{{ text }}</p>{% endif %}
+{%- endmacro %}
+
+{% macro described(prefix, option, helps) -%}
+{% if option.help or helps.get(option.name) %} aria-describedby="{{ prefix }}-{{ option.name }}-hint"{% endif %}
+{%- endmacro %}
+
+{% macro string_field(prefix, option, value, helps) -%}
+<div>
+  <label class="label text-sm" for="{{ prefix }}-{{ option.name }}">{{ option.label }}</label>
+  <input id="{{ prefix }}-{{ option.name }}" class="input w-full font-mono" name="opt_{{ option.name }}" value="{{ value }}" maxlength="{{ option.max_length }}" autocomplete="off"{% if option.required %} required{% endif %}{{ described(prefix, option, helps) }}>
+  {{ hint(prefix, option, helps) }}
+</div>
+{%- endmacro %}
+
+{% macro int_field(prefix, option, value, helps) -%}
+<div>
+  <label class="label text-sm" for="{{ prefix }}-{{ option.name }}">{{ option.label }}</label>
+  <input id="{{ prefix }}-{{ option.name }}" class="input w-full" type="number" min="1" max="65535" inputmode="numeric" name="opt_{{ option.name }}" value="{{ value }}" autocomplete="off"{{ described(prefix, option, helps) }}>
+  {{ hint(prefix, option, helps) }}
+</div>
+{%- endmacro %}
+
+{% macro bool_field(prefix, option, value, helps) -%}
+<div>
+  <label class="label gap-2 text-sm">
+    <input id="{{ prefix }}-{{ option.name }}" type="checkbox" class="checkbox checkbox-sm" name="opt_{{ option.name }}" value="1"{% if value == "true" %} checked{% endif %}{{ described(prefix, option, helps) }}>
+    {{ option.label }}
+  </label>
+  {{ hint(prefix, option, helps) }}
+</div>
+{%- endmacro %}
+
+{% macro enum_field(prefix, option, value, helps) -%}
+<div>
+  <label class="label text-sm" for="{{ prefix }}-{{ option.name }}">{{ option.label }}</label>
+  <select id="{{ prefix }}-{{ option.name }}" class="select w-full" name="opt_{{ option.name }}"{{ described(prefix, option, helps) }}>
+    {% for choice in option.choices %}
+    <option value="{{ choice }}"{% if value == choice %} selected{% endif %}>{{ choice }}</option>
+    {% endfor %}
+  </select>
+  {{ hint(prefix, option, helps) }}
+</div>
+{%- endmacro %}
+
+{% macro clear_box(prefix, option, stored) -%}
+{% if option.name in stored %}
+<label class="label gap-2 text-sm">
+  <input type="checkbox" class="checkbox checkbox-sm" name="clear_{{ option.name }}" value="1">
+  Clear the stored {{ option.label | lower }}
+</label>
+{% endif %}
+{%- endmacro %}
+
+{% macro password_field(prefix, option, stored, helps) -%}
+<div>
+  <label class="label text-sm" for="{{ prefix }}-{{ option.name }}">{{ option.label }}</label>
+  <input id="{{ prefix }}-{{ option.name }}" class="input w-full font-mono" type="password" name="opt_{{ option.name }}" value="" maxlength="{{ option.max_length }}" autocomplete="new-password"{% if option.name in stored %} placeholder="unchanged"{% elif option.required %} required{% endif %}{{ described(prefix, option, helps) }}>
+  {{ hint(prefix, option, helps) }}
+  {{ clear_box(prefix, option, stored) }}
+</div>
+{%- endmacro %}
+
+{% macro pem_field(prefix, option, stored, helps) -%}
+<div>
+  <label class="label text-sm" for="{{ prefix }}-{{ option.name }}">{{ option.label }}</label>
+  <textarea id="{{ prefix }}-{{ option.name }}" class="textarea w-full font-mono text-xs" rows="6" name="opt_{{ option.name }}" maxlength="{{ option.max_length }}" autocomplete="off" spellcheck="false"{% if option.name in stored %} placeholder="unchanged"{% endif %}{{ described(prefix, option, helps) }}></textarea>
+  {{ hint(prefix, option, helps) }}
+  {{ clear_box(prefix, option, stored) }}
+</div>
+{%- endmacro %}
+
+{% macro option_field(prefix, option, form, helps) -%}
+{% if option.type == "int" %}{{ int_field(prefix, option, form.values.get(option.name, ""), helps) }}
+{% elif option.type == "bool" %}{{ bool_field(prefix, option, form.values.get(option.name, ""), helps) }}
+{% elif option.type == "enum" %}{{ enum_field(prefix, option, form.values.get(option.name, ""), helps) }}
+{% elif option.type == "password" %}{{ password_field(prefix, option, form.stored, helps) }}
+{% elif option.type == "pem" %}{{ pem_field(prefix, option, form.stored, helps) }}
+{% else %}{{ string_field(prefix, option, form.values.get(option.name, ""), helps) }}
+{% endif %}
+{%- endmacro %}
+
+{% macro remote_fields(form, prefix, backend, helps) -%}
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-name">Name</label>
+  <input id="{{ prefix }}-name" class="input w-full" name="name" value="{{ form.name }}" autocomplete="off" required maxlength="64" aria-describedby="{{ prefix }}-name-hint">
+  <p id="{{ prefix }}-name-hint" class="label">Letters, digits, dots, dashes and underscores.</p>
+</div>
+<fieldset class="fieldset flex flex-col gap-2">
+  <legend class="fieldset-legend">{{ backend.label }}</legend>
+  {% for option in backend.options if not option.advanced %}{{ option_field(prefix, option, form, helps) }}{% endfor %}
+  <div>
+    <label class="label text-sm" for="{{ prefix }}-folder">{{ backend.folder_label }}</label>
+    <input id="{{ prefix }}-folder" class="input w-full font-mono" name="folder" value="{{ form.values.get('folder', '') }}" maxlength="512" autocomplete="off" aria-describedby="{{ prefix }}-folder-hint">
+    <p id="{{ prefix }}-folder-hint" class="label whitespace-normal">{{ backend.folder_hint }}</p>
+  </div>
+</fieldset>
+{% if backend.options | selectattr("advanced") | list %}
+<details class="mt-2">
+  <summary class="cursor-pointer text-sm font-semibold">Advanced</summary>
+  <div class="mt-2 flex flex-col gap-2">
+    {% for option in backend.options if option.advanced %}{{ option_field(prefix, option, form, helps) }}{% endfor %}
+  </div>
+</details>
+{% endif %}
+<label class="label mt-2 gap-2">
+  <input type="checkbox" class="checkbox checkbox-sm" name="enabled" value="1"{% if form.enabled %} checked{% endif %}>
+  Enabled
+</label>
+{%- endmacro %}

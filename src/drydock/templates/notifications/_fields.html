@@ -1,0 +1,71 @@
+{# Notification target settings, shared by the add form and the target page. Secret
+   fields are always rendered empty: the stored destination is never shown. #}
+{% macro text(prefix, name, label, value, hint="", type="text", mono=false, maxlength=2048, placeholder="") -%}
+<div>
+  <label class="label text-sm" for="{{ prefix }}-{{ name }}">{{ label }}</label>
+  <input id="{{ prefix }}-{{ name }}" class="input w-full{% if mono %} font-mono{% endif %}" type="{{ type }}" name="{{ name }}" value="{{ value }}" maxlength="{{ maxlength }}" placeholder="{{ placeholder }}" autocomplete="{{ 'new-password' if type == 'password' else 'off' }}"{% if hint %} aria-describedby="{{ prefix }}-{{ name }}-hint"{% endif %}>
+  {% if hint %}<p id="{{ prefix }}-{{ name }}-hint" class="label whitespace-normal">{{ hint }}</p>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro target_fields(form, prefix, kind_labels, editing=false) -%}
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-name">Name</label>
+  <input id="{{ prefix }}-name" class="input w-full" name="name" value="{{ form.name }}" autocomplete="off" required maxlength="64">
+</div>
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-kind">Kind</label>
+  <select id="{{ prefix }}-kind" class="select w-full" name="kind" aria-describedby="{{ prefix }}-kind-hint">
+    {% for value, label in kind_labels.items() %}
+    <option value="{{ value }}"{% if form.kind == value %} selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+  <p id="{{ prefix }}-kind-hint" class="label whitespace-normal">Only the fields for the chosen kind apply.{% if editing %} The destination is stored encrypted and never shown again: leave its fields empty to keep it, or fill them in to replace it.{% endif %} Drydock sends from its own container, to any host it can reach, internal ones included.</p>
+</div>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Webhook</legend>
+  {{ text(prefix, "webhook_url", "URL", "", "Drydock POSTs JSON with title, message and type (success or failure) to it.", "password", true) }}
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Email (SMTP)</legend>
+  <div class="grid gap-x-4 sm:grid-cols-2">
+    {{ text(prefix, "smtp_host", "SMTP server", form.smtp_host, mono=true, maxlength=253, placeholder="smtp.example.com") }}
+    {{ text(prefix, "smtp_port", "Port", form.smtp_port, maxlength=5, placeholder="587") }}
+    <div>
+      <label class="label text-sm" for="{{ prefix }}-smtp_security">Security</label>
+      <select id="{{ prefix }}-smtp_security" class="select w-full" name="smtp_security">
+        {% for value, label in (("starttls", "STARTTLS (port 587)"), ("ssl", "TLS (port 465)"), ("none", "None (plain text)")) %}
+        <option value="{{ value }}"{% if form.smtp_security == value %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {{ text(prefix, "smtp_user", "User name", form.smtp_user, maxlength=256) }}
+    {{ text(prefix, "smtp_password", "Password", "", type="password", maxlength=256) }}
+    {{ text(prefix, "smtp_from", "From", form.smtp_from, maxlength=320) }}
+  </div>
+  {{ text(prefix, "smtp_to", "To", form.smtp_to, "One or more addresses, separated by commas.", maxlength=2048) }}
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">ntfy</legend>
+  <div class="grid gap-x-4 sm:grid-cols-2">
+    {{ text(prefix, "ntfy_server", "Server", form.ntfy_server, mono=true, placeholder="https://ntfy.sh") }}
+    {{ text(prefix, "ntfy_topic", "Topic", form.ntfy_topic, mono=true, maxlength=64) }}
+  </div>
+  {{ text(prefix, "ntfy_token", "Access token", "", "Optional. On ntfy.sh, anyone who knows the topic can read it.", "password", true, 256) }}
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Gotify</legend>
+  <div class="grid gap-x-4 sm:grid-cols-2">
+    {{ text(prefix, "gotify_server", "Server", form.gotify_server, mono=true, placeholder="https://gotify.example.com") }}
+    {{ text(prefix, "gotify_token", "Application token", "", type="password", mono=true, maxlength=256) }}
+  </div>
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Other Apprise URL</legend>
+  {{ text(prefix, "raw_url", "URL", "", "The Apprise URL of a chat or push service: discord://, slack://, msteams://, tgram://, pover://, pbul://, gchat://, matrix(s)://, mmost(s)://, rocket(s)://, signal(s)://. Anything else is refused.", "password", true) }}
+</fieldset>
+<label class="label mt-2 gap-2">
+  <input type="checkbox" class="checkbox checkbox-sm" name="enabled" value="1"{% if form.enabled %} checked{% endif %}>
+  Enabled
+</label>
+{%- endmacro %}

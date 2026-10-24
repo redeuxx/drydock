@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% from "_macros.html" import role_badge %}
+{% block title %}Home{% endblock %}
+{% block content %}
+<h1 class="mb-4 text-3xl font-bold">Drydock</h1>
+<section class="card bg-base-100 shadow-sm">
+  <div class="card-body">
+    <p>Signed in as <strong>{{ auth.user.username }}</strong> {{ role_badge(auth.user.role) }}</p>
+    <ul class="list-disc pl-5">
+      <li><a class="link" href="/jobs">Backup jobs</a>, their <a class="link" href="/runs">runs</a> and the <a class="link" href="/backups">backups</a> they made</li>
+      {% if auth.user.role >= Role.admin %}<li><a class="link" href="/restore">Restore</a> an archive from storage</li>{% endif %}
+      {% if auth.user.role >= Role.admin %}<li><a class="link" href="/hosts">Docker hosts</a> and <a class="link" href="/storage">storage</a></li>{% endif %}
+    </ul>
+  </div>
+</section>
+{% endblock %}

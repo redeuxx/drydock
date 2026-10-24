@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% from "_macros.html" import when %}
+{% block title %}Backups{% endblock %}
+{% block content %}
+<h1 class="mb-4 text-3xl font-bold">Backups</h1>
+<p class="mb-4 opacity-70">Archives drydock has stored. Each one is signed with the secret key; encrypted archives need the job's passphrase.</p>
+<div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
+  <table class="table table-zebra table-sm">
+    <thead><tr><th scope="col">Created (UTC)</th><th scope="col">Job</th><th scope="col">Storage</th><th scope="col">Archive</th><th scope="col">Size</th><th scope="col">Protection</th></tr></thead>
+    <tbody>
+      {% for backup in backups %}
+      <tr>
+        <td class="whitespace-nowrap">{{ when(backup.created_at) }}</td>
+        <td>{% if backup.job_id in jobs %}<a class="link" href="/jobs/{{ backup.job_id }}">{{ jobs[backup.job_id] }}</a>{% else %}<span class="opacity-70">deleted job</span>{% endif %}</td>
+        <td>{{ targets.get(backup.storage_target_id, "?") }}</td>
+        <td class="font-mono text-xs break-all">{{ backup.name }}<br><span class="opacity-70">sha256 {{ backup.sha256 }}</span></td>
+        <td class="whitespace-nowrap">{{ backup.size|filesize }}</td>
+        <td>
+          {% if backup.signed %}<span class="badge badge-soft badge-success">signed</span>{% endif %}
+          {% if backup.encrypted %}<span class="badge badge-soft badge-success">encrypted</span>{% else %}<span class="badge badge-soft badge-warning">not encrypted</span>{% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6">No backups yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% if next_before %}<p class="mt-4"><a class="btn btn-outline btn-sm" href="/backups?before={{ next_before }}">Older backups</a></p>{% endif %}
+{% endblock %}

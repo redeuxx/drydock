@@ -1,0 +1,75 @@
+{% macro role_badge(role) -%}
+{% set name = Role(role).name %}
+{% set tone = {"viewer": "badge-neutral", "operator": "badge-info", "admin": "badge-warning", "superadmin": "badge-error"}[name] %}
+<span class="badge badge-soft {{ tone }}">{{ name }}</span>
+{%- endmacro %}
+
+{% macro status_badge(disabled) -%}
+{% if disabled %}<span class="badge badge-soft badge-neutral">disabled</span>
+{%- else %}<span class="badge badge-soft badge-success">active</span>{% endif %}
+{%- endmacro %}
+
+{% macro outcome_badge(outcome) -%}
+{% set tone = {"success": "badge-success", "failure": "badge-error", "denied": "badge-warning"}.get(outcome, "badge-neutral") %}
+<span class="badge badge-soft {{ tone }}">{{ outcome }}</span>
+{%- endmacro %}
+
+{# context names what the button acts on, for screen readers, when the label repeats. #}
+{% macro submit(label, tone="btn-primary", context=None) -%}
+<button type="submit" class="btn {{ tone }}">
+  <span class="spinner" aria-hidden="true"></span>
+  {{ label }}{% if context %}<span class="sr-only">: {{ context }}</span>{% endif %}
+</button>
+{%- endmacro %}
+
+{% macro alerts(messages, tone="alert-error") -%}
+{% if messages %}
+<div role="alert" class="alert {{ tone }} alert-soft mb-4">
+  {% if messages|length == 1 %}
+  <span>{{ messages[0] }}</span>
+  {% else %}
+  <ul class="list-disc pl-5">
+    {% for message in messages %}<li>{{ message }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+</div>
+{% endif %}
+{%- endmacro %}
+
+{% macro host_status_badge(status) -%}
+{% set label, tone = {
+  "local": ("local", "badge-info"),
+  "connecting": ("connecting", "badge-neutral"),
+  "connected": ("connected", "badge-success"),
+  "disconnected": ("disconnected", "badge-warning"),
+  "hostkey_mismatch": ("host key mismatch", "badge-error"),
+  "error": ("error", "badge-error"),
+  "disabled": ("disabled", "badge-neutral"),
+}.get(status.state, (status.state, "badge-neutral")) %}
+<span class="badge badge-soft {{ tone }}">{{ label }}</span>
+{%- endmacro %}
+
+{% macro run_status_badge(status) -%}
+{% set tone = {
+  "queued": "badge-neutral",
+  "verifying": "badge-info",
+  "awaiting_confirmation": "badge-warning",
+  "running": "badge-info",
+  "done": "badge-success",
+  "failed": "badge-error",
+  "cancelled": "badge-warning",
+  "interrupted": "badge-warning",
+}.get(status, "badge-neutral") %}
+<span class="badge badge-soft {{ tone }}">{{ status|replace("_", " ") }}</span>
+{%- endmacro %}
+
+{% macro when(value) -%}
+{{ value.strftime("%Y-%m-%d %H:%M:%S") if value else "" }}
+{%- endmacro %}
+
+{# Polls for the next log lines. The answer's #log-chunk replaces this element: its text
+   lands in the log and a new poller follows it, until the run ends (see routes/runs.py).
+   frontend/app.ts keeps the log scrolled to the bottom only if the reader was there. #}
+{% macro log_poller(run_id, offset, csp_nonce) -%}
+<span id="log-poller" hx-get="/runs/{{ run_id }}/log?offset={{ offset }}" hx-trigger="every 2s" hx-target="this" hx-select="#log-chunk" hx-swap="outerHTML strip:true ignoreTitle:true" hx-nonce="{{ csp_nonce }}"></span>
+{%- endmacro %}

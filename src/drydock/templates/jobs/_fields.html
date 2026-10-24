@@ -1,0 +1,134 @@
+{# Job settings, shared by the add form and the job page. #}
+{% macro job_fields(form, prefix, hosts, targets, scope_labels, mode_labels, target_labels, available_hooks, live_warning, retention_labels, default_tz, csp_nonce, notification_targets) -%}
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-name">Name</label>
+  <input id="{{ prefix }}-name" class="input w-full" name="name" value="{{ form.name }}" autocomplete="off" required maxlength="64">
+</div>
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-host">Host</label>
+  <select id="{{ prefix }}-host" class="select w-full" name="host_id" required>
+    <option value="">Choose a host</option>
+    {% for host in hosts %}
+    <option value="{{ host.id }}"{% if form.host_id == host.id|string %} selected{% endif %}>{{ host.name }}</option>
+    {% endfor %}
+  </select>
+</div>
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-target-type">Back up</label>
+  <select id="{{ prefix }}-target-type" class="select w-full" name="target_type">
+    {% for value, label in target_labels.items() %}
+    <option value="{{ value }}"{% if form.target_type == value %} selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+</div>
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-target">Container or Compose project</label>
+  <input id="{{ prefix }}-target" class="input w-full font-mono" name="target" value="{{ form.target }}" autocomplete="off" required maxlength="128" aria-describedby="{{ prefix }}-target-hint">
+  <p id="{{ prefix }}-target-hint" class="label whitespace-normal">A container's name or ID, or for a stack the project name docker compose ls shows.</p>
+</div>
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-storage">Storage</label>
+  <select id="{{ prefix }}-storage" class="select w-full" name="storage_target_id" required>
+    <option value="">Choose a storage target</option>
+    {% for target in targets %}
+    <option value="{{ target.id }}"{% if form.storage_target_id == target.id|string %} selected{% endif %}>{{ target.name }}</option>
+    {% endfor %}
+  </select>
+</div>
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-scope">Scope</label>
+  <select id="{{ prefix }}-scope" class="select w-full" name="scope">
+    {% for value, label in scope_labels.items() %}
+    <option value="{{ value }}"{% if form.scope == value %} selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+</div>
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-mode">Consistency</label>
+  <select id="{{ prefix }}-mode" class="select w-full" name="consistency_mode" aria-describedby="{{ prefix }}-mode-hint">
+    {% for value, label in mode_labels.items() %}
+    <option value="{{ value }}"{% if form.consistency_mode == value %} selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+  <p id="{{ prefix }}-mode-hint" role="note" class="label whitespace-normal{% if form.consistency_mode == 'live' %} alert alert-warning alert-soft{% endif %}">{{ live_warning }}</p>
+</div>
+<input type="hidden" name="schedule" value="1">
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-cron">Schedule (cron)</label>
+  <input id="{{ prefix }}-cron" class="input w-full font-mono" name="cron" value="{{ form.cron }}" autocomplete="off" maxlength="100" placeholder="0 3 * * 0" aria-describedby="{{ prefix }}-cron-hint {{ prefix }}-cron-preview">
+  <p id="{{ prefix }}-cron-hint" class="label whitespace-normal">Five fields: minute, hour, day of month, month, day of week. 0 3 * * 0 runs on Sundays at 03:00. Day of week 0 and 7 are Sunday (sun to sat also work); restrict the day of the month or the day of the week, not both. Leave empty to start the job only by hand.</p>
+  <label class="label text-sm" for="{{ prefix }}-timezone">Time zone</label>
+  <input id="{{ prefix }}-timezone" class="input w-full font-mono" name="timezone" value="{{ form.timezone }}" autocomplete="off" maxlength="64" placeholder="{{ default_tz }}" aria-describedby="{{ prefix }}-timezone-hint">
+  <p id="{{ prefix }}-timezone-hint" class="label whitespace-normal">A name such as Europe/Berlin. Empty: drydock's time zone ({{ default_tz }}).</p>
+  <div id="{{ prefix }}-cron-preview" class="text-sm" aria-live="polite" aria-busy="true" hx-get="/jobs/cron-preview" hx-trigger="load, input changed delay:400ms from:#{{ prefix }}-cron, input changed delay:400ms from:#{{ prefix }}-timezone" hx-include="#{{ prefix }}-cron, #{{ prefix }}-timezone" hx-target="this" hx-select="#cron-preview" hx-swap="innerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}"></div>
+</div>
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-pre-hooks">Run before</label>
+  <textarea id="{{ prefix }}-pre-hooks" class="textarea w-full font-mono" name="pre_hooks" rows="3" autocomplete="off" aria-describedby="{{ prefix }}-hooks-hint">{{ form.pre_hooks }}</textarea>
+</div>
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-post-hooks">Run after</label>
+  <textarea id="{{ prefix }}-post-hooks" class="textarea w-full font-mono" name="post_hooks" rows="3" autocomplete="off" aria-describedby="{{ prefix }}-hooks-hint">{{ form.post_hooks }}</textarea>
+  <p id="{{ prefix }}-hooks-hint" class="label whitespace-normal">Hook names, one per line, in the order they run. A hook runs only for the host and the container or Compose project a superadmin bound it to; for a container job its container must be written exactly as this job's target. Post-hooks run after the containers are running again, even when the backup or a pre-hook failed, so they must be safe to run when the pre-hooks did not all finish. Hook output is shown to every role that can see runs when the hook logs its output.</p>
+  {% if available_hooks %}
+  <p class="label">Hooks this job can run:</p>
+  <ul class="text-sm">
+    {% for hook in available_hooks %}
+    <li><span class="font-mono">{{ hook.name }}</span> <span class="opacity-70">in {{ hook.container }}</span></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+<div class="fieldset">
+  <label class="fieldset-legend" for="{{ prefix }}-retention">Retention</label>
+  <select id="{{ prefix }}-retention" class="select w-full" name="retention_mode" aria-describedby="{{ prefix }}-retention-hint">
+    {% for value, label in retention_labels.items() %}
+    <option value="{{ value }}"{% if form.retention_mode == value %} selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+  <p id="{{ prefix }}-retention-hint" class="label whitespace-normal">After each successful backup drydock deletes this job's older archives in its storage that the policy does not keep. Only the numbers for the chosen policy apply. The newest backup always stays, and archives of other jobs are never touched. Daily, weekly, monthly and yearly keep the newest backup of each of that many recent days, ISO weeks, months and years (in the job's time zone) that have one.</p>
+  <div class="grid grid-cols-2 gap-x-4 sm:grid-cols-3">
+    {% for field, label in (("keep_last", "Newest backups"), ("max_age_days", "Days"), ("daily", "Daily"), ("weekly", "Weekly"), ("monthly", "Monthly"), ("yearly", "Yearly")) %}
+    <div>
+      <label class="label text-sm" for="{{ prefix }}-{{ field }}">{{ label }}</label>
+      <input id="{{ prefix }}-{{ field }}" class="input w-full" type="number" name="{{ field }}" value="{{ form[field] }}" min="0" max="36500" step="1">
+    </div>
+    {% endfor %}
+  </div>
+</div>
+<input type="hidden" name="notifications" value="1">
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Notifications</legend>
+  {% if notification_targets %}
+  <table class="table table-sm w-auto">
+    <thead><tr><th scope="col">Target</th><th scope="col">On success</th><th scope="col">On failure</th></tr></thead>
+    <tbody>
+      {% for target in notification_targets %}
+      <tr>
+        <th scope="row" class="font-normal">{{ target.name }}{% if not target.enabled %} <span class="opacity-70">(disabled)</span>{% endif %}</th>
+        <td><input type="checkbox" class="checkbox checkbox-sm" name="notify_success" value="{{ target.id }}" aria-label="Notify {{ target.name }} on success"{% if target.id|string in form.notify_success %} checked{% endif %}></td>
+        <td><input type="checkbox" class="checkbox checkbox-sm" name="notify_failure" value="{{ target.id }}" aria-label="Notify {{ target.name }} on failure"{% if target.id|string in form.notify_failure %} checked{% endif %}></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="label whitespace-normal">Failure includes runs that were cancelled or interrupted by a restart of drydock.</p>
+  {% else %}
+  <p class="label whitespace-normal">No notification targets yet. An admin adds them under Notifications.</p>
+  {% endif %}
+</fieldset>
+<label class="label mt-2 gap-2 whitespace-normal">
+  <input type="checkbox" class="checkbox checkbox-sm" name="encrypted" value="1"{% if form.encrypted %} checked{% endif %} aria-describedby="{{ prefix }}-encrypted-hint">
+  Encrypt archives
+</label>
+<p id="{{ prefix }}-encrypted-hint" class="label whitespace-normal">Archives hold the container's environment values and Compose .env files, which often contain passwords. Keep this on unless the storage itself is encrypted and private.</p>
+<label class="label mt-2 gap-2 whitespace-normal">
+  <input type="checkbox" class="checkbox checkbox-sm" name="images_reference_only_if_pullable" value="1"{% if form.images_reference_only_if_pullable %} checked{% endif %} aria-describedby="{{ prefix }}-images-hint">
+  With scope "Everything", store images the registry still serves by reference only
+</label>
+<p id="{{ prefix }}-images-hint" class="label whitespace-normal">Saves space, but a restore then has to pull the image. Drydock asks the image's registry to confirm its exact digest at backup time; locally built images, private registries drydock cannot read, and any lookup error mean the image is saved in full. The run log says which images were saved.</p>
+<label class="label mt-2 gap-2">
+  <input type="checkbox" class="checkbox checkbox-sm" name="enabled" value="1"{% if form.enabled %} checked{% endif %}>
+  Enabled
+</label>
+{%- endmacro %}

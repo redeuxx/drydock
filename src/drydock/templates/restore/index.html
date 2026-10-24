@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% from "_macros.html" import alerts, run_status_badge, when %}
+{% block title %}Restore{% endblock %}
+{% block content %}
+<h1 class="mb-4 text-3xl font-bold">Restore</h1>
+{{ alerts(errors) }}
+<p class="mb-4">Restore a container, its data or its images from an archive in storage, onto any host. Drydock verifies the whole archive before it plans anything, and nothing on the host changes until you confirm the plan.</p>
+
+<section class="card mb-4 bg-base-100 shadow-sm" aria-labelledby="sources-heading">
+  <div class="card-body">
+    <h2 id="sources-heading" class="card-title">1. Choose the storage</h2>
+    {% if targets %}
+    <div class="overflow-x-auto">
+      <table class="table table-sm">
+        <thead><tr><th scope="col">Storage</th><th scope="col">Kind</th><th scope="col"><span class="sr-only">Action</span></th></tr></thead>
+        <tbody>
+          {% for target in targets %}
+          <tr>
+            <td>{{ target.name }}{% if not target.enabled %} <span class="badge badge-soft badge-neutral">disabled</span>{% endif %}</td>
+            <td>{{ kind_labels.get(target.kind, target.kind) }}</td>
+            <td>{% if target.kind == "local" %}<a class="link" href="/restore/storage/{{ target.id }}">List archives<span class="sr-only"> in {{ target.name }}</span></a>{% else %}<span class="text-sm opacity-70">Remote restores arrive in a later release</span>{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="text-sm opacity-70">No storage yet. <a class="link" href="/storage/new">Add storage</a> first.</p>
+    {% endif %}
+  </div>
+</section>
+
+<section class="card bg-base-100 shadow-sm" aria-labelledby="restores-heading">
+  <div class="card-body">
+    <h2 id="restores-heading" class="card-title">Recent restores</h2>
+    {% if runs %}
+    <div class="overflow-x-auto">
+      <table class="table table-sm">
+        <thead><tr><th scope="col">Run</th><th scope="col">Archive</th><th scope="col">Status</th><th scope="col">Started by</th><th scope="col">Created (UTC)</th></tr></thead>
+        <tbody>
+          {% for run in runs %}
+          <tr>
+            <td><a class="link" href="/runs/{{ run.id }}">#{{ run.id }}</a></td>
+            <td class="font-mono text-xs break-all">
+              {%- if run.status in ("verifying", "awaiting_confirmation") %}<a class="link" href="/restore/runs/{{ run.id }}/plan">{{ run.archive_name }}</a>
+              {%- else %}{{ run.archive_name }}{% endif -%}
+            </td>
+            <td>{{ run_status_badge(run.status) }}</td>
+            <td>{{ run.triggered_by or "" }}</td>
+            <td class="whitespace-nowrap">{{ when(run.created_at) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="text-sm opacity-70">No restores yet.</p>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,13 @@
+{# Pages pass either errors (a list) or error (one message or None). #}
+{% set messages = errors if errors is defined else ([error] if error else []) %}
+{% if messages %}
+<div role="alert" class="alert alert-error alert-soft mb-4">
+  {% if messages|length == 1 %}
+  <span>{{ messages[0] }}</span>
+  {% else %}
+  <ul class="list-disc pl-5">
+    {% for message in messages %}<li>{{ message }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+</div>
+{% endif %}

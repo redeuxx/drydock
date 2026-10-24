@@ -1,0 +1,386 @@
+"""Cron schedules for jobs: APScheduler 3 (AsyncIOScheduler, MemoryJobStore) on the event loop.
+
+A job with a cron expression and enabled runs on it, in its own time zone (jobs.timezone,
+or drydock's TZ when unset). The schedule lives only in memory: it is built from the jobs
+table at startup and rebuilt after every job create, edit or delete, and only the process
+holding the data directory lock starts it (main.lifespan). Each fire submits a run through
+the dispatcher, which already keeps a job to one queued or running run and runs that touch
+the same containers one after another, so a scheduled run never overlaps a manual one.
+
+Expressions are standard five-field crontab. APScheduler 3 numbers the days of the week
+from Monday = 0, while cron uses Sunday = 0 (and 7), so the day-of-week field is rewritten
+as day names first (normalize). Cron runs a job when either a restricted day of the month
+or a restricted day of the week matches, APScheduler only when both do, so an expression
+restricting both is refused rather than run on fewer days than the user expects.
+
+Lateness: every job has coalesce, max_instances=1 and misfire_grace_time=MISFIRE_GRACE,
+so a fire the process was too busy for runs once if it is less than an hour late. For the
+time drydock was not running, start() compares each job's last fire (jobs.last_fired_at,
+or its last edit) with its fire times since: a fire missed less than MISFIRE_GRACE ago runs
+once, an older one is logged and audited as missed and does not run.
+
+System jobs: every MAINTENANCE_EVERY (first MAINTENANCE_FIRST after start) the scheduler
+reaps orphaned helpers on every reachable host (helpers in use are skipped), cleans the
+staging directory (Dispatcher.clean_staging_now) and prunes finished runs older than
+DRYDOCK_RUN_HISTORY_DAYS with their log files (Dispatcher.prune_history). Each step's
+failure is logged and does not stop the others.
+"""
+
+import asyncio
+import contextlib
+import functools
+import logging
+import re
+import zoneinfo
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+from apscheduler.jobstores.memory import MemoryJobStore
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
+from sqlalchemy import select
+from sqlalchemy.orm import Session, sessionmaker
+
+from drydock import audit
+from drydock.config import Settings
+from drydock.hosts.client import run_blocking
+from drydock.hosts.manager import HostManager
+from drydock.jobs.dispatcher import Dispatcher, DispatchError
+from drydock.models import Job, utcnow
+
+log = logging.getLogger("drydock.scheduler")
+
+MISFIRE_GRACE = 3600  # seconds
+MAINTENANCE_ID = "system:maintenance"  # job schedules use their job ID, digits only
+MAINTENANCE_EVERY = timedelta(hours=1)
+MAINTENANCE_FIRST = timedelta(minutes=5)
+TRIGGERED_BY = "the schedule"  # has a space, so no username can look like it
+CRON_MAX = 100
+CRON_RE = re.compile(r"[0-9A-Za-z*/,\- ]{1,100}")
+DAYS = ("sun", "mon", "tue", "wed", "thu", "fri", "sat")
+CRON_FIELDS = "Enter five cron fields: minute, hour, day of month, month and day of week."
+BOTH_DAYS = (
+    "Restrict the day of the month or the day of the week, not both: cron would run on "
+    "either day, drydock only on days that match both."
+)
+BAD_WEEKDAY = "The day of the week must use 0 to 7 (0 and 7 are Sunday) or sun to sat."
+NEVER = "This schedule never runs: no date matches it."
+# How far ahead a schedule must fire: a leap-day schedule fires at least every 8 years.
+# Every search for a fire time is bounded by an end date, since APScheduler would otherwise
+# search up to the year 9999 for a date that never comes (0 0 31 2 *), on the event loop.
+HORIZON = timedelta(days=366 * 9)
+
+
+class CronError(ValueError):
+    """A cron expression or time zone is not valid. The message is safe to show."""
+
+
+# EXPRESSIONS
+
+
+def normalize(expr: str) -> str:
+    """The expression with its day-of-week field as day names. Raises CronError."""
+    fields = expr.split()
+    if len(fields) != 5 or not CRON_RE.fullmatch(" ".join(fields)):
+        raise CronError(CRON_FIELDS)
+    minute, hour, dom, month, dow = fields
+    if dow == "*":
+        return " ".join(fields)
+    if dom != "*":
+        raise CronError(BOTH_DAYS)
+    days = weekdays(dow)
+    return " ".join((minute, hour, dom, month, ",".join(DAYS[d] for d in sorted(days))))
+
+
+def weekdays(field: str) -> set[int]:
+    """The days (0 = Sunday) a cron day-of-week field names: lists, ranges, steps, 0 to 7
+    and sun to sat."""
+    days: set[int] = set()
+    for part in field.lower().split(","):
+        base, slash, step = part.partition("/")
+        if slash and not (step.isdigit() and 1 <= int(step) <= 7):
+            raise CronError(BAD_WEEKDAY)
+        if base == "*":
+            low, high = 0, 6
+        elif "-" in base:
+            first, _, last = base.partition("-")
+            low, high = weekday(first), weekday(last)
+        elif slash:
+            raise CronError(BAD_WEEKDAY)  # "1/2": cron implementations disagree on it
+        else:
+            low = high = weekday(base)
+        if low > high:
+            raise CronError(BAD_WEEKDAY)
+        days.update(day % 7 for day in range(low, high + 1, int(step or 1)))
+    return days
+
+
+def weekday(value: str) -> int:
+    if value in DAYS:
+        return DAYS.index(value)
+    if len(value) == 1 and value in "01234567":
+        return int(value)
+    raise CronError(BAD_WEEKDAY)
+
+
+@functools.cache
+def zones() -> frozenset[str]:
+    return frozenset(zoneinfo.available_timezones())
+
+
+def zone(name: str) -> zoneinfo.ZoneInfo:
+    # Checked against the list, never handed to ZoneInfo as a path.
+    if name not in zones():
+        raise CronError(f"Unknown time zone {name[:64]}. Use a name such as Europe/Berlin.")
+    return zoneinfo.ZoneInfo(name)
+
+
+def trigger(expr: str, tz: str, *, until: datetime | None = None) -> CronTrigger:
+    """The trigger for a crontab expression in a time zone. Raises CronError.
+
+    until bounds every search of the trigger: pass it everywhere except for the trigger the
+    scheduler runs, whose schedules are checked to fire within HORIZON (checked)."""
+    tzinfo = zone(tz)
+    try:
+        cron = CronTrigger.from_crontab(normalize(expr), timezone=tzinfo)
+    except ValueError as exc:
+        if isinstance(exc, CronError):
+            raise
+        raise CronError(f"The cron expression is not valid: {exc}") from None
+    cron.end_date = until
+    return cron
+
+
+def checked(expr: str, tz: str, now: datetime) -> None:
+    """Raises CronError unless the schedule is valid and fires within HORIZON of now."""
+    if trigger(expr, tz, until=now + HORIZON).get_next_fire_time(None, now) is None:
+        raise CronError(NEVER)
+
+
+def next_fires(cron: CronTrigger, now: datetime, count: int) -> list[datetime]:
+    """The next count fire times after now, exactly as the scheduler computes them. Give it a
+    trigger bounded with until."""
+    fires: list[datetime] = []
+    fire = None
+    while len(fires) < count:
+        fire = cron.get_next_fire_time(fire, fire or now)
+        if fire is None:
+            break
+        fires.append(fire)
+    return fires
+
+
+def first_fire(cron: CronTrigger, after: datetime, until: datetime) -> datetime | None:
+    """The first fire time later than after and not later than until."""
+    fire = cron.get_next_fire_time(None, after + timedelta(microseconds=1))
+    return fire if fire is not None and fire <= until else None
+
+
+# THE SCHEDULER
+
+
+@dataclass(frozen=True)
+class Spec:
+    job_id: int
+    cron: str
+    tz: str
+    since: datetime  # its last fire, or its last edit: fires before it are not missed
+
+
+class Scheduler:
+    def __init__(
+        self,
+        settings: Settings,
+        sessions: sessionmaker[Session],
+        dispatcher: Dispatcher,
+        hosts: HostManager,
+    ) -> None:
+        self._settings = settings
+        self._sessions = sessions
+        self._dispatcher = dispatcher
+        self._hosts = hosts
+        self._scheduler = AsyncIOScheduler(
+            jobstores={"default": MemoryJobStore()},
+            job_defaults={
+                "coalesce": True,
+                "max_instances": 1,
+                "misfire_grace_time": MISFIRE_GRACE,
+            },
+            timezone=zoneinfo.ZoneInfo(settings.tz),
+        )
+        self._specs: dict[int, tuple[str, str]] = {}
+        self._reload = asyncio.Lock()  # rebuilds apply in the order they load
+        self._maintaining: asyncio.Task[Any] | None = None
+        self.running = False
+
+    async def start(self) -> None:
+        """Catches up on fires missed while drydock was down, then starts. Call only in the
+        process holding the data directory lock, after the dispatcher started.
+
+        Catch-up covers the fires up to now and the scheduler the ones after it, so a fire
+        while catch-up runs is neither lost nor run twice. A job whose catch-up fails is
+        logged and still scheduled."""
+        now = utcnow()
+        specs = await run_blocking(self._load, now)
+        for spec in specs:
+            try:
+                await self._catch_up(spec, now)
+            except Exception:
+                log.exception("Catch-up of job %d failed", spec.job_id)
+        self._apply(specs, now)
+        self._scheduler.add_job(
+            self._maintain,
+            IntervalTrigger(seconds=MAINTENANCE_EVERY.total_seconds(), timezone=UTC),
+            id=MAINTENANCE_ID,
+            name="maintenance",
+            next_run_time=now + MAINTENANCE_FIRST,
+        )
+        self._scheduler.start()
+        self.running = True
+
+    async def rebuild(self) -> None:
+        """Reloads the schedules from the jobs table. A no-op until start(). The edit that
+        asked for it is already saved, so a failure is logged, not raised."""
+        if not self.running:
+            return
+        async with self._reload:
+            try:
+                self._apply(await run_blocking(self._load, utcnow()))
+            except Exception:
+                log.exception("Could not reload the schedules")
+
+    async def shutdown(self) -> None:
+        """Stops the schedules, and maintenance in progress, before the dispatcher closes
+        and the data directory lock is released."""
+        if self.running:
+            self.running = False
+            self._scheduler.shutdown(wait=False)
+        task = self._maintaining
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    def next_run_time(self, job_id: int) -> datetime | None:
+        job = self._scheduler.get_job(str(job_id)) if self.running else None
+        return job.next_run_time if job is not None else None
+
+    def _apply(self, specs: list[Spec], now: datetime | None = None) -> None:
+        """Adds, replaces and removes scheduler jobs. An unchanged one keeps its next run.
+        With now (at start), each first fire is the first one after now."""
+        wanted = {spec.job_id: (spec.cron, spec.tz) for spec in specs}
+        for job in self._scheduler.get_jobs():
+            if job.id.isdigit() and int(job.id) not in wanted:
+                job.remove()
+                self._specs.pop(int(job.id), None)
+        for job_id, (cron, tz) in wanted.items():
+            if self._specs.get(job_id) == (cron, tz):
+                continue
+            schedule = trigger(cron, tz)
+            first = {}
+            if now is not None:
+                fire = schedule.get_next_fire_time(None, now + timedelta(microseconds=1))
+                if fire is not None:
+                    first["next_run_time"] = fire
+            self._scheduler.add_job(
+                self._fire,
+                schedule,
+                args=[job_id],
+                id=str(job_id),
+                name=f"job {job_id}",
+                replace_existing=True,
+                **first,
+            )
+            self._specs[job_id] = (cron, tz)
+
+    async def _fire(self, job_id: int) -> None:
+        """Submits a scheduled run. The run row and jobs.last_fired_at are written in one
+        transaction, so a fire is never recorded without its run; a refused fire (the job
+        already runs, or was disabled) still counts as handled."""
+        try:
+            run_id = await self._dispatcher.submit(job_id, TRIGGERED_BY, fired=True)
+        except DispatchError as exc:
+            await run_blocking(self._mark_fired, job_id, None)
+            log.warning("Scheduled run of job %d did not start: %s", job_id, exc)
+            return
+        log.info("Scheduled run %d of job %d", run_id, job_id)
+
+    async def _maintain(self) -> None:
+        self._maintaining = asyncio.current_task()
+        days = self._settings.run_history_days
+        steps = (
+            ("helper reaper", self._hosts.reap_all),
+            ("staging cleanup", self._dispatcher.clean_staging_now),
+            ("run history pruning", lambda: run_blocking(self._dispatcher.prune_history, days)),
+        )
+        for name, step in steps:
+            if not self.running:
+                return  # shutting down
+            try:
+                result = await step()
+            except Exception:
+                log.exception("The scheduled %s failed", name)
+                continue
+            if isinstance(result, int) and result:
+                log.info("Pruned %d run(s) older than %d days", result, days)
+
+    async def _catch_up(self, spec: Spec, now: datetime) -> None:
+        """Runs the latest fire missed less than MISFIRE_GRACE ago, or else logs and audits
+        the first fire missed since the job's last fire or edit."""
+        cron = trigger(spec.cron, spec.tz, until=now)
+        since = min(spec.since, now)  # a clock that went back must not hide misses
+        grace = now - timedelta(seconds=MISFIRE_GRACE)
+        recent = first_fire(cron, max(since, grace), now)
+        if recent is not None:
+            log.warning("Job %d missed its run at %s; starting it now", spec.job_id, recent)
+            await self._fire(spec.job_id)
+            return
+        missed = first_fire(cron, since, now)
+        if missed is not None:
+            log.warning(
+                "Job %d missed its run at %s while drydock was stopped; more than %d seconds "
+                "ago, so it does not run now",
+                spec.job_id,
+                missed,
+                MISFIRE_GRACE,
+            )
+            await run_blocking(self._mark_fired, spec.job_id, missed)
+
+    # DATABASE
+
+    def _load(self, now: datetime) -> list[Spec]:
+        """The enabled jobs with a valid schedule. One that is not valid (edited by hand) or
+        never fires is logged and left out."""
+        with self._sessions() as db:
+            rows = db.scalars(select(Job).where(Job.enabled, Job.cron.is_not(None))).all()
+        specs = []
+        for job in rows:
+            tz = job.timezone or self._settings.tz
+            try:
+                checked(job.cron or "", tz, now)
+            except CronError as exc:
+                log.error("Job %d has no valid schedule, so it does not run: %s", job.id, exc)
+                continue
+            since = max(job.updated_at, job.last_fired_at or job.updated_at)
+            specs.append(Spec(job.id, job.cron or "", tz, since))
+        return specs
+
+    def _mark_fired(self, job_id: int, missed: datetime | None) -> None:
+        """Records a fire (or a missed fire found at startup, audited)."""
+        with self._sessions() as db, db.begin():
+            job = db.get(Job, job_id)
+            if job is None:
+                return
+            job.last_fired_at = utcnow()
+            if missed is not None:
+                details: dict[str, Any] = {"name": job.name, "missed": missed.isoformat()}
+                audit.record(
+                    db,
+                    actor=None,
+                    action="job.schedule_missed",
+                    target=f"job:{job.id}",
+                    outcome="failure",
+                    details=details,
+                )

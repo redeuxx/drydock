@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+node_modules/
+
+# BUILD OUTPUT (produced by the Node build stage)
+src/drydock/static/css/
+src/drydock/static/js/
+src/drydock/static/vendor/
+
+# LOCAL DATA AND SECRETS
+data/
+secrets/
+*.db
+*.db-wal
+*.db-shm

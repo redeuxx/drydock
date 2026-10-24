@@ -1,0 +1,31 @@
+{
+  "name": "drydock-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Client code and stylesheet build for drydock. Only htmx.org ships (vendored into the image); everything else is build tooling.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=24.21.0"
+  },
+  "scripts": {
+    "build": "npm run build:js && npm run build:css && npm run build:vendor",
+    "build:js": "tsc -p tsconfig.json",
+    "build:css": "tailwindcss -i frontend/app.css -o src/drydock/static/css/app.css --minify",
+    "build:vendor": "node tools/vendor.ts",
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json",
+    "watch:js": "tsc -p tsconfig.json --watch",
+    "watch:css": "tailwindcss -i frontend/app.css -o src/drydock/static/css/app.css --watch"
+  },
+  "dependencies": {
+    "htmx.org": "4.0.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "4.3.3",
+    "@types/node": "24.19.2",
+    "daisyui": "5.7.48",
+    "playwright": "1.64.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "7.0.2"
+  }
+}

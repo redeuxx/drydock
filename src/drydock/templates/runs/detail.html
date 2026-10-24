@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% from "_macros.html" import alerts, log_poller, run_status_badge, submit, when %}
+{% block title %}Run #{{ run.id }} ({{ run.status }}){% endblock %}
+{% block content %}
+{% set restore = run.kind == "restore" %}
+{% set awaiting = restore and run.status == "awaiting_confirmation" %}
+<div class="mb-4 flex flex-wrap items-center gap-3">
+  <h1 class="text-3xl font-bold">Run #{{ run.id }}</h1>
+  {{ run_status_badge(run.status) }}
+  {% if (active or awaiting) and auth.user.role >= (Role.admin if restore else Role.operator) %}
+  {% if awaiting %}{% set question = "Discard this restore? Its verified data is removed." %}
+  {% elif restore %}{% set question = "Cancel this restore? Drydock rolls back what it changed so far." %}
+  {% else %}{% set question = "Cancel this run? Drydock starts any container it stopped again." %}{% endif %}
+  <form method="post" action="/runs/{{ run.id }}/cancel" hx-post="/runs/{{ run.id }}/cancel" hx-nonce="{{ csp_nonce }}" hx-confirm="{{ question }}" class="ml-auto">
+    <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+    {{ submit("Discard" if awaiting else "Cancel run", "btn-warning") }}
+  </form>
+  {% endif %}
+</div>
+{% if restore %}
+<p class="mb-4">Restore of
+  {%- if awaiting and auth.user.role >= Role.admin %} <a class="link font-mono text-sm break-all" href="/restore/runs/{{ run.id }}/plan">{{ run.archive_name }}</a>
+  {%- else %} <span class="font-mono text-sm break-all">{{ run.archive_name }}</span>{% endif %}
+</p>
+{% endif %}
+{% if restore_warning %}
+<div role="alert" class="alert alert-warning alert-soft mb-4"><span>{{ restore_warning }}</span></div>
+{% endif %}
+{{ alerts(errors) }}
+{{ alerts([run.error] if run.error else []) }}
+<section class="card mb-4 bg-base-100 shadow-sm" aria-labelledby="details-heading">
+  <div class="card-body">
+    <h2 id="details-heading" class="card-title">Details</h2>
+    <dl class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
+      {% if restore %}
+      {% set summary = restore_doc.get("summary") if restore_doc.get("summary") is mapping else {} %}
+      {% if summary %}
+      <dt class="opacity-70">Mode</dt><dd>{{ summary.get("mode", "") }}</dd>
+      <dt class="opacity-70">Host</dt><dd>{{ summary.get("host_name", "") }}</dd>
+      {% endif %}
+      <dt class="opacity-70">Signature</dt><dd>{{ "signed by this drydock" if restore_doc.get("signed") is sameas true else "not signed by this drydock" if restore_doc.get("signed") is sameas false else "not verified yet" }}</dd>
+      {% else %}
+      <dt class="opacity-70">Job</dt><dd>{% if job %}<a class="link" href="/jobs/{{ job.id }}">{{ job.name }}</a>{% else %}deleted job{% endif %}</dd>
+      {% endif %}
+      <dt class="opacity-70">Triggered by</dt><dd>{{ run.triggered_by or "" }}</dd>
+      <dt class="opacity-70">Created</dt><dd>{{ when(run.created_at) }} UTC</dd>
+      <dt class="opacity-70">Started</dt><dd>{{ (when(run.started_at) ~ " UTC") if run.started_at else "not yet" }}</dd>
+      <dt class="opacity-70">Finished</dt><dd>{{ (when(run.finished_at) ~ " UTC") if run.finished_at else "not yet" }}</dd>
+      {% if run.archive_name %}
+      <dt class="opacity-70">Archive</dt><dd class="font-mono text-xs break-all">{{ run.archive_name }}</dd>
+      <dt class="opacity-70">Size</dt><dd>{{ run.size|filesize }}</dd>
+      {% if run.sha256 %}<dt class="opacity-70">SHA-256</dt><dd class="font-mono text-xs break-all">{{ run.sha256 }}</dd>{% endif %}
+      {% endif %}
+    </dl>
+  </div>
+</section>
+<section class="card bg-base-100 shadow-sm" aria-labelledby="log-heading">
+  <div class="card-body">
+    <h2 id="log-heading" class="card-title">Log{% if active %} <span class="text-sm font-normal opacity-70">(updates every 2 seconds)</span>{% endif %}</h2>
+    {% if truncated %}<p class="text-sm opacity-70">The log is longer than a megabyte; only its last megabyte is shown.</p>{% endif %}
+    <pre id="run-log" role="log" class="max-h-[32rem] overflow-auto rounded-box bg-base-200 p-3 text-xs whitespace-pre-wrap break-all" tabindex="0" aria-labelledby="log-heading">{{ log_text }}{% if active %}{{ log_poller(run.id, offset, csp_nonce) }}{% endif %}</pre>
+  </div>
+</section>
+{% endblock %}

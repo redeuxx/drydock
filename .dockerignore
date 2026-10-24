@@ -1,0 +1,16 @@
+.git
+.venv
+.pytest_cache
+.ruff_cache
+**/__pycache__
+node_modules
+data
+secrets
+src/drydock/static/js
+src/drydock/static/vendor
+*.db
+*.db-wal
+*.db-shm
+src/drydock/static/css
+.github
+compose*.yaml

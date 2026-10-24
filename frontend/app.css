@@ -1,0 +1,42 @@
+/* DRYDOCK STYLESHEET
+   Compiled by the Tailwind CLI into src/drydock/static/css/app.css, the only stylesheet
+   the app serves. Automatic source detection is off; only the paths below are scanned. */
+
+@import "tailwindcss" source(none);
+@source "../src/drydock/templates";
+@source "./";
+
+/* Components that embed data: URLs (masks, noise, tooltip arrows) are excluded, because
+   the CSP has no img-src data: and they would raise securitypolicyviolation events. */
+@plugin "daisyui" {
+  themes: light --default, dark --prefersdark;
+  exclude: chat, loading, mask, mockup, tooltip, svg;
+}
+
+/* HTMX REQUEST INDICATORS
+   htmx 4 normally injects these rules as a constructed stylesheet. The htmx-config meta
+   sets includeIndicatorCSS to false and the rules ship here instead. */
+@layer components {
+  .htmx-indicator {
+    opacity: 0;
+    visibility: hidden;
+  }
+
+  .htmx-request .htmx-indicator,
+  .htmx-request.htmx-indicator {
+    opacity: 1;
+    visibility: visible;
+    transition: opacity 200ms ease-in;
+  }
+
+  /* A CSS-only spinner; daisyUI's loading component uses a data: URL mask. It takes no
+     space until a request is in flight. */
+  .spinner {
+    @apply hidden size-4 animate-spin rounded-full border-2 border-current border-t-transparent;
+  }
+
+  .htmx-request .spinner,
+  .htmx-request.spinner {
+    @apply inline-block;
+  }
+}

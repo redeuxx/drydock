@@ -1,0 +1,220 @@
+# Tests run in Linux containers (the app needs fcntl and unix sockets).
+#
+# Ruff and pytest:
+#   docker compose -f compose.test.yaml run --rm tests
+#   docker compose -f compose.test.yaml run --rm tests uv run --no-sync pytest -k csrf
+#   docker compose -f compose.test.yaml down --volumes
+# The tests service runs as uid 10001 so permission tests behave as they do in the image.
+# It reaches the host's Docker daemon only through the same socket proxy as compose.yaml,
+# and a privileged docker:dind container running sshd stands in for a remote host. The
+# integration tests create (and remove) containers and volumes on the host daemon and pull
+# the helper image there.
+#
+# CSP smoke test against the real image, in headless Chromium:
+#   docker compose -f compose.test.yaml up --build --abort-on-container-exit --exit-code-from smoke app smoke
+#   docker compose -f compose.test.yaml down --volumes
+name: drydock-test
+
+services:
+  tests:
+    build:
+      context: .
+      # The age CLI for tests/test_age_spike.py (the encryption method chosen in Phase 1)
+      # and rclone for tests/test_rclone_rc.py, each checked against the SHA-256 pinned per
+      # architecture in the Dockerfile.
+      dockerfile_inline: |
+        FROM python:3.15.0-slim@sha256:ea4f1f290e071bf7d28199cfb3e09f5dbad31b50e9c32fd58f2f2d7be915f3ae AS age
+        ARG TARGETARCH
+        RUN set -eu; \
+            case "$$TARGETARCH" in \
+              amd64) sum=cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10 ;; \
+              arm64) sum=6b8dc4333c53a5a57c9e5834e3a48f92605d7154014cd07269ff3327db5d37f4 ;; \
+              *) echo "no pinned age release for $$TARGETARCH" >&2; exit 1 ;; \
+            esac; \
+            url="https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-$$TARGETARCH.tar.gz"; \
+            python -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], "/tmp/age.tgz")' "$$url"; \
+            echo "$$sum  /tmp/age.tgz" | sha256sum -c -; \
+            mkdir /opt/age; \
+            tar -xzf /tmp/age.tgz -C /opt/age --strip-components=1 age/age age/age-plugin-batchpass
+
+        FROM python:3.15.0-slim@sha256:ea4f1f290e071bf7d28199cfb3e09f5dbad31b50e9c32fd58f2f2d7be915f3ae AS rclone
+        ARG TARGETARCH
+        RUN set -eu; \
+            case "$$TARGETARCH" in \
+              amd64) sum=349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702 ;; \
+              arm64) sum=7e1e8d69654941b7b7df84ee74c5f7fb09cce7d5496947fb7bf16b55ff427d10 ;; \
+              *) echo "no pinned rclone release for $$TARGETARCH" >&2; exit 1 ;; \
+            esac; \
+            url="https://github.com/rclone/rclone/releases/download/v1.75.2/rclone-v1.75.2-linux-$$TARGETARCH.zip"; \
+            python -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], "/tmp/rclone.zip")' "$$url"; \
+            echo "$$sum  /tmp/rclone.zip" | sha256sum -c -; \
+            mkdir /opt/rclone; \
+            python -c 'import shutil, sys, zipfile; shutil.copyfileobj(zipfile.ZipFile("/tmp/rclone.zip").open(sys.argv[1]), open("/opt/rclone/rclone", "xb"))' "rclone-v1.75.2-linux-$$TARGETARCH/rclone"; \
+            chmod 0755 /opt/rclone/rclone
+
+        FROM python:3.15.0-slim@sha256:ea4f1f290e071bf7d28199cfb3e09f5dbad31b50e9c32fd58f2f2d7be915f3ae
+        COPY --from=ghcr.io/astral-sh/uv:0.13.0@sha256:cdc6093146eb3ff6a40107b38f008b789e050e77ad87865e381d9917da55a168 /uv /uvx /bin/
+        COPY --from=age /opt/age /opt/age
+        COPY --from=rclone /opt/rclone /opt/rclone
+        RUN groupadd -g 10001 drydock && useradd -u 10001 -g 10001 -M -d /nonexistent drydock \
+         && mkdir /venv /cache && chown 10001:10001 /venv /cache
+        ENV UV_PROJECT_ENVIRONMENT=/venv UV_CACHE_DIR=/cache/uv RUFF_CACHE_DIR=/cache/ruff \
+            UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never PYTHONDONTWRITEBYTECODE=1
+        USER 10001:10001
+        WORKDIR /src
+    volumes:
+      - .:/src
+      - venv:/venv
+      - cache:/cache
+    environment:
+      DRYDOCK_TEST_DOCKER_URL: tcp://socket-proxy:2375
+      DRYDOCK_TEST_SSH_HOST: sshhost
+      DRYDOCK_TEST_SSHHOST_PLAIN_URL: tcp://sshhost:2375
+      DRYDOCK_TEST_AGE_DIR: /opt/age
+      DRYDOCK_TEST_SMALL_DIR: /small
+    # A deliberately small disk for the full-disk tests in tests/test_runs_docker.py.
+    tmpfs:
+      - /small:size=160m,uid=10001,gid=10001,mode=0700
+    # default has internet access for uv sync; docker-proxy is the internal proxy network.
+    networks:
+      - default
+      - docker-proxy
+    depends_on:
+      socket-proxy:
+        condition: service_started
+      sshhost:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - >-
+        uv sync --locked
+        && uv run --no-sync ruff check .
+        && uv run --no-sync ruff format --check .
+        && uv run --no-sync pytest
+
+  # The production image with the same hardening as compose.yaml. State lives on a tmpfs.
+  app:
+    build: .
+    image: drydock:smoke
+    environment:
+      # Test-only key for a throwaway database. Never use it anywhere else.
+      DRYDOCK_SECRET_KEY: kXCyLC96TBpNdMHO8F9tLMDMAJBLH1WD3jHkPd5_grg=
+      DRYDOCK_BASE_URL: http://localhost:8000
+      DRYDOCK_LOCAL_DOCKER_URL: tcp://socket-proxy:2375
+      DRYDOCK_LOCAL_STORAGE_ROOTS: /backups
+    # The smoke test adds the local host, so the host pages render a real inventory, and
+    # backs up the smoke-target container into /backups.
+    networks:
+      - default
+      - docker-proxy
+    depends_on:
+      socket-proxy:
+        condition: service_started
+      smoke-target:
+        condition: service_completed_successfully
+    tmpfs:
+      - /data:uid=10001,gid=10001,mode=0700
+      - /run/drydock:uid=10001,gid=10001,mode=0700
+      - /backups:uid=10001,gid=10001,mode=0700
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  # Shares the app's network and PID namespaces: Chromium reaches it as http://localhost:8000
+  # (a secure context, as over the SSH tunnel), and the test can read PID 1's command line.
+  smoke:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM mcr.microsoft.com/playwright:v1.64.0-noble@sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f
+        WORKDIR /smoke
+        COPY package.json package-lock.json ./
+        RUN npm ci --ignore-scripts --no-audit --no-fund
+        COPY tests/smoke ./tests/smoke
+        USER pwuser
+        CMD ["node", "tests/smoke/smoke.ts"]
+    network_mode: service:app
+    pid: service:app
+    environment:
+      SMOKE_BASE_URL: http://localhost:8000
+      SMOKE_CHECK_PID1: "1"
+    depends_on:
+      app:
+        condition: service_healthy
+
+  # A container for the smoke test to back up. It writes 256 MiB into its volume, so the
+  # backup runs long enough for the run page to poll its log, and exits: the backup stops
+  # nothing (stop mode refuses running containers of drydock's own Compose project).
+  smoke-target:
+    image: docker.io/library/busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+    command: ["sh", "-c", "dd if=/dev/urandom of=/data/random bs=1M count=256 2>/dev/null"]
+    network_mode: none
+    restart: "no"
+    volumes:
+      - smoke-data:/data
+
+  # The production proxy configuration, unchanged.
+  socket-proxy:
+    extends:
+      file: compose.yaml
+      service: socket-proxy
+    restart: "no"
+
+  # Stand-in remote host: a Docker daemon reached over SSH as a non-root user in the docker
+  # group. The client key pair is generated in memory by the tests and authorized at test
+  # time; nothing here holds a private key except the host keys made at container start.
+  # Privileged because dockerd needs it; test only.
+  # socat also serves the same daemon unencrypted on port 2375 of the test network, so the
+  # throughput gate can compare the SSH tunnel with a plain stream to the same daemon.
+  # Never do this outside a throwaway test network.
+  sshhost:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM docker:29.9.0-dind@sha256:0b6d18a4a222e71c88be6034926b4f6cde2fc33c2218643d03ccfddc65995470
+        RUN apk add --no-cache openssh-server socat \
+         && adduser -D -s /bin/sh -G docker drydock \
+         && sed -i 's/^drydock:!/drydock:*/' /etc/shadow \
+         && install -d -o drydock -g docker -m 0700 /home/drydock/.ssh \
+         && printf '%s\n' \
+              'HostKey /etc/ssh/ssh_host_ed25519_key' \
+              'AuthenticationMethods publickey' \
+              'PasswordAuthentication no' \
+              'KbdInteractiveAuthentication no' \
+              'PermitRootLogin no' \
+              'AllowUsers drydock' \
+              'AllowStreamLocalForwarding local' \
+              'AllowTcpForwarding local' \
+              'AllowAgentForwarding no' \
+              'X11Forwarding no' \
+              'PermitTTY no' \
+              > /etc/ssh/sshd_config \
+         && printf '%s\n' '#!/bin/sh' 'set -e' 'ssh-keygen -A' '/usr/sbin/sshd' \
+              'socat TCP-LISTEN:2375,fork,reuseaddr UNIX-CONNECT:/var/run/docker.sock &' \
+              'exec dockerd-entrypoint.sh "$$@"' > /usr/local/bin/sshhost-entrypoint \
+         && chmod 0755 /usr/local/bin/sshhost-entrypoint
+        ENTRYPOINT ["sshhost-entrypoint"]
+        CMD ["dockerd", "--host=unix:///var/run/docker.sock"]
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    volumes:
+      - dind-data:/var/lib/docker
+    healthcheck:
+      test: ["CMD-SHELL", "docker info >/dev/null 2>&1 && nc -z 127.0.0.1 22 && nc -z 127.0.0.1 2375"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+
+networks:
+  docker-proxy:
+    internal: true
+
+volumes:
+  venv:
+  cache:
+  dind-data:
+  smoke-data:
