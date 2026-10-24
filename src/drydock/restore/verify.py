@@ -89,6 +89,8 @@ from drydock.storage.base import StorageBackend, StorageError, parse_name
 
 RESTORE_DIR_RE = re.compile(r"restore-\d{1,12}")
 HEAD_BYTES = 2 * 1024 * 1024
+FIRST_HEAD_BYTES = 64 * 1024  # what preview reads first
+TOO_LARGE = "the manifest is larger than the preview"
 MAX_INNER_ENTRIES = 10_000_000
 MAX_INNER_LINKS = 1_000_000
 MAX_LONG_NAME = 64 * 1024
@@ -1363,12 +1365,12 @@ def read_head_manifest(head: bytes) -> Preview:
         # Bounded whatever the compression ratio: at most one header and the manifest.
         plain = zstd.ZstdDecompressor().decompress(head, max_length=BLOCK + MAX_MANIFEST_BYTES)
         if len(plain) < BLOCK:
-            return Preview("unreadable", reason="the manifest is larger than the preview")
+            return Preview("unreadable", reason=TOO_LARGE)
         info = tarfile.TarInfo.frombuf(plain[:BLOCK], "utf-8", "surrogateescape")
         if not info.isreg() or info.name != MANIFEST_NAME or info.size > MAX_MANIFEST_BYTES:
             return Preview("unreadable", reason="manifest.json is not the first member")
         if len(plain) < BLOCK + info.size:
-            return Preview("unreadable", reason="the manifest is larger than the preview")
+            return Preview("unreadable", reason=TOO_LARGE)
         manifest = Manifest.model_validate_json(plain[BLOCK : BLOCK + info.size])
     except pydantic.ValidationError:
         return Preview("unreadable", reason="not a valid drydock manifest")
@@ -1378,10 +1380,16 @@ def read_head_manifest(head: bytes) -> Preview:
 
 
 def preview(storage: StorageBackend, name: str) -> Preview:
-    try:
-        head = storage.read_head(name, HEAD_BYTES)
-    except StorageError as exc:
-        return Preview("unreadable", reason=str(exc))
-    except OSError:
-        return Preview("unreadable", reason="the archive cannot be read")
-    return read_head_manifest(head)
+    """Reads FIRST_HEAD_BYTES, and HEAD_BYTES only for a manifest that does not fit: a
+    listing of remote storage reads every archive's head over the network."""
+    for size in (FIRST_HEAD_BYTES, HEAD_BYTES):
+        try:
+            head = storage.read_head(name, size)
+        except StorageError as exc:
+            return Preview("unreadable", reason=str(exc))
+        except OSError:
+            return Preview("unreadable", reason="the archive cannot be read")
+        result = read_head_manifest(head)
+        if result.reason != TOO_LARGE or len(head) < size:
+            return result
+    return result

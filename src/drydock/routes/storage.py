@@ -6,9 +6,9 @@ drydock's own directories (storage.local.validate_root). Admins manage local tar
 A remote target (sftp, smb, webdav or drive) makes drydock, through rclone, connect wherever
 its settings point, from a container that can reach the unauthenticated Docker socket
 proxy. Like notification targets, only a superadmin with a recent password check may create,
-change or remove one, and admins see it read-only. Its fields are checked
-against storage.options' allowlist, and its secrets are never rendered. Transfers to remote
-targets arrive in a later release.
+change or remove one, and admins see it read-only (they may test it and back up to it). Its
+fields are checked against storage.options' allowlist, and its secrets are never rendered.
+Transfers go through storage.rclone, for the kinds in its KINDS so far.
 
 Every target's settings are stored encrypted.
 """
@@ -33,6 +33,8 @@ from drydock.security.sessions import Auth
 from drydock.storage import options
 from drydock.storage.base import StorageError
 from drydock.storage.local import LocalStorage, validate_root
+from drydock.storage.rclone import KINDS as REMOTE_KINDS
+from drydock.storage.rclone import RcloneBackend
 from drydock.storage.rclone_rc import RcloneError, RcloneUnavailable
 from drydock.templating import render, see_other
 
@@ -45,7 +47,7 @@ MAX_PATH = 1024
 KINDS = ("local", *options.BACKENDS)
 KIND_LABELS = {"local": "Local directory"} | {k: b.label for k, b in options.BACKENDS.items()}
 UNREADABLE = "(cannot be decrypted with the configured secret keys)"
-REMOTE_LATER = "Transfers to remote storage arrive in a later release."
+REMOTE_LATER = "Transfers to this kind of storage arrive in a later release."
 
 
 @dataclass
@@ -178,6 +180,7 @@ def new_page(
         auth=auth,
         kind=kind,
         kind_labels=KIND_LABELS,
+        transfer_kinds=REMOTE_KINDS,
         backend=options.BACKENDS.get(kind),
         helps=help_texts(request).get(kind, {}) if remote else {},
         roots=request.app.state.settings.local_storage_roots,
@@ -222,6 +225,7 @@ def edit_page(
         helps=helps,
         options_error=options_error,
         editor=editor,
+        transfers=target.kind in REMOTE_KINDS,
         location=location(request, target),
         jobs=list(jobs),
         roots=request.app.state.settings.local_storage_roots,
@@ -397,25 +401,42 @@ def delete_storage(
     return see_other(request, "/storage")
 
 
+def remote_backend(request: Request, target: StorageTarget) -> RcloneBackend:
+    """A remote target's backend. Raises StorageError (safe to show)."""
+    config = load_config(request, target)
+    if config is None:
+        raise StorageError(f"The settings {UNREADABLE}.")
+    state = request.app.state
+    return RcloneBackend(state.rclone, target.kind, config, state.settings.staging_dir)
+
+
 @router.post("/{storage_id}/test")
 def test_storage(
     request: Request, storage_id: int, auth: Admin, db: Session = Depends(get_db)
 ) -> Response:
-    """Writes and removes a probe file in a local root."""
+    """Writes and removes a probe file: in a local root, or on remote storage (through
+    rclone, which also proves the host key and the login)."""
     target = get_target(db, storage_id)
     where = location(request, target)
-    if target.kind != "local":
-        error: str | None = REMOTE_LATER
-    else:
-        try:
+    username = auth.user.username  # read before the rollback expires auth.user
+    error: str | None = None
+    try:
+        if target.kind == "local":
             LocalStorage(where, request.app.state.settings).test()
-            error = None
-        except StorageError as exc:
-            error = str(exc)
+        elif target.kind in REMOTE_KINDS:
+            backend = remote_backend(request, target)
+            db.rollback()  # no write lock while on the network
+            backend.test()
+            target = get_target(db, storage_id)
+        else:
+            error = REMOTE_LATER
+    except StorageError as exc:
+        error = str(exc)
+        target = get_target(db, storage_id)
     key = "path" if target.kind == "local" else "location"
     audit.record(
         db,
-        actor=auth.user.username,
+        actor=username,
         action="storage.test",
         target=f"storage:{target.id}",
         outcome="success" if error is None else "failure",

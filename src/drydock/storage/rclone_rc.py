@@ -12,6 +12,13 @@ Security rules, all enforced here:
   raise it to DEBUG, which logs every call's parameters.
 - rclone echoes a failed call's input, secrets included, in its error body and in one
   ERROR log line. Drydock keeps only the error message and redacts that line.
+- --rc-serve makes GET /[<fs>]/<path> serve objects, honouring Range: the only ranged read
+  rclone offers (read_head). It needs the same auth and gives nothing copyfile could not.
+  read_range builds only remote-type connection strings and archive names, and log lines
+  holding a connection string (rclone logs the path of a request that failed auth) are
+  redacted.
+- rclone takes RCLONE_<BACKEND>_* variables as option defaults, so its environment stays
+  exactly the one below.
 
 rclone is restarted with capped backoff whenever it exits. Calls are blocking, like the
 storage backends that make them; call them from async code through run_blocking.
@@ -19,7 +26,10 @@ storage backends that make them; call them from async code through run_blocking.
 
 import asyncio
 import contextlib
+import hashlib
+import json
 import logging
+import re
 import secrets
 import subprocess
 import tempfile
@@ -28,10 +38,12 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
 from drydock.hosts.ssh import prepare_socket_dir
+from drydock.storage.base import NAME_RE
 
 log = logging.getLogger("drydock.rclone")
 
@@ -47,10 +59,11 @@ METHODS = frozenset(
         "core/obscure",
         "core/stats",
         "job/status",
-        "job/stop",
+        "job/stopgroup",
         "operations/copyfile",
         "operations/deletefile",
         "operations/list",
+        "operations/stat",
     }
 )
 READY_TIMEOUT = 15.0  # for rclone to answer after a start, and for a call to wait for that
@@ -65,6 +78,16 @@ MAX_ERROR = 500
 # rclone v1.75.2 fs/rc/rcserver: "rc: writeError: failed to write JSON output from %#v: %v",
 # where %#v is the call's whole input.
 INPUT_DUMP = "failed to write JSON output from "
+# A connection string as rclone logs a served path, plain or percent-encoded. It holds the
+# options, passwords obscured (reversibly). A cut line has no closing bracket.
+CONNECTION_RE = re.compile(r"(?:\[|%5B)(?::|%3A)(?:sftp|smb|webdav|drive).*?(?:\]|%5D|$)", re.I)
+# What read_range may serve: an inline remote of a remote type (never a local path, which
+# would read drydock's own files) and an archive or test probe name.
+SERVED_FS_RE = re.compile(r":(?:sftp|smb|webdav|drive),[^\]\x00-\x1f\x7f]*")
+PROBE_RE = re.compile(r"\.drydock-test-[0-9a-f]{32}")
+OBSCURED_RE = re.compile(r"[A-Za-z0-9_-]{22,8192}")
+MAX_OBSCURED = 256  # cached obscured secrets
+MAX_ERROR_BODY = 64 * 1024
 
 
 class RcloneUnavailable(Exception):
@@ -94,6 +117,10 @@ class RcloneDaemon:
             trust_env=False,  # no proxy variables, no .netrc
         )
         self._ready = threading.Event()  # set while rclone answers; calls run on threads
+        # sha256 of a secret: its obscured form. rclone obscures with a random IV and keeps
+        # every distinct inline config it sees for good (fs.NewFs overriddenConfig), so each
+        # secret is obscured once. ponytail: no lock, a race only obscures twice.
+        self._obscured: dict[bytes, str] = {}
         self._error: str | None = "rclone runs only in the primary drydock process."
         self._task: asyncio.Task[None] | None = None
         self._process: asyncio.subprocess.Process | None = None
@@ -154,6 +181,7 @@ class RcloneDaemon:
                 "rcd",
                 "--rc-addr",
                 f"unix://{self.socket_path}",
+                "--rc-serve",
                 "--config",
                 "/dev/null",
                 "--log-level",
@@ -218,16 +246,61 @@ class RcloneDaemon:
         """Calls an rc method, waiting up to READY_TIMEOUT for rclone to be running."""
         if method not in METHODS:
             raise ValueError(f"Not an allowed rc method: {method!r}")
-        if self._error is None and not self._ready.wait(READY_TIMEOUT):
-            raise RcloneUnavailable("rclone is not running; it is being restarted.")
-        if self._error is not None:
-            raise RcloneUnavailable(self._error)
+        self._wait_running()
         try:
             return self._post(method, dict(params or {}), timeout)
         except httpx.HTTPError as exc:
             raise RcloneUnavailable(f"rclone did not answer ({type(exc).__name__}).") from None
         except RuntimeError:  # the client was closed under this call
             raise RcloneUnavailable("rclone has stopped.") from None
+
+    def obscure(self, secret: str) -> str:
+        """rclone's obscured form of secret, the same string every time (see __init__)."""
+        key = hashlib.sha256(secret.encode()).digest()
+        if (cached := self._obscured.get(key)) is not None:
+            return cached
+        value = self.call("core/obscure", {"clear": secret}).get("obscured")
+        if not isinstance(value, str) or not OBSCURED_RE.fullmatch(value):
+            raise RcloneError(200, "core/obscure returned no value.")
+        if len(self._obscured) >= MAX_OBSCURED:
+            self._obscured.clear()
+        self._obscured[key] = value
+        return value
+
+    def read_range(
+        self, fs: str, remote: str, max_bytes: int, timeout: float = CALL_TIMEOUT
+    ) -> bytes:
+        """The first max_bytes of remote in the inline remote fs, through --rc-serve, within
+        timeout in all (a server trickling bytes would never trip httpx's idle timeout)."""
+        if (
+            not SERVED_FS_RE.fullmatch(fs)
+            or not (NAME_RE.fullmatch(remote) or PROBE_RE.fullmatch(remote))
+            or max_bytes < 1
+        ):
+            raise ValueError("Not an allowed ranged read.")
+        self._wait_running()
+        # rclone ends the fs at the first "]" (SERVED_FS_RE has none) and decodes the rest.
+        path = "/" + quote(f"[{fs}]", safe="[]") + "/" + remote
+        headers = {"Range": f"bytes=0-{max_bytes - 1}"}
+        deadline = time.monotonic() + timeout
+        try:
+            with self._client.stream("GET", path, headers=headers, timeout=timeout) as response:
+                if response.status_code == 416:  # an empty object
+                    return b""
+                if response.status_code not in (200, 206):
+                    body = read_some(response, MAX_ERROR_BODY, deadline)
+                    raise RcloneError(response.status_code, error_text(body))
+                return read_some(response, max_bytes, deadline)  # a server may ignore Range
+        except httpx.HTTPError as exc:
+            raise RcloneUnavailable(f"rclone did not answer ({type(exc).__name__}).") from None
+        except RuntimeError:
+            raise RcloneUnavailable("rclone has stopped.") from None
+
+    def _wait_running(self) -> None:
+        if self._error is None and not self._ready.wait(READY_TIMEOUT):
+            raise RcloneUnavailable("rclone is not running; it is being restarted.")
+        if self._error is not None:
+            raise RcloneUnavailable(self._error)
 
     def _post(self, method: str, params: dict[str, Any], timeout: float) -> dict[str, Any]:
         response = self._client.post(f"/{method}", json=params, timeout=timeout)
@@ -236,10 +309,29 @@ class RcloneDaemon:
         except ValueError:
             body = None
         if response.status_code != 200 or not isinstance(body, dict):
-            error = body.get("error") if isinstance(body, dict) else None
-            message = str(error or f"HTTP {response.status_code}")[:MAX_ERROR]
-            raise RcloneError(response.status_code, message)
+            raise RcloneError(response.status_code, error_text(response.content))
         return body
+
+
+def read_some(response: httpx.Response, limit: int, deadline: float) -> bytes:
+    data = bytearray()
+    for chunk in response.iter_bytes():
+        data += chunk
+        if len(data) >= limit:
+            break
+        if time.monotonic() > deadline:
+            raise RcloneUnavailable("rclone did not answer in time.")
+    return bytes(data[:limit])
+
+
+def error_text(body: bytes) -> str:
+    """Only the "error" field of an rclone error body: the rest echoes the call's input."""
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        parsed = None
+    error = parsed.get("error") if isinstance(parsed, dict) else None
+    return str(error or "no error message")[:MAX_ERROR]
 
 
 async def forward_log(stream: asyncio.StreamReader | None) -> None:
@@ -255,8 +347,26 @@ async def forward_log(stream: asyncio.StreamReader | None) -> None:
 
 
 def log_record(line: str) -> tuple[int, str, str]:
-    text = line.rstrip()[:MAX_LOG_LINE]
+    text = redact_connections(line.rstrip())[:MAX_LOG_LINE]
     head, found, _ = text.partition(INPUT_DUMP)
     if found:
         text = f"{head}{INPUT_DUMP}[input redacted]"
     return (logging.WARNING if " ERROR " in text else logging.INFO), "rclone: %s", text
+
+
+def redact_connections(text: str) -> str:
+    return CONNECTION_RE.sub("[connection string redacted]", text)
+
+
+class RedactConnections(logging.Filter):
+    """httpx logs each request's URL at INFO, read_range's connection string included."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        if CONNECTION_RE.search(message):
+            record.msg, record.args = redact_connections(message), ()
+        return True
+
+
+# Whatever level the httpx logger is given (main sets WARNING).
+logging.getLogger("httpx").addFilter(RedactConnections())

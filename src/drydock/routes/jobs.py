@@ -48,6 +48,7 @@ from drydock.models import (
 from drydock.routes.auth import FormStr, client_ip
 from drydock.security.rbac import Role, require_recent_auth, require_role
 from drydock.security.sessions import Auth
+from drydock.storage.rclone import KINDS as REMOTE_KINDS
 from drydock.templating import render, see_other
 
 router = APIRouter(prefix="/jobs")
@@ -60,6 +61,7 @@ Superadmin = Annotated[Auth, Depends(require_role(Role.superadmin))]
 # Free text: archive names use a slug of it, never the name itself.
 JOB_NAME_RE = re.compile(r"[^\x00-\x1f\x7f]{1,64}")
 CONTAINER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+BACKUP_KINDS = ("local", *sorted(REMOTE_KINDS))  # storage kinds a job may back up to
 RECENT_RUNS = 20
 SCOPE_LABELS = {
     "config": "Configuration (inspect data, compose files and .env)",
@@ -384,8 +386,10 @@ def validate(
     storage = db.get(StorageTarget, storage_id) if storage_id is not None else None
     if storage is None:
         errors.append("Choose a storage target.")
-    elif storage.kind != "local":
-        errors.append("Backups to remote storage arrive in a later release: choose local storage.")
+    elif storage.kind not in BACKUP_KINDS:
+        errors.append(
+            f"Backups to {storage.kind} storage arrive in a later release: choose another storage."
+        )
     if form.scope not in SCOPES:
         errors.append("Choose a scope.")
     if form.consistency_mode not in CONSISTENCY_MODES:
@@ -527,9 +531,11 @@ def choices(request: Request, db: Session) -> dict[str, Any]:
             select(NotificationTarget).order_by(NotificationTarget.name)
         ).all(),
         "hosts": db.scalars(select(Host).order_by(Host.name)).all(),
-        # Only local storage until backups to remote storage arrive.
+        # Only the kinds drydock can back up to so far.
         "targets": db.scalars(
-            select(StorageTarget).where(StorageTarget.kind == "local").order_by(StorageTarget.name)
+            select(StorageTarget)
+            .where(StorageTarget.kind.in_(BACKUP_KINDS))
+            .order_by(StorageTarget.name)
         ).all(),
         "scope_labels": SCOPE_LABELS,
         "mode_labels": MODE_LABELS,

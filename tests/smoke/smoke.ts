@@ -76,7 +76,7 @@ if (process.env.SMOKE_CHECK_PID1 === "1") {
 
 // SMOKE_CHECK_PID1 also means the smoke container shares the app's network namespace.
 const RCLONE_ARGV =
-  "/opt/rclone/rclone rcd --rc-addr unix:///run/drydock/rclone.sock --config /dev/null --log-level INFO";
+  "/opt/rclone/rclone rcd --rc-addr unix:///run/drydock/rclone.sock --rc-serve --config /dev/null --log-level INFO";
 
 function rclonePids(): Map<string, string> {
   const found = new Map<string, string>();

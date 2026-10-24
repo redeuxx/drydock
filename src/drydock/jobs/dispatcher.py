@@ -145,8 +145,18 @@ from drydock.restore import apply as restore_apply
 from drydock.restore import plan as restore_plan
 from drydock.restore import verify as restore_verify
 from drydock.security import hostpaths
-from drydock.storage.base import StorageError, archive_name, check_name, parse_name
+from drydock.storage import options
+from drydock.storage.base import (
+    StorageBackend,
+    StorageError,
+    archive_name,
+    check_name,
+    parse_name,
+)
 from drydock.storage.local import LocalStorage
+from drydock.storage.rclone import KINDS as REMOTE_KINDS
+from drydock.storage.rclone import REMOTE_RESTORE_LATER, RcloneBackend
+from drydock.storage.rclone_rc import RcloneDaemon
 
 log = logging.getLogger("drydock.jobs")
 
@@ -183,9 +193,11 @@ HOOKS_CHANGED = "The job's hooks changed while this run waited. Start it again."
 CONTAINER_ID_RE = re.compile(r"[0-9a-f]{12,64}")
 LOCK_SCOPE_RE = re.compile(r"d[0-9a-f]{32}|[0-9]{1,18}")  # what lock_scope returns
 # Startup recovery removes only these from the staging directory, which may be a shared disk.
-STAGING_NAME_RE = re.compile(r"member-[0-9a-f]{32}|probe-[0-9a-f]{32}\.tar")
+STAGING_NAME_RE = re.compile(r"member-[0-9a-f]{32}|probe-[0-9a-f]{32}\.tar|upload-[0-9a-f]{32}")
 # Only the names drydock writes: ASCII, no leading zero (run IDs start at 1).
 LOG_NAME_RE = re.compile(r"([1-9][0-9]{0,17})\.log")
+# Test connection's file (storage.rclone): removed at startup only, as no run tracks it.
+CHECK_RE = re.compile(r"check-[0-9a-f]{32}")
 # Scratch files renamed for removal; no run uses them, so they can go at any time.
 TRASH_RE = re.compile(r"trash-[0-9a-f]{32}")
 FINISHED_STATUSES = ("done", "failed", "cancelled", "interrupted")
@@ -236,6 +248,9 @@ class RunPlan:
     post_hook_ids: tuple[int, ...] = ()
     pre_hooks: tuple[hooks.Hook, ...] = ()  # the rows as loaded, compared after the locks
     post_hooks: tuple[hooks.Hook, ...] = ()
+    storage_kind: str = "local"
+    # A remote target's decrypted settings, secrets included: never in a repr or a log.
+    storage_config: dict[str, Any] | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -509,8 +524,10 @@ class Dispatcher:
         enabled: bool,
         workers: int = WORKERS,
         on_end: Callable[[int], None] | None = None,
+        rclone: RcloneDaemon | None = None,
     ) -> None:
         self.settings = settings
+        self._rclone = rclone  # remote storage transfers; None leaves them refused
         # Told the ID of each run whose end was committed (notify.Notifier.run_ended).
         self._on_end = on_end
         self._sessions = sessions
@@ -626,17 +643,19 @@ class Dispatcher:
     def recover(self) -> None:
         """Startup recovery, under the flock and before any run starts. Blocking.
 
-        Runs not finished yet become interrupted, staging is emptied and partial uploads
-        are removed. Containers those runs paused are unpaused and those they stopped
-        started again (also what an earlier start had not finished with when drydock
-        stopped again), and the journals of interrupted restores (now or at an earlier start
-        that drydock stopped before the rollback was done) rolled back, by start() once
-        their hosts are reachable. Orphaned helpers are removed by the host manager's
-        reaper on first contact with each host.
+        Runs not finished yet become interrupted, staging is emptied and partial uploads in
+        local storage are removed (rclone, not started yet, would be needed for remote
+        storage: the log of an interrupted upload names what it may have left). Containers
+        those runs paused are unpaused and those they stopped started again (also what an
+        earlier start had not finished with when drydock stopped again), and the journals
+        of interrupted restores (now or at an earlier start that drydock stopped before the
+        rollback was done) rolled back, by start() once their hosts are reachable. Orphaned
+        helpers are removed by the host manager's reaper on first contact with each host.
         """
         interrupted: list[tuple[int, list[dict[str, Any]], list[dict[str, Any]]]] = []
         restores: list[tuple[int, dict[str, Any]]] = []
         skipped_hooks: dict[int, list[str]] = {}
+        uploading: set[int] = set()  # backups to remote storage that may have been uploading
         with self._sessions() as db, db.begin():
             for run in db.scalars(select(Run).where(Run.status.in_(OPEN_STATUSES))):
                 if run.kind == "restore":
@@ -654,6 +673,10 @@ class Dispatcher:
                     )
                     if run.status == "running":  # its pre-hooks may have run
                         skipped_hooks[run.id] = self._post_hook_names(db, run.job_id)
+                        job = db.get(Job, run.job_id) if run.job_id is not None else None
+                        target = db.get(StorageTarget, job.storage_target_id) if job else None
+                        if target is not None and target.kind != "local":
+                            uploading.add(run.id)
                 run.status = "interrupted"
                 run.error = "Drydock stopped before the run finished."
                 run.finished_at = utcnow()
@@ -696,6 +719,12 @@ class Dispatcher:
                 "Interrupted: drydock stopped before the run finished."
             )
             log.warning("Run %d was interrupted by a restart of drydock", run_id)
+            if run_id in uploading:
+                RunLog(log_path(self.settings.data_dir, run_id))(
+                    "If its upload had started, a partial file may be left in the remote "
+                    "storage folder: the archive name, possibly shortened, then .<8 hex>"
+                    ".partial. Drydock does not list it; remove it by hand."
+                )
             self._ended_notice(run_id)
             if names := skipped_hooks.get(run_id):
                 # Not run here: nothing records whether the pre-hook phase was entered.
@@ -1229,8 +1258,13 @@ class Dispatcher:
             check_namespaces(api, targets, to_stop)
         created_at = self._stamp(plan.job.uuid)
         name = archive_name(plan.job.uuid, plan.job.name, created_at, plan.job.encrypted)
-        storage = LocalStorage(plan.storage_root, self.settings)
-        partial = storage.new_partial()
+        storage = self._backend(plan)
+        if isinstance(storage, LocalStorage):
+            partial = storage.new_partial()  # written in place, then published
+        else:
+            # Before anything changes: a target without a host key fails here.
+            run_log.add_secrets(storage.secrets())
+            partial = self.settings.staging_dir / f"upload-{uuid.uuid4().hex}"
         # Forward order, so recovery starts dependencies first.
         self._set_stopped(plan.run_id, [stopped_entry(host_id, t) for t in to_stop])
         self._set_paused(plan.run_id, [stopped_entry(host_id, t) for t in to_pause])
@@ -1362,7 +1396,18 @@ class Dispatcher:
                     start_again()
                 finally:
                     after_hooks()
-            stored = storage.publish(partial, name)
+            self._check_storage(plan)
+            if isinstance(storage, LocalStorage):
+                stored = storage.publish(partial, name)
+            else:
+                # The containers run again and the post-hooks ran: only the upload is left.
+                where = options.location(plan.storage_kind, plan.storage_config or {})
+                run_log(f"Uploading {name} to {where}.")
+                try:
+                    stored = storage.put(partial, name, None, cancel)
+                except StorageError as exc:
+                    run_log(f"Upload failed: {exc}")  # a cancelled run's row drops the reason
+                    raise
         finally:
             partial.unlink(missing_ok=True)
         run_log(f"Stored {stored.name} ({result.size} bytes), sha256 {result.sha256}.")
@@ -1378,7 +1423,7 @@ class Dispatcher:
     def _retain(
         self,
         plan: RunPlan,
-        storage: LocalStorage,
+        storage: StorageBackend,
         stored: str,
         cancel: threading.Event,
         run_log: RunLog,
@@ -2043,7 +2088,13 @@ class Dispatcher:
                 raise DispatchError("The job's host or storage no longer exists.")
             if not target.enabled:
                 raise DispatchError(f"Storage {target.name} is disabled.")
-            root = self._storage_root(target)
+            root, config = "", None
+            if target.kind == "local":
+                root = self._storage_root(target)
+            elif target.kind in REMOTE_KINDS:
+                config = self._remote_config(target)
+            else:
+                raise StorageError(f"Transfers to {target.kind} storage arrive in a later release.")
             pre_ids, post_ids, pre_hooks, post_hooks = self._hook_rows(db, job)
             stack = job.target_type == "stack"
             project = job.target if stack else None
@@ -2072,7 +2123,47 @@ class Dispatcher:
                 post_hook_ids=post_ids,
                 pre_hooks=pre_hooks,
                 post_hooks=post_hooks,
+                storage_kind=target.kind,
+                storage_config=config,
             )
+
+    def _check_storage(self, plan: RunPlan) -> None:
+        """Before the archive is stored: while the run waited and captured, its storage may
+        have been disabled or pointed elsewhere. Raises DispatchError."""
+        with self._sessions() as db:
+            target = db.get(StorageTarget, plan.storage_target_id)
+            if target is None:
+                raise DispatchError("The job's storage no longer exists.")
+            if not target.enabled:
+                raise DispatchError(f"Storage {target.name} was disabled while this run worked.")
+            if plan.storage_config is None:
+                same = self._storage_root(target) == plan.storage_root
+            else:
+                same = self._remote_config(target) == plan.storage_config
+            if not same:
+                raise DispatchError(
+                    "The storage settings changed while this run worked. Start it again."
+                )
+
+    def _remote_config(self, target: StorageTarget) -> dict[str, Any]:
+        try:
+            config = json.loads(self._crypto.decrypt(target.config_enc))
+        except CryptoError:
+            raise DispatchError(UNDECRYPTABLE_STORAGE) from None
+        except ValueError:
+            config = None
+        if not isinstance(config, dict):
+            raise DispatchError("The storage settings are not valid. Edit the storage again.")
+        return config
+
+    def _backend(self, plan: RunPlan) -> LocalStorage | RcloneBackend:
+        if plan.storage_config is None:
+            return LocalStorage(plan.storage_root, self.settings)
+        if self._rclone is None:
+            raise StorageError("Remote storage is not available in this drydock process.")
+        return RcloneBackend(
+            self._rclone, plan.storage_kind, plan.storage_config, self.settings.staging_dir
+        )
 
     def _hook_rows(
         self, db: Session, job: Job
@@ -2116,8 +2207,10 @@ class Dispatcher:
         return [names[hook_id] for hook_id in ids if hook_id in names]
 
     def _root(self, target: StorageTarget) -> str:
+        """A local target's directory. Restores read only these until remote ones download
+        first."""
         if target.kind != "local":
-            raise StorageError(f"Transfers to {target.kind} storage arrive in a later release.")
+            raise StorageError(REMOTE_RESTORE_LATER)
         return str(json.loads(self._crypto.decrypt(target.config_enc))["path"])
 
     def _storage_root(self, target: StorageTarget) -> str:
@@ -2136,8 +2229,11 @@ class Dispatcher:
         except StorageError:
             raise DispatchError("The archive name is not valid.") from None
         with self._sessions() as db, db.begin():
-            if db.get(StorageTarget, storage_target_id) is None:
+            target = db.get(StorageTarget, storage_target_id)
+            if target is None:
                 raise DispatchError("The storage does not exist.")
+            if target.kind != "local":  # see _delete_archive before lifting this
+                raise DispatchError(REMOTE_RESTORE_LATER)
             expired = self._expire_stale(db)
             pending = db.scalar(
                 select(func.count())
@@ -2335,49 +2431,53 @@ class Dispatcher:
         return zoneinfo.ZoneInfo(name)
 
     def _delete_archive(
-        self, plan: RunPlan, storage: LocalStorage, name: str, run_log: RunLog
+        self, plan: RunPlan, storage: StorageBackend, name: str, run_log: RunLog
     ) -> None:
         """Deletes one archive for retention, with its catalog row, audited.
 
-        One transaction: the write lock (BEGIN IMMEDIATE) orders it with
+        Local storage: one transaction. The write lock (BEGIN IMMEDIATE) orders it with
         _create_restore_run, so a restore of name is either seen here or created once name
         is gone. The row and the audit event roll back if the archive cannot be deleted;
-        an archive already gone still loses its row."""
-        with self._sessions() as db, db.begin():
-            busy = db.scalar(
-                select(func.count())
-                .select_from(Run)
-                .where(
-                    Run.kind == "restore",
-                    Run.status.in_(OPEN_STATUSES),
-                    Run.archive_name == name,
-                )
+        an archive already gone still loses its row.
+
+        Remote storage: the network delete holds no transaction, so it never holds the
+        write lock that every request needs. Nothing orders it with a restore, which is
+        safe only while restores from remote storage are refused (_create_restore_run)."""
+        if not isinstance(storage, LocalStorage):
+            with self._sessions() as db:
+                busy = restore_uses(db, name)
+            if not busy:
+                delete_or_gone(storage, name)
+                with self._sessions() as db, db.begin():
+                    self._forget_archive(db, plan, name)
+        else:
+            with self._sessions() as db, db.begin():
+                busy = restore_uses(db, name)
+                if not busy:
+                    self._forget_archive(db, plan, name)
+                    delete_or_gone(storage, name)
+        if busy:
+            run_log(f"Retention: kept {name}, an open restore uses it.")
+        else:
+            run_log(f"Retention: deleted {name}.")
+
+    def _forget_archive(self, db: Session, plan: RunPlan, name: str) -> None:
+        db.execute(
+            delete(Backup).where(
+                Backup.storage_target_id == plan.storage_target_id, Backup.name == name
             )
-            if busy:
-                run_log(f"Retention: kept {name}, an open restore uses it.")
-                return
-            db.execute(
-                delete(Backup).where(
-                    Backup.storage_target_id == plan.storage_target_id, Backup.name == name
-                )
-            )
-            audit.record(
-                db,
-                actor=None,
-                action="backup.retention_delete",
-                target=f"job:{plan.job_id}",
-                details={
-                    "run_id": plan.run_id,
-                    "storage_target_id": plan.storage_target_id,
-                    "archive": name,
-                },
-            )
-            try:
-                storage.delete(name)
-            except StorageError:
-                if any(o.name == name for o in storage.list(name)):
-                    raise
-        run_log(f"Retention: deleted {name}.")
+        )
+        audit.record(
+            db,
+            actor=None,
+            action="backup.retention_delete",
+            target=f"job:{plan.job_id}",
+            details={
+                "run_id": plan.run_id,
+                "storage_target_id": plan.storage_target_id,
+                "archive": name,
+            },
+        )
 
     def _finish(self, run_id: int, run_log: RunLog, status: str, error: str | None) -> None:
         with self._sessions() as db, db.begin():
@@ -2614,6 +2714,30 @@ def note(run_log: RunLog, message: str) -> None:
         )
 
 
+def restore_uses(db: Session, name: str) -> bool:
+    """Whether an open restore names the archive."""
+    return bool(
+        db.scalar(
+            select(func.count())
+            .select_from(Run)
+            .where(
+                Run.kind == "restore",
+                Run.status.in_(OPEN_STATUSES),
+                Run.archive_name == name,
+            )
+        )
+    )
+
+
+def delete_or_gone(storage: StorageBackend, name: str) -> None:
+    """Deletes the archive; one that is already gone counts as deleted."""
+    try:
+        storage.delete(name)
+    except StorageError:
+        if any(o.name == name for o in storage.list(name)):
+            raise
+
+
 def clean_staging(
     staging: Path, *, scratch: bool = True, keep: Callable[[int], bool] = lambda run_id: False
 ) -> None:
@@ -2624,7 +2748,8 @@ def clean_staging(
         return
     with os.scandir(staging) as entries:
         for entry in entries:
-            if STAGING_NAME_RE.fullmatch(entry.name) and entry.is_file(follow_symlinks=False):
+            scratch_name = STAGING_NAME_RE.fullmatch(entry.name) or CHECK_RE.fullmatch(entry.name)
+            if scratch_name and entry.is_file(follow_symlinks=False):
                 if scratch:
                     remove_file(Path(entry.path))
             elif TRASH_RE.fullmatch(entry.name) and entry.is_file(follow_symlinks=False):

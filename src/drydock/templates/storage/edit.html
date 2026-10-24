@@ -47,8 +47,23 @@
       </form>
       {% else %}
       <h2 id="test-heading" class="card-title">Connection test</h2>
+      {% if transfers %}
+      <p class="text-sm opacity-70">Connects, writes a small file, reads it back and removes it again.</p>
+      {% if test %}
+      {% if test.error %}
+      {{ alerts(["Test failed: " ~ test.error]) }}
+      {% else %}
+      <div role="status" class="alert alert-success alert-soft" data-focus-result><span>Connected. The storage is writable.</span></div>
+      {% endif %}
+      {% endif %}
+      <form method="post" action="/storage/{{ target.id }}/test" hx-post="/storage/{{ target.id }}/test" hx-nonce="{{ csp_nonce }}" class="card-actions">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        {{ submit("Test connection", "btn-outline") }}
+      </form>
+      {% else %}
       {% if test and test.error %}{{ alerts(["Test failed: " ~ test.error]) }}{% endif %}
-      <p class="text-sm opacity-70">Testing and backups to remote storage arrive in a later release.</p>
+      <p class="text-sm opacity-70">Testing and backups to this kind of storage arrive in a later release.</p>
+      {% endif %}
       {% endif %}
       <h3 class="mt-4 font-semibold">Jobs using it</h3>
       {% if jobs %}

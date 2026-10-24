@@ -2,7 +2,7 @@ import base64
 import re
 import secrets
 import sqlite3
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -14,6 +14,7 @@ from fastapi import FastAPI
 
 from drydock.config import Settings, load_settings
 from drydock.main import create_app
+from tests.rclone_support import SftpServer, sftp_server
 
 PASSWORD = "correct horse battery staple"
 CLIENT_IP = "203.0.113.5"
@@ -151,3 +152,17 @@ async def admin(fresh: Browser) -> Browser:
     response = await fresh.setup()
     assert response.status_code == 303, response.text
     return fresh
+
+
+@pytest.fixture
+def sftp(tmp_path: Path) -> Iterator[SftpServer]:
+    """rclone serve sftp on 127.0.0.1 (tests/rclone_support.py)."""
+    with sftp_server(tmp_path / "sftp") as server:
+        yield server
+
+
+@pytest.fixture
+def slow_sftp(tmp_path: Path) -> Iterator[SftpServer]:
+    """The same, taking uploads at 4 MiB/s, so a test can act mid-upload."""
+    with sftp_server(tmp_path / "slow-sftp", bwlimit="4M") as server:
+        yield server

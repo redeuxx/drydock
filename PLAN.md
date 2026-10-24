@@ -700,7 +700,7 @@ Build: an rclone v1.75.2 stage that checks the binary against SHA256SUMS. The bu
 - Remotes are passed as JSON-blob `fs` values. Password-type fields go through `core/obscure` at call time.
 - Uploads use `operations/copyfile` with `_async` and `_group`, polled with `job/status` and `core/stats`.
 - Cancel uses `job/stop`. Listing and deletes use `operations/list` and `operations/deletefile`.
-- For SFTP, the pinned host key is written to `/run/drydock/rclone/<id>.known_hosts`.
+- For SFTP, the pinned host key is written to `/run/drydock/rclone/<id>.known_hosts`. (Changed in 6c, approved: the key goes inline as rclone's `host_keys` option, a required field of the SFTP form, and no file is written.)
 
 Restore from remote storage:
 - Before downloading, check free space under `$DRYDOCK_STAGING_DIR` against the archive's listed size plus a reserve. Fail early if it is short.
@@ -760,7 +760,7 @@ Test fixtures: `rclone serve sftp|webdav`, a Samba container, and a fake OAuth t
 - rclone's shared Google client ID is being retired in 2026, so users must create their own.
 - With `drive.file`, recreating the OAuth client hides old backups. Document this.
 - The rc API can change between rclone versions. Keep the pin and the integration tests.
-- `read_head` needs a ranged or partial read through the rc API, which is unverified. Otherwise listing a remote archive's manifest means downloading the whole archive.
+- `read_head` needs a ranged or partial read through the rc API, which is unverified. Otherwise listing a remote archive's manifest means downloading the whole archive. (Settled by the 6c spike, below.)
 
 ### Session chunks
 
@@ -779,6 +779,13 @@ Test fixtures: `rclone serve sftp|webdav`, a Samba container, and a fake OAuth t
 - Start with a spike to see whether the rc API supports the ranged read `read_head` needs. If it doesn't, settle the fallback before writing anything else.
 - `storage/rclone.py`: JSON `fs` values, `core/obscure`, async `copyfile` with polling, cancel through `job/stop`, list and delete.
 - SFTP known_hosts pinning and the `rclone serve sftp` fixture.
+
+6c spike result (2026-10-24, rclone v1.75.2):
+- The rc API has no ranged read (no `operations/cat`). `rcd --rc-serve` serves `GET /[<fs>]/<path>` with `Range`, behind the same auth, so `read_head` passes the fs as a connection string in the URL path. rcserver ends the fs at the first `]` whatever the quotes, so drydock refuses `]` in SFTP users and folders, and IPv6 SFTP hosts (rclone joins `host:port` without brackets). The preview reads 64 KiB first and 2 MiB only when the manifest does not fit.
+- An empty `host_keys` turns rclone's host key check off. Drydock requires and validates the key, and always sends `shell_type=none`, no known_hosts file, no agent or key file and no `pin_host_key`.
+- `operations/copyfile` silently replaces an existing file, so `put` stats first. SFTP uploads go to `<name>.<8 hex>.partial` and are renamed when complete. `job/stop` ends a copy with "context canceled" and rclone removes the partial file; one left by a killed rclone is removed by `put`, or named in the run log.
+- rclone keeps every distinct inline configuration for good, and obscuring uses a random IV, so each secret is obscured once per drydock process.
+- rclone logs the URL path of a request that fails auth, and httpx logs request URLs at INFO. Both are redacted.
 - Exit criteria covered: the full SFTP cycle, cancel mid-upload, and a wrong host key failing "Test connection".
 
 **6d: SMB and WebDAV**

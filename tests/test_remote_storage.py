@@ -23,8 +23,14 @@ pytestmark = pytest.mark.anyio
 
 SENTINEL = "s3cr3t-Sentinel-7f1c"
 REFUSED_VALUE = "refused-value-91b2"
+HOST_KEY = asyncssh.generate_private_key("ssh-ed25519").export_public_key().decode().strip()
 VALID = {
-    "sftp": {"opt_host": "nas.lan", "opt_user": "backup", "opt_pass": SENTINEL},
+    "sftp": {
+        "opt_host": "nas.lan",
+        "opt_host_keys": HOST_KEY,
+        "opt_user": "backup",
+        "opt_pass": SENTINEL,
+    },
     "smb": {"opt_host": "192.168.1.10", "opt_pass": SENTINEL, "folder": "backups"},
     "webdav": {"opt_url": "https://dav.example.com/remote.php/dav", "opt_pass": SENTINEL},
     "drive": {
@@ -42,7 +48,6 @@ REFUSED = [
     ("sftp", "opt_pubkey_file"),
     ("sftp", "opt_known_hosts_file"),
     ("sftp", "opt_pin_host_key"),
-    ("sftp", "opt_host_keys"),
     ("sftp", "opt_key_use_agent"),
     ("sftp", "opt_use_insecure_cipher"),
     ("sftp", "opt_socks_proxy"),
@@ -312,7 +317,7 @@ async def test_jobs_and_restores_refuse_remote_storage(admin: Browser) -> None:
             "enabled": "1",
         },
     )
-    assert response.status_code == 422 and "remote storage arrive" in response.text
+    assert response.status_code == 422 and "smb storage arrive" in response.text
     assert "nas-share" not in (await admin.get("/jobs/new")).text
     listing = await admin.get(f"/restore/storage/{storage_id}")
     assert "Restoring from remote storage arrives" in listing.text
@@ -414,6 +419,7 @@ async def test_defaults_and_locations(admin: Browser) -> None:
         "options": {
             "host": "nas.lan",
             "port": "22",
+            "host_keys": HOST_KEY,
             "user": "backup",
             "pass": SENTINEL,
             "set_modtime": "false",  # an unticked box
@@ -462,7 +468,13 @@ async def test_the_allowlist_matches_the_pinned_rclone(admin: Browser) -> None:
 def test_a_changed_rclone_disables_the_forms() -> None:
     providers = {
         "providers": [
-            {"Name": kind, "Options": [{"Name": o.name, "Type": o.rclone_type} for o in b.options]}
+            {
+                "Name": kind,
+                "Options": [
+                    {"Name": o.name, "Type": o.rclone_type, "IsPassword": o.obscure}
+                    for o in b.options
+                ],
+            }
             for kind, b in options.BACKENDS.items()
         ]
     }
@@ -483,6 +495,7 @@ def providers_with(kind: str, option: str, rclone_type: str) -> dict:
                     {
                         "Name": o.name,
                         "Type": rclone_type if (k, o.name) == (kind, option) else o.rclone_type,
+                        "IsPassword": o.obscure,
                         "Help": f"help for {o.name}",
                     }
                     for o in b.options

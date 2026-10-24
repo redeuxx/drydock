@@ -130,6 +130,7 @@ async def test_no_secret_on_the_command_line_and_a_clean_environment(
             b"rcd",
             b"--rc-addr",
             f"unix://{rclone.socket_path}".encode(),
+            b"--rc-serve",
             b"--config",
             b"/dev/null",
             b"--log-level",

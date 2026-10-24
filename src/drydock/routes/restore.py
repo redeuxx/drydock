@@ -1,9 +1,10 @@
 """Restore from storage: the wizard. Admin and above only.
 
 1. GET /restore lists the storage targets. GET /restore/storage/{storage_id} lists one
-   target's archives straight from the storage directory, so it works without the backup
-   catalog, with what each archive's first bytes say. That preview is not verified and is
-   only shown; an encrypted archive shows its name, size and time only.
+   target's archives straight from the storage, so it works without the backup catalog,
+   with what each archive's first bytes say. That preview is not verified and is only
+   shown; an encrypted archive shows its name, size and time only. Remote storage is
+   listed too, but restores from it arrive in a later release.
 2. POST /restore/from-storage creates a restore run, and the dispatcher verifies the
    archive (pass 1) without touching any host. The plan page follows its log meanwhile.
 3. POST /restore/runs/{restore_id}/plan plans the restore against the chosen host's
@@ -30,6 +31,7 @@ import functools
 import hashlib
 import hmac
 import json
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -64,12 +66,21 @@ from drydock.routes.auth import FormStr, client_ip
 from drydock.routes.hosts import DOCKER_ERRORS, INVENTORY_TIMEOUT, open_host
 from drydock.routes.jobs import as_id
 from drydock.routes.runs import PAGE_LOG_LIMIT
-from drydock.routes.storage import KIND_LABELS, get_target
+from drydock.routes.storage import KIND_LABELS, get_target, remote_backend
 from drydock.security.hostpaths import HostPathError
 from drydock.security.rbac import Role, has_recent_auth, require_recent_auth, require_role
 from drydock.security.sessions import Auth
-from drydock.storage.base import StorageError, StoredObject, check_name, parse_name
+from drydock.storage.base import (
+    ENCRYPTED_SUFFIX,
+    StorageBackend,
+    StorageError,
+    StoredObject,
+    check_name,
+    parse_name,
+)
 from drydock.storage.local import LocalStorage
+from drydock.storage.rclone import KINDS as REMOTE_KINDS
+from drydock.storage.rclone import REMOTE_RESTORE_LATER
 from drydock.templating import render, see_other
 
 router = APIRouter(prefix="/restore")
@@ -78,13 +89,14 @@ Admin = Annotated[Auth, Depends(require_role(Role.admin))]
 
 AWAITING = "awaiting_confirmation"
 LISTING_LIMIT = 200  # archives a storage listing page shows
+REMOTE_PREVIEW_BUDGET = 20.0  # seconds a remote listing spends reading archive heads
+SLOW_STORAGE = "not read, the storage is slow to answer"
 MAX_LISTING_PAGE = 100_000
 RECENT_RESTORES = 20
 MAX_AUDITED_ERRORS = 10
 UNSIGNED = "Only a superadmin can restore an archive that is not signed by this drydock."
 FLAGGED = "Flagged fields need a superadmin."
 PLAN_CHANGED = "The plan changed since you viewed it. Review it again."
-REMOTE_RESTORE_LATER = "Restoring from remote storage arrives in a later release."
 MODE_LABELS = {
     "new-name": "New name: restore beside the original under a new name",
     "overwrite": "Overwrite: replace the original container and the data it uses",
@@ -323,6 +335,7 @@ def index_page(
         status_code,
         auth=auth,
         targets=targets,
+        listed_kinds=("local", *REMOTE_KINDS),
         kind_labels=KIND_LABELS,
         runs=runs,
         errors=list(errors),
@@ -412,7 +425,7 @@ def storage_archives(
     page: int = Query(default=1, ge=1, le=MAX_LISTING_PAGE),
     db: Session = Depends(get_db),
 ) -> Response:
-    """The archives in the storage directory itself, newest first, LISTING_LIMIT a page,
+    """The archives in the storage itself, newest first, LISTING_LIMIT a page,
     with an unverified preview of each manifest. Reads the directory only: no catalog, no
     writes."""
     target = release(db, get_target(db, storage_id))
@@ -421,20 +434,34 @@ def storage_archives(
     error = None
     first = (page - 1) * LISTING_LIMIT
     root = target_root(request, target)
-    if target.kind != "local":
+    if target.kind not in ("local", *REMOTE_KINDS):
         error = REMOTE_RESTORE_LATER
-    elif root is None:
+    elif target.kind == "local" and root is None:
         error = UNDECRYPTABLE_STORAGE
     else:
         try:
-            storage = LocalStorage(root, request.app.state.settings)
+            storage: StorageBackend = (
+                LocalStorage(root, request.app.state.settings)
+                if root is not None
+                else remote_backend(request, target)
+            )
             # By time, then name: a stable order, so pages neither repeat nor skip.
             objects = sorted(storage.list(), key=lambda o: (created_at(o), o.name), reverse=True)
             total = len(objects)
+            # Remote previews are network reads, one after another: the page gets a budget.
+            deadline = time.monotonic() + REMOTE_PREVIEW_BUDGET
             for obj in objects[first : first + LISTING_LIMIT]:
                 stamp = created_at(obj)
                 when = None if stamp == OLDEST else stamp
-                rows.append((obj, when, restore_verify.preview(storage, obj.name)))
+                if root is not None:
+                    shown = restore_verify.preview(storage, obj.name)
+                elif obj.name.endswith(ENCRYPTED_SUFFIX):  # all an encrypted head would say
+                    shown = restore_verify.Preview("encrypted")
+                elif time.monotonic() > deadline:
+                    shown = restore_verify.Preview("unreadable", reason=SLOW_STORAGE)
+                else:
+                    shown = restore_verify.preview(storage, obj.name)
+                rows.append((obj, when, shown))
         except StorageError as exc:
             error = str(exc)
     return render(

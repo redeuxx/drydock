@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
+import asyncssh
+
 from drydock.hosts import ssh
 
 OWN_FIELDS = frozenset({"csrf_token", "kind", "name", "enabled", "folder"})
@@ -41,6 +43,14 @@ CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 # Underscores too: Docker's DNS resolves container names such as backup_nas.
 HOST_RE = re.compile(r"[A-Za-z0-9_]([A-Za-z0-9._-]{0,251}[A-Za-z0-9_])?")
 NAME_SHOWN = 64  # characters of an unknown field name quoted back in the error
+HOST_KEY_TYPES = frozenset(
+    {"ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521", "ssh-rsa"}
+)
+MAX_HOST_KEYS = 16  # rclone's own limit
+HOST_KEYS_ERROR = (
+    "Host key: paste the server's public host key, such as the contents of "
+    "/etc/ssh/ssh_host_ed25519_key.pub on the server. Separate several keys with commas."
+)
 
 
 class OptionsError(Exception):
@@ -62,6 +72,7 @@ class Option:
     pattern_hint: str = ""
     destination: bool = False  # a change needs the stored secrets entered again
     help: str = ""  # drydock's own help where rclone's would describe a refused feature
+    obscure: bool = False  # rclone's IsPassword: sent through core/obscure
 
     @property
     def secret(self) -> bool:
@@ -89,8 +100,10 @@ def port_option(default: str) -> Option:
     return Option("port", "Port", "int", "int", default=default, destination=True)
 
 
-def password_option(name: str = "pass", label: str = "Password", **kwargs: Any) -> Option:
-    return Option(name, label, "password", "string", max_length=1024, **kwargs)
+def password_option(
+    name: str = "pass", label: str = "Password", *, obscure: bool = True, **kwargs: Any
+) -> Option:
+    return Option(name, label, "password", "string", max_length=1024, obscure=obscure, **kwargs)
 
 
 def id_option(name: str, label: str) -> Option:
@@ -115,7 +128,28 @@ BACKENDS: dict[str, Backend] = {
         (
             host_option(),
             port_option("22"),
-            Option("user", "User", "string", "string", True, destination=True),
+            Option(
+                "host_keys",
+                "Host key",
+                "string",
+                "CommaSepList",
+                True,
+                max_length=8192,
+                destination=True,
+                help="The server's public host key, such as the contents of "
+                "/etc/ssh/ssh_host_ed25519_key.pub on the server. Drydock connects only to a "
+                "server holding it. Separate several keys with commas.",
+            ),
+            Option(
+                "user",
+                "User",
+                "string",
+                "string",
+                True,
+                pattern=re.compile(r"[^\]]{1,256}"),  # see rclone.connection_string
+                pattern_hint="a user name without ]",
+                destination=True,
+            ),
             password_option(help="Leave it empty to log in with a private key instead."),
             Option(
                 "key_pem",
@@ -198,7 +232,7 @@ BACKENDS: dict[str, Backend] = {
                 destination=True,
             ),
             password_option(),
-            password_option("bearer_token", "Bearer token", advanced=True),
+            password_option("bearer_token", "Bearer token", obscure=False, advanced=True),
         ),
     ),
     "drive": Backend(
@@ -225,6 +259,7 @@ BACKENDS: dict[str, Backend] = {
             password_option(
                 "client_secret",
                 "OAuth client secret",
+                obscure=False,
                 required=True,
                 help="The client secret of that OAuth client.",
             ),
@@ -384,6 +419,11 @@ def check_value(option: Option, raw: str) -> tuple[str, str | None]:
         return "", "Host must be a host name or an IP address, without a port or brackets."
     if option.name == "url" and (error := url_error(value)):
         return "", error
+    if option.name == "host_keys":
+        try:
+            value = host_keys(value)
+        except ValueError:
+            return "", HOST_KEYS_ERROR
     return value, None
 
 
@@ -418,6 +458,31 @@ def valid_host(value: str) -> bool:
     return True
 
 
+def host_keys(raw: str) -> str:
+    """rclone's host_keys value ("type base64,type base64") from public host keys given as
+    "type base64 [comment]", comma-separated. Never empty: rclone checks no host key at all
+    when host_keys is empty. Raises ValueError."""
+    keys = []
+    for entry in raw.split(","):
+        fields = entry.split()
+        if not fields:
+            continue
+        if len(fields) < 2 or fields[0] not in HOST_KEY_TYPES:
+            raise ValueError("not a public host key")
+        try:
+            key = asyncssh.import_public_key(f"{fields[0]} {fields[1]}")
+        except asyncssh.KeyImportError, ValueError:
+            raise ValueError("not a public host key") from None
+        algorithm, data = key.export_public_key("openssh").decode().split()[:2]
+        if algorithm != fields[0]:
+            raise ValueError("not a public host key")
+        keys.append(f"{algorithm} {data}")
+    keys = list(dict.fromkeys(keys))
+    if not keys or len(keys) > MAX_HOST_KEYS:
+        raise ValueError("no host key, or too many")
+    return ",".join(keys)
+
+
 def url_error(value: str) -> str | None:
     if any(c.isspace() for c in value):
         return "The URL must not contain spaces."
@@ -449,6 +514,8 @@ def check_folder(kind: str, raw: str) -> tuple[str, str | None]:
         return folder, f"The folder is longer than {MAX_FOLDER} characters."
     if CONTROL_RE.search(folder) or "\\" in folder:
         return folder, "The folder must not contain control characters or backslashes."
+    if "]" in folder:  # see rclone.connection_string
+        return folder, "The folder must not contain ]."
     absolute = kind == "sftp" and folder.startswith("/")
     body = folder[1:] if absolute else folder
     if body.startswith("/"):
@@ -465,6 +532,10 @@ def combination_errors(kind: str, opts: dict[str, str], kept: set[str]) -> list[
     """Rules across options. kept names the secrets carried over from the stored config."""
     errors = []
     if kind == "sftp":
+        # rclone joins host and port without brackets, and brackets cannot go into the
+        # connection string read_head needs.
+        if ":" in opts.get("host", ""):
+            errors.append("SFTP storage needs a host name or an IPv4 address.")
         key, passphrase = opts.get("key_pem", ""), opts.get("key_file_pass", "")
         if not opts.get("pass") and not key:
             errors.append("Enter a password or a private key.")
@@ -541,7 +612,11 @@ def help_texts(providers: Any) -> dict[str, dict[str, str]]:
         texts[kind] = {}
         for option in backend.options:
             rclone = rclone_options.get(option.name)
-            if rclone is None or rclone.get("Type") != option.rclone_type:
+            if (
+                rclone is None
+                or rclone.get("Type") != option.rclone_type
+                or bool(rclone.get("IsPassword")) != option.obscure
+            ):
                 raise OptionsError(
                     f"The installed rclone does not offer the {kind} option {option.name} "
                     "as drydock expects, so remote storage forms are disabled."

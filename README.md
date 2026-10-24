@@ -151,13 +151,17 @@ Then add it under **Storage > Add storage** (admins). A storage directory must r
 
 #### Remote storage
 
-A superadmin can also set up SFTP, SMB, WebDAV and Google Drive targets under **Storage > Add storage**. Backups to them, restores from them and connection tests arrive in a later release; until then jobs can only use local storage.
+A superadmin can also set up SFTP, SMB, WebDAV and Google Drive targets under **Storage > Add storage**. Jobs can back up to SFTP, and **Restore** lists an SFTP target's archives with their previews. Backups to the other kinds, and restores from any remote storage, arrive in a later release.
+
+An SFTP target needs the server's public host key: paste the contents of `/etc/ssh/ssh_host_ed25519_key.pub` (or the ecdsa or rsa one) from the server, and separate several keys with commas. Drydock never trusts a key on first use and never connects without one. A changed key fails the run and **Test connection** with "The server's host key does not match the host key in the settings". The host must be a host name or an IPv4 address, and neither the user nor the folder may contain `]`. Admins can run **Test connection**, which logs in, writes a small file, reads it back and removes it.
+
+A backup to SFTP is first written to the staging directory (`DRYDOCK_STAGING_DIR`), which therefore needs room for a whole archive, and uploaded once the containers run again. rclone uploads it under a temporary name and renames it when complete, so the archive name never shows a partial upload. Cancelling stops the upload, and rclone removes the partial file; any it could not remove is named in the run log.
 
 A remote target makes drydock connect, through rclone, to whatever host its settings name, from a container that can also reach the Docker socket proxy. So, like notification targets, only a superadmin who has re-entered their password in the last 10 minutes can create, change or remove one. Admins see remote targets (without credentials) and local storage stays an admin task. This is a deliberate change from the role matrix in PLAN.md.
 
 Each form offers a short list of rclone's options, checked on the server; anything else in a submitted form, including a hand-crafted one, refuses the whole form. Left out on purpose:
 
-- **sftp:** external `ssh`, every `*_command`, key and known_hosts *files* (paste the key instead), agents, proxies, cipher lists and insecure ciphers, `pin_host_key`. Drydock will pin the host key itself.
+- **sftp:** external `ssh`, every `*_command`, key and known_hosts *files* (paste the key instead), agents, proxies, cipher lists and insecure ciphers, `pin_host_key`. Drydock pins the host key itself (above) and tells rclone never to run commands on the server (`shell_type none`), so SFTP integrity is checked by size only until a restore verifies the archive.
 - **smb:** Kerberos, which needs local credential files. NTLM user, password and domain work.
 - **webdav:** `bearer_token_command`, `unix_socket`, custom headers, `auth_redirect`, and the `sharepoint` and `infinitescale` vendors. A bearer token, and `sharepoint-ntlm`, need an `https://` URL.
 - **drive:** service accounts, `env_auth`, custom auth and token URLs, and a pasted token. You use your own OAuth client; connecting to Google is part of the later release.
@@ -295,7 +299,7 @@ Admins restore from **Restore** in the menu. Every step is recorded in the audit
 
 The container runs with a read-only root filesystem, no capabilities and `no-new-privileges`. State lives in the `drydock-data` volume at `/data`. `stop_grace_period` is 90 seconds so drydock can restart containers it stopped before Docker kills it.
 
-Remote storage goes through rclone v1.75.2 (checked against a pinned SHA-256 at build time), which drydock runs as a child process, `rclone rcd`. It listens only on `/run/drydock/rclone.sock` (mode 0600), never on TCP, and every call needs a random password made when drydock starts. The password reaches rclone through its environment, so it is not visible in `ps`. rclone gets no `rclone.conf`: its configuration stays in memory, and none of the container's `RCLONE_*` variables reach it. Drydock restarts rclone if it exits.
+Remote storage goes through rclone v1.75.2 (checked against a pinned SHA-256 at build time), which drydock runs as a child process, `rclone rcd`. It listens only on `/run/drydock/rclone.sock` (mode 0600), never on TCP, and every call needs a random password made when drydock starts. The password reaches rclone through its environment, so it is not visible in `ps`. rclone gets no `rclone.conf`: its configuration stays in memory, and none of the container's `RCLONE_*` variables reach it. Drydock restarts rclone if it exits. Each call carries the target's settings inline, passwords obscured. rclone also serves objects on the same socket (`--rc-serve`, same password) because that is its only ranged read, which the restore listing uses to preview archives. Drydock redacts the settings from any log line that would quote them.
 
 ## Phase 1 measurements and decisions
 

@@ -127,6 +127,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             host_manager,
             enabled=app.state.primary,
             on_end=notifier.run_ended,
+            rclone=rclone,
         )
         scheduler = app.state.scheduler = Scheduler(
             settings, app.state.sessionmaker, dispatcher, host_manager

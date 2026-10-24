@@ -20,7 +20,8 @@ services:
     build:
       context: .
       # The age CLI for tests/test_age_spike.py (the encryption method chosen in Phase 1)
-      # and rclone for tests/test_rclone_rc.py, each checked against the SHA-256 pinned per
+      # and rclone for tests/test_rclone_rc.py and the `rclone serve sftp` stand-in SFTP server
+      # (tests/rclone_support.py), each checked against the SHA-256 pinned per
       # architecture in the Dockerfile.
       dockerfile_inline: |
         FROM python:3.15.0-slim@sha256:ea4f1f290e071bf7d28199cfb3e09f5dbad31b50e9c32fd58f2f2d7be915f3ae AS age
