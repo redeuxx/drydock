@@ -36,7 +36,8 @@ from tests.conftest import PASSWORD, Browser
 DOCKER_URL = os.environ.get("DRYDOCK_TEST_DOCKER_URL", "")
 SSH_HOST = os.environ.get("DRYDOCK_TEST_SSH_HOST", "")
 SSH_USER = "drydock"
-TEST_PROJECT = "drydock-test"
+# compose.test.yaml's project; CI runs it under its own name (compose.ci.yaml).
+TEST_PROJECT = os.environ.get("DRYDOCK_TEST_PROJECT", "drydock-test")
 TEST_LABEL = "drydock.test"
 # Helpers that test code makes outside a running app carry this installation ID.
 TEST_INSTANCE = "drydocktest"

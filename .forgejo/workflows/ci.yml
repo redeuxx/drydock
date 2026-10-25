@@ -95,8 +95,8 @@ jobs:
     name: Image build and CSP smoke test
     runs-on: docker
     timeout-minutes: 30
-    env:
-      COMPOSE_PROJECT_NAME: drydock-ci-${{ github.run_id }}-image
+    # The compose file's own project name (drydock-test): the smoke test backs up
+    # drydock-test-smoke-target-1 by name. The other jobs use other names.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

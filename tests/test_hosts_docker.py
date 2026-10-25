@@ -27,6 +27,7 @@ from tests.docker_support import (
     SSH_HOST,
     TEST_INSTANCE,
     TEST_LABEL,
+    TEST_PROJECT,
     add_ssh_host,
     archive_and_exec_roundtrip,
     authorize,
@@ -185,7 +186,7 @@ def test_inventory_groups_containers_by_compose_project() -> None:
                 helper.remove(handle.client, container.id)
     projects = [g.project for g in groups]
     assert projects == sorted(projects, key=lambda p: (p is None, p or ""))
-    test_group = next(g for g in groups if g.project == "drydock-test")
+    test_group = next(g for g in groups if g.project == TEST_PROJECT)
     remote = next(c for c in test_group.containers if c.service == "sshhost")
     assert remote.state == "running"
     assert remote.image == "drydock-test-sshhost"
@@ -467,7 +468,7 @@ async def test_local_host_through_the_ui(admin: Browser) -> None:
 
     inventory = await admin.get(f"/hosts/{host_id}/containers")
     assert inventory.status_code == 200
-    assert "Compose project <code>drydock-test</code>" in inventory.text
+    assert f"Compose project <code>{TEST_PROJECT}</code>" in inventory.text
     assert "service sshhost" in inventory.text
     assert "drydock-test-sshhost" in inventory.text
 

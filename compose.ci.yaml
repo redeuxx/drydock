@@ -5,6 +5,8 @@
 # workflow fills first, named after the job's COMPOSE_PROJECT_NAME.
 services:
   tests:
+    environment:
+      DRYDOCK_TEST_PROJECT: ${COMPOSE_PROJECT_NAME:?}  # tests find sshhost by its project
     volumes: !override
       - src:/src
       - venv:/venv
