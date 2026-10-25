@@ -7,6 +7,8 @@ services:
   tests:
     environment:
       DRYDOCK_TEST_PROJECT: ${COMPOSE_PROJECT_NAME:?}  # tests find sshhost by its project
+      # The slow tests hold latency ceilings a busy shared runner cannot; run them locally.
+      PYTEST_ADDOPTS: -m 'not slow'
     volumes: !override
       - src:/src
       - venv:/venv

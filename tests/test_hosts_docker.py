@@ -189,7 +189,7 @@ def test_inventory_groups_containers_by_compose_project() -> None:
     test_group = next(g for g in groups if g.project == TEST_PROJECT)
     remote = next(c for c in test_group.containers if c.service == "sshhost")
     assert remote.state == "running"
-    assert remote.image == "drydock-test-sshhost"
+    assert remote.image == f"{TEST_PROJECT}-sshhost"
     data = next(m for m in remote.mounts if m.destination == "/var/lib/docker")
     assert data.type == "volume"
     assert data.name.endswith("dind-data")
@@ -470,7 +470,7 @@ async def test_local_host_through_the_ui(admin: Browser) -> None:
     assert inventory.status_code == 200
     assert f"Compose project <code>{TEST_PROJECT}</code>" in inventory.text
     assert "service sshhost" in inventory.text
-    assert "drydock-test-sshhost" in inventory.text
+    assert f"{TEST_PROJECT}-sshhost" in inventory.text
 
 
 @needs_ssh

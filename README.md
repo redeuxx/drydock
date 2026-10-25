@@ -401,7 +401,7 @@ docker compose -f compose.test.yaml down
 npm run check
 ```
 
-CI runs only on git.wenberg.net (Forgejo Actions, `.forgejo/workflows/ci.yml`), on a runner whose jobs drive its host's Docker daemon; `compose.ci.yaml` swaps the checkout's bind mount for a volume there. The repository is pushed to GitHub too, without any workflow.
+CI runs only on git.wenberg.net (Forgejo Actions, `.forgejo/workflows/ci.yml`), on a runner whose jobs drive its host's Docker daemon; `compose.ci.yaml` swaps the checkout's bind mount for a volume there and skips the `slow` tests, whose latency ceilings a busy shared runner cannot hold. A newer push cancels the run in progress, and Markdown-only changes start none. The repository is pushed to GitHub too, without any workflow.
 
 The integration tests reach the host's Docker daemon through the same socket proxy as production and create (then remove) containers and volumes there. A privileged `docker:dind` container running sshd stands in for a remote host; the tests generate the SSH key pair in memory and authorize it at test time. The Phase 1 spikes (marked `slow`) move a gigabyte through each path and need about 4 GB free in the Docker VM; `pytest -m 'not slow'` skips them.
 

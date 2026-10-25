@@ -101,8 +101,9 @@ def endpoints(info: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def resolved(container, host: str) -> set[str]:
-    """The addresses busybox nslookup finds for host inside the container."""
-    code, output = container.exec_run(["nslookup", host])
+    """The addresses busybox nslookup finds for host inside the container. The trailing dot
+    skips the search domains the daemon's host passes in, whose misses fail nslookup."""
+    code, output = container.exec_run(["nslookup", f"{host}."])
     assert code == 0, output
     return set(NAME_RE.findall(output.decode()))
 
