@@ -1,0 +1,16 @@
+# CI on git.wenberg.net (.forgejo/workflows/ci.yml), on top of compose.test.yaml:
+#   docker compose -f compose.test.yaml -f compose.ci.yaml run --rm tests
+# The jobs drive the runner host's Docker daemon, where a bind mount of the checkout would
+# resolve on the host, not in the job. So the tests read the checkout from a volume the
+# workflow fills first, named after the job's COMPOSE_PROJECT_NAME.
+services:
+  tests:
+    volumes: !override
+      - src:/src
+      - venv:/venv
+      - cache:/cache
+
+volumes:
+  src:
+    external: true
+    name: ${COMPOSE_PROJECT_NAME:?}-src

@@ -1,47 +1,57 @@
 name: CI
 
+# Runs on git.wenberg.net's runner only; the repo has no GitHub Actions workflow.
+#
+# Every job drives the runner host's Docker daemon (the runner mounts its socket), which
+# also runs Forgejo. So each job has its own Compose project, and runs never overlap: the
+# integration tests remove every container labelled drydock.test on that daemon.
+
 on:
   push:
     branches: [main]
   pull_request:
 
-permissions:
-  contents: read
-
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-drydock
+  cancel-in-progress: false
+
+env:
+  # Copies the checkout into the volume compose.ci.yaml mounts at /src.
+  BUSYBOX: docker.io/library/busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
 
 jobs:
   python:
     name: Ruff and pytest (Linux container)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    runs-on: docker
+    timeout-minutes: 40
+    env:
+      COMPOSE_PROJECT_NAME: drydock-ci-${{ github.run_id }}-python
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The 5 GiB backup test needs about 15 GiB free where Docker keeps its data (the
-      # volume, the staged member and the archive); the runner image leaves less.
-      - name: Free disk space
+      - name: Copy the checkout into a volume
         run: |
-          df -h /
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-          df -h /
+          docker volume create "$COMPOSE_PROJECT_NAME-src"
+          tar -cf - . | docker run --rm -i -v "$COMPOSE_PROJECT_NAME-src:/src" "$BUSYBOX" \
+            sh -c 'tar -xf - -C /src && chown -R 10001:10001 /src'
       # uv sync --locked, ruff check, ruff format --check, pytest. Starts the socket proxy
       # and the sshhost (docker:dind with sshd) the integration tests use.
-      - run: docker compose -f compose.test.yaml run --rm tests
+      - run: docker compose -f compose.test.yaml -f compose.ci.yaml run --rm tests
       - if: always()
-        run: docker compose -f compose.test.yaml down --volumes
+        run: |
+          docker compose -f compose.test.yaml -f compose.ci.yaml down --volumes
+          docker volume rm "$COMPOSE_PROJECT_NAME-src" || true
 
   frontend:
     name: TypeScript and npm audit
-    runs-on: ubuntu-24.04
+    runs-on: docker
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # No npm cache: the runner's cache proxy hangs.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.21.0
@@ -57,26 +67,41 @@ jobs:
 
   python-audit:
     name: pip-audit
-    runs-on: ubuntu-24.04
+    runs-on: docker
     timeout-minutes: 10
+    env:
+      COMPOSE_PROJECT_NAME: drydock-ci-${{ github.run_id }}-audit
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Copy the checkout into a volume
+        run: |
+          docker volume create "$COMPOSE_PROJECT_NAME-src"
+          tar -cf - . | docker run --rm -i -v "$COMPOSE_PROJECT_NAME-src:/src" "$BUSYBOX" \
+            sh -c 'tar -xf - -C /src && chown -R 10001:10001 /src'
       - run: >-
-          docker compose -f compose.test.yaml run --rm --no-deps -e HOME=/tmp -e UV_TOOL_DIR=/tmp/uv-tools
+          docker compose -f compose.test.yaml -f compose.ci.yaml run --rm --no-deps
+          -e HOME=/tmp -e UV_TOOL_DIR=/tmp/uv-tools
           tests sh -c 'uv export --locked --no-dev --no-emit-project --format requirements-txt
           -o /tmp/requirements.txt -q
           && uvx pip-audit==2.10.1 --strict --require-hashes --disable-pip -r /tmp/requirements.txt'
+      - if: always()
+        run: |
+          docker compose -f compose.test.yaml -f compose.ci.yaml down --volumes
+          docker volume rm "$COMPOSE_PROJECT_NAME-src" || true
 
   image:
     name: Image build and CSP smoke test
-    runs-on: ubuntu-24.04
+    runs-on: docker
     timeout-minutes: 30
+    env:
+      COMPOSE_PROJECT_NAME: drydock-ci-${{ github.run_id }}-image
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # No bind mounts here: build contexts are uploaded from the job.
       - run: docker compose -f compose.test.yaml build app smoke
       - run: >-
           docker compose -f compose.test.yaml up
