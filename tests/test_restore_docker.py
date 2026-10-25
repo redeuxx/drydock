@@ -296,6 +296,8 @@ def normalized(info: dict[str, Any], *, image_loaded: bool = False) -> dict[str,
         if mount.get("Type") == "volume" and HEX64_RE.fullmatch(mount.get("Name") or ""):
             mount.pop("Name", None)  # an anonymous volume
             mount.pop("Source", None)  # its path holds the name
+    if doc.get("Mounts"):  # Docker before 29.x lists them in random (Go map) order
+        doc["Mounts"].sort(key=lambda mount: str(mount.get("Destination") or ""))
     if image_loaded:
         config.pop("Image", None)
         doc.pop("Image", None)

@@ -196,14 +196,20 @@ def test_wipe_inside_a_sticky_directory_owned_by_another_uid() -> None:
             f"drydock-test-wipe-{uuid.uuid4().hex[:10]}", labels={TEST_LABEL: "1"}
         )
         try:
-            client.containers.run(
+            # Not containers.run in the foreground: with the json-file log driver docker-py
+            # follows the container's logs, which the socket proxy denies (ALLOW_LOGS=0).
+            setup = client.containers.create(
                 IMAGE,
                 ["sh", "-c", STICKY_SETUP],
                 mounts=[Mount("/v", volume.name, type="volume")],
                 labels={TEST_LABEL: "1"},
                 network_mode="none",
-                remove=True,
             )
+            try:
+                setup.start()
+                assert setup.wait(timeout=60)["StatusCode"] == 0
+            finally:
+                setup.remove(force=True)
             before = stream_probe.describe_volume(client, IMAGE, owner, volume.name)
             assert before["tmp"].mode == 0o1777 and before["tmp"].uid == 1000
             assert before["tmp/other"].uid == 1001 and before["private"].mode == 0o700

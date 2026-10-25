@@ -109,7 +109,8 @@ def get_host(browser: Browser, host_id: int) -> Host:
 
 
 async def add_ssh_host(browser: Browser, known_host_line: str | None = None) -> int:
-    """Registers sshhost with a fresh in-memory key, authorizes it there and opens the tunnel."""
+    """Registers sshhost with a fresh in-memory key, authorizes it there and opens the tunnel,
+    waiting for it to connect (unless known_host_line pins another key, which never does)."""
     host = Host(
         name=f"remote-{uuid.uuid4().hex[:8]}",
         kind="ssh",
@@ -125,7 +126,14 @@ async def add_ssh_host(browser: Browser, known_host_line: str | None = None) -> 
     host.known_host_line = known_host_line or line
     host.host_key_fingerprint = fingerprint
     host_id = await docker_client.run_blocking(insert_host, browser, host)
-    await browser.app.state.hosts.reload(host_id)
+    hosts = browser.app.state.hosts
+    await hosts.reload(host_id)
+    if known_host_line is None:
+        await wait_until(
+            lambda: hosts.status(get_host(browser, host_id)).state == "connected",
+            30,
+            "the SSH tunnel",
+        )
     return host_id
 
 

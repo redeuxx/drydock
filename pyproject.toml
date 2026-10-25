@@ -54,6 +54,8 @@ select = ["E", "W", "F", "I", "B", "UP", "S", "SIM", "RUF", "PTH", "DTZ"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers -p no:cacheprovider"
+# A passing test's tmp_path goes at once: big archives must not pile up for later tests.
+tmp_path_retention_policy = "failed"
 markers = ["slow: tests that move a gigabyte or more (deselect with -m 'not slow')"]
 
 [tool.ruff.lint.flake8-bugbear]

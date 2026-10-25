@@ -11,6 +11,7 @@ manager never opens a tunnel, so two processes cannot fight over the same socket
 import asyncio
 import contextlib
 import logging
+import time
 from collections import defaultdict
 from collections.abc import Coroutine
 from dataclasses import dataclass
@@ -32,6 +33,9 @@ from drydock.models import Host, Installation, utcnow
 log = logging.getLogger("drydock.hosts")
 
 REAP_WAIT = 60  # how long a run waits for the startup reap of its host
+# How long a run waits for a tunnel still on its first attempt (it has just started: at
+# startup, or as the host was saved). A failed attempt ends the wait at once.
+FIRST_ATTEMPT_WAIT = ssh.CONNECT_TIMEOUT + 5
 
 
 class HostUnavailable(Exception):
@@ -181,6 +185,16 @@ class HostManager:
         if event is not None:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(event.wait(), REAP_WAIT)
+
+    async def first_attempt(self, host: Host) -> None:
+        """Waits while the host's SSH tunnel is still on its first connection attempt, so a
+        run started right after drydock or the tunnel started (scheduled runs caught up at
+        startup, a job run as its host is saved) does not fail on a tunnel about to connect."""
+        deadline = time.monotonic() + FIRST_ATTEMPT_WAIT
+        while (tunnel := self._tunnels.get(host.id)) is not None and tunnel.state == "connecting":
+            if time.monotonic() > deadline:
+                return
+            await asyncio.sleep(0.2)
 
     def _reap_done(self, host_id: int) -> None:
         event = self._reaped.pop(host_id, None)

@@ -541,3 +541,22 @@ def test_helper_image_must_be_pinned_by_digest(tmp_path: Path) -> None:
 def test_run_dir_must_be_absolute(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="DRYDOCK_RUN_DIR"):
         make_settings(tmp_path, DRYDOCK_RUN_DIR="run")
+
+
+async def test_a_run_waits_for_a_tunnel_on_its_first_attempt(admin: Browser, monkeypatch) -> None:
+    """Started with drydock or with its host: the tunnel is about to connect, not down."""
+    hosts = admin.app.state.hosts
+    tunnel = type("FakeTunnel", (), {"state": "connecting", "error": None})()
+    host = Host(id=4242, name="h", kind="ssh", enabled=True)
+    monkeypatch.setitem(hosts._tunnels, host.id, tunnel)
+
+    async def connects() -> None:
+        await asyncio.sleep(0.5)
+        tunnel.state = "connected"
+
+    task = asyncio.create_task(connects())
+    await asyncio.wait_for(hosts.first_attempt(host), 5)
+    assert tunnel.state == "connected"
+    await task
+    tunnel.state = "disconnected"  # a failed attempt: no wait at all
+    await asyncio.wait_for(hosts.first_attempt(host), 0.1)

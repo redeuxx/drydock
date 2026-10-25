@@ -938,6 +938,7 @@ class Dispatcher:
             )
             if plan.pre_hooks or plan.post_hooks:
                 run_log(f"Hooks: {len(plan.pre_hooks)} before, {len(plan.post_hooks)} after.")
+            await self._hosts.first_attempt(plan.host)
             url = self._hosts.docker_url(plan.host)
             await self._hosts.ready(plan.host.id)  # the startup reap must not hit our helper
             handle = await run_blocking(docker_client.open_client, url)
@@ -1567,6 +1568,7 @@ class Dispatcher:
             if host is None:
                 raise DispatchError("The host no longer exists.")
             run_log(f"Restore of {source.archive} on host {host.name}, mode {choice.mode}.")
+            await self._hosts.first_attempt(host)
             url = self._hosts.docker_url(host)
             await self._hosts.ready(host.id)  # the startup reap must not hit our helpers
             handle = await run_blocking(docker_client.open_client, url)
