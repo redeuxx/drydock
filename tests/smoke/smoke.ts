@@ -342,6 +342,24 @@ const storageTested = await page
   .catch(() => false);
 check(storageTested, "the storage write test result swaps into the page");
 
+// The SFTP form fetches the server's host key into its own field. Nothing listens on port
+// 9, so the error swaps in, and the password typed before stays.
+await page.goto("/storage/new?type=sftp");
+await page.fill("#new-host", "127.0.0.1");
+await page.fill("#new-port", "9");
+await page.fill("#new-pass", "typed-before-fetching");
+await page.click("#new-host_keys-field button");
+const fetchFailed = await page
+  .locator("#new-host_keys-field [role=alert]", { hasText: "host key" })
+  .waitFor({ timeout: 20000 })
+  .then(() => true)
+  .catch(() => false);
+check(fetchFailed, "a failed host key fetch swaps into its field");
+check(
+  (await page.inputValue("#new-pass")) === "typed-before-fetching",
+  "fetching the host key keeps the rest of the form",
+);
+
 await page.goto("/jobs/new");
 await page.fill("#new-name", "smoke job");
 await page.selectOption("#new-host", { label: "local" });

@@ -26,8 +26,10 @@ from sqlalchemy.orm import Session
 from drydock import audit
 from drydock.crypto import CryptoError
 from drydock.db import get_db
+from drydock.hosts import ssh
 from drydock.models import Backup, Job, StorageTarget
 from drydock.routes.auth import client_ip
+from drydock.routes.hosts import scan_now
 from drydock.security.rbac import Role, require_recent_auth, require_role
 from drydock.security.sessions import Auth
 from drydock.storage import options
@@ -65,6 +67,8 @@ class RemoteForm:
     enabled: bool = True
     values: dict[str, str] = field(default_factory=dict)  # non-secret options and folder
     stored: frozenset[str] = frozenset()  # secret options that hold a value
+    fetched: dict[str, str] | None = None  # the sftp host key just read from the server
+    fetch_error: str | None = None
 
 
 async def form_items(request: Request) -> list[tuple[str, Any]]:
@@ -304,6 +308,78 @@ def create_storage(
     )
     db.commit()
     return see_other(request, f"/storage/{target.id}")
+
+
+# SFTP HOST KEYS
+
+
+def typed_values(backend: options.Backend, items: list[tuple[str, Any]]) -> dict[str, str]:
+    """The non-secret options and folder as submitted, for showing the form again."""
+    values = {}
+    for option in backend.options:
+        if not option.secret:
+            raw = last(items, options.OPTION_PREFIX + option.name)
+            values[option.name] = ("true" if raw else "false") if option.type == "bool" else raw
+    values["folder"] = last(items, "folder")
+    return values
+
+
+@router.post("/host-key")
+def fetch_host_key(
+    request: Request,
+    auth: Admin,
+    items: FormItems,
+    storage_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Fills the form's sftp host key (a new target's, or storage_id's) with the one the
+    server at the typed host and port presents, and shows its fingerprint to compare. It
+    connects where the request says, so it needs what saving needs: a superadmin with a
+    recent password check. Stores and trusts nothing; saving the form does."""
+    require_remote_editor(auth)
+    target = get_target(db, storage_id) if storage_id is not None else None
+    if (target.kind if target is not None else last(items, "kind")) != "sftp":
+        raise HTTPException(status_code=404)
+    backend = options.BACKENDS["sftp"]
+    values = typed_values(backend, items)
+    by_name = {o.name: o for o in backend.options}
+    host, error = options.check_value(by_name["host"], values["host"].strip())
+    port, port_error = options.check_value(by_name["port"], values["port"].strip())
+    error = error or port_error
+    if error is None and ":" in host:
+        error = "SFTP storage needs a host name or an IPv4 address."
+    fetched = None
+    username = auth.user.username  # read before the rollback expires auth.user
+    if error is None:
+        db.rollback()  # no write lock while waiting on the network
+        try:
+            line, fingerprint = scan_now(host, int(port))
+        except ssh.SSHKeyError as exc:
+            error = str(exc)
+        else:
+            algorithm, data = line.split()[1:3]
+            values["host_keys"] = f"{algorithm} {data}"
+            fetched = {"algorithm": algorithm, "fingerprint": fingerprint}
+    audit.record(
+        db,
+        actor=username,
+        action="storage.hostkey_fetch",
+        target=f"storage:{storage_id}" if storage_id is not None else None,
+        outcome="success" if error is None else "failure",
+        ip=client_ip(request),
+        details={"host": host, "port": port}
+        | ({"fingerprint": fetched["fingerprint"]} if fetched else {"error": error}),
+    )
+    db.commit()
+    name, enabled = last(items, "name").strip(), last(items, "enabled") == "1"
+    status = 200 if error is None else 422
+    if target is None:
+        form = RemoteForm(name, enabled, values, fetched=fetched, fetch_error=error)
+        return new_page(request, auth, "sftp", status, form=form)
+    target = get_target(db, target.id)
+    stored = remote_form(target, load_config(request, target)).stored
+    form = RemoteForm(name, enabled, values, stored, fetched, error)
+    return edit_page(request, db, auth, target, status, form=form)
 
 
 # EDIT

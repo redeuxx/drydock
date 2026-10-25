@@ -113,6 +113,7 @@ INVENTORY = {
     ("POST", "/storage/{storage_id}"),
     ("POST", "/storage/{storage_id}/delete"),
     ("POST", "/storage/{storage_id}/test"),
+    ("POST", "/storage/host-key"),
     ("GET", "/notifications"),
     ("POST", "/notifications"),
     ("GET", "/notifications/new"),
@@ -517,6 +518,12 @@ AUDITED_SUCCESS = [
         303,
     ),
     ("/storage/{storage_id}/test", {}, "storage.test", 200),
+    (
+        "/storage/host-key",
+        {"kind": "sftp", "name": "nas", "opt_host": "203.0.113.9", "opt_port": "22"},
+        "storage.hostkey_fetch",
+        200,
+    ),
     (
         "/notifications",
         {

@@ -4,6 +4,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -20,11 +21,11 @@ from drydock.jobs.dispatcher import Dispatcher, Target
 from drydock.models import Run
 from drydock.routes import restore as restore_routes
 from drydock.storage.rclone import NO_HOST_KEY, WRONG_KEY
-from tests.conftest import Browser, running
+from tests.conftest import Browser, add_user, running
 from tests.docker_support import wait_until
 from tests.rclone_support import SftpServer, needs_rclone, public_key
 from tests.restore_support import build_archive
-from tests.test_jobs import add_job, run_status, start_run
+from tests.test_jobs import add_job, add_storage, run_status, start_run
 from tests.test_routes import FakeDocker
 
 pytestmark = [pytest.mark.anyio, needs_rclone]
@@ -332,3 +333,106 @@ async def test_jobs_may_use_sftp_storage(admin: Browser, sftp: SftpServer) -> No
     storage_id = await add_sftp(admin, sftp, "nas-sftp")
     assert "nas-sftp" in (await admin.get("/jobs/new")).text
     await add_job(admin, storage_id=str(storage_id))
+
+
+# FETCHING THE HOST KEY
+
+
+def host_keys_value(html: str) -> str:
+    match = re.search(r'name="opt_host_keys" value="([^"]*)"', html)
+    assert match, "no host key field"
+    return match[1]
+
+
+def sftp_form(server: SftpServer, **fields: str) -> dict[str, str]:
+    return {
+        "name": "nas",
+        "kind": "sftp",
+        "enabled": "1",
+        "opt_host": "127.0.0.1",
+        "opt_port": str(server.port),
+        "opt_user": server.user,
+        "opt_pass": server.password,
+        "folder": "backups",
+    } | fields
+
+
+async def test_fetching_fills_the_host_key_and_stores_nothing(
+    admin: Browser, sftp: SftpServer
+) -> None:
+    response = await admin.post("/storage/host-key", sftp_form(sftp))
+    assert response.status_code == 200
+    assert host_keys_value(response.text) == sftp.host_keys
+    assert sftp.host_key.get_fingerprint("sha256") in response.text
+    assert "ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub" in response.text
+    assert sftp.password not in response.text
+    assert admin.sql("SELECT COUNT(*) FROM storage_targets") == [(0,)]
+    ((outcome, details),) = admin.sql(
+        "SELECT outcome, details FROM audit_events WHERE action = 'storage.hostkey_fetch'"
+    )
+    assert outcome == "success" and json.loads(details)["port"] == str(sftp.port)
+    # Saving what was fetched trusts it.
+    storage_id = await add_sftp(admin, sftp, opt_host_keys=host_keys_value(response.text))
+    page = (await admin.post(f"/storage/{storage_id}/test")).text
+    assert "Connected. The storage is writable." in page
+
+
+async def test_fetching_on_the_edit_page_changes_nothing_until_saved(
+    admin: Browser, sftp: SftpServer
+) -> None:
+    impostor = public_key(asyncssh.generate_private_key("ssh-ed25519"))
+    storage_id = await add_sftp(admin, sftp, opt_host_keys=impostor)
+    before = admin.sql("SELECT config_enc FROM storage_targets")
+    response = await admin.post(f"/storage/host-key?storage_id={storage_id}", sftp_form(sftp))
+    assert response.status_code == 200
+    assert host_keys_value(response.text) == sftp.host_keys
+    assert 'placeholder="unchanged"' in response.text  # the stored password is still there
+    assert admin.sql("SELECT config_enc FROM storage_targets") == before
+    for missing in (storage_id + 1, await add_storage(admin)):  # unknown, then local storage
+        response = await admin.post(f"/storage/host-key?storage_id={missing}", sftp_form(sftp))
+        assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("fields", "error"),
+    [
+        ({"opt_port": "9"}, "Could not read the host key"),
+        ({"opt_host": "::1"}, "host name or an IPv4 address"),
+        ({"opt_host": ""}, "Enter the host"),
+    ],
+)
+async def test_a_failed_fetch_says_why(
+    admin: Browser, sftp: SftpServer, fields: dict, error: str
+) -> None:
+    form = sftp_form(sftp, opt_host_keys="ssh-ed25519 typed-before", **fields)
+    response = await admin.post("/storage/host-key", form)
+    assert response.status_code == 422 and error in response.text
+    assert host_keys_value(response.text) == "ssh-ed25519 typed-before"  # left as it was
+    assert sftp.password not in response.text
+    (details,) = admin.sql(
+        "SELECT details FROM audit_events WHERE action = 'storage.hostkey_fetch'"
+        " AND outcome = 'failure'"
+    )[0]
+    assert "error" in json.loads(details) and sftp.password not in details
+
+
+async def test_only_superadmins_fetch_host_keys(admin: Browser, sftp: SftpServer) -> None:
+    storage_id = await add_sftp(admin, sftp)
+    await add_user(admin, "plain-admin", "admin")
+    await admin.login("plain-admin")
+    for path in ("/storage/host-key", f"/storage/host-key?storage_id={storage_id}"):
+        assert (await admin.post(path, sftp_form(sftp))).status_code == 403
+    assert "storage.hostkey_fetch" not in str(admin.sql("SELECT action FROM audit_events"))
+
+
+async def test_fetching_needs_a_recent_password_check(admin: Browser, sftp: SftpServer) -> None:
+    """It connects where the request says, like saving the form."""
+    admin.sql("UPDATE sessions SET reauth_at = NULL")
+    response = await admin.post("/storage/host-key", sftp_form(sftp))
+    assert response.status_code == 403
+    assert "storage.hostkey_fetch" not in str(admin.sql("SELECT action FROM audit_events"))
+
+
+async def test_fetching_is_for_sftp_only(admin: Browser, sftp: SftpServer) -> None:
+    response = await admin.post("/storage/host-key", sftp_form(sftp, kind="smb"))
+    assert response.status_code == 404

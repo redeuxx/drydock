@@ -61,7 +61,7 @@ class OptionsError(Exception):
 class Option:
     name: str  # rclone's option name, exactly
     label: str
-    type: str  # the form macro: string, int, bool, enum, password, pem
+    type: str  # the form macro: string, int, bool, enum, password, pem, hostkeys
     rclone_type: str  # the type config/providers must report
     required: bool = False
     advanced: bool = False
@@ -131,14 +131,15 @@ BACKENDS: dict[str, Backend] = {
             Option(
                 "host_keys",
                 "Host key",
-                "string",
+                "hostkeys",
                 "CommaSepList",
                 True,
                 max_length=8192,
                 destination=True,
-                help="The server's public host key, such as the contents of "
-                "/etc/ssh/ssh_host_ed25519_key.pub on the server. Drydock connects only to a "
-                "server holding it. Separate several keys with commas.",
+                help="The server's public host key: fetch it from the server and compare its "
+                "fingerprint, or paste the contents of /etc/ssh/ssh_host_ed25519_key.pub on "
+                "the server. Drydock connects only to a server holding it. Separate several "
+                "keys with commas.",
             ),
             Option(
                 "user",

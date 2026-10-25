@@ -97,8 +97,39 @@
 </div>
 {%- endmacro %}
 
-{% macro option_field(prefix, option, form, helps) -%}
-{% if option.type == "int" %}{{ int_field(prefix, option, form.values.get(option.name, ""), helps) }}
+{# The sftp host key, with a button that fills it with the key the server presents (it
+   posts the whole form; htmx swaps only this field, so typed passwords stay). Not a
+   submit button: Enter in the form must still save it. Without JavaScript, paste the key. #}
+{% macro hostkeys_field(prefix, option, form, helps, fetch_url) -%}
+<div id="{{ prefix }}-host_keys-field" data-field-region>
+  <label class="label text-sm" for="{{ prefix }}-{{ option.name }}">{{ option.label }}</label>
+  <input id="{{ prefix }}-{{ option.name }}" class="input w-full font-mono" name="opt_{{ option.name }}" value="{{ form.values.get(option.name, '') }}" maxlength="{{ option.max_length }}" autocomplete="off" required{{ described(prefix, option, helps) }}>
+  {{ hint(prefix, option, helps) }}
+  {% if form.fetched %}
+  <div role="status" class="alert alert-info alert-soft mt-1" data-focus-result>
+    <div>
+      <p>The server presents this {{ form.fetched.algorithm }} key:</p>
+      <p><code class="break-all">{{ form.fetched.fingerprint }}</code></p>
+      <p class="text-sm">Compare it with the output of <code>ssh-keygen -lf /etc/ssh/ssh_host_{{ form.fetched.algorithm.removeprefix("ssh-").split("-")[0] }}_key.pub</code> on the server before you save: saving trusts this key.</p>
+    </div>
+  </div>
+  {% elif form.fetch_error %}
+  <div role="alert" class="alert alert-error alert-soft mt-1" data-focus-result><span>{{ form.fetch_error }}</span></div>
+  {% endif %}
+  {% if fetch_url %}
+  <div class="mt-1">
+    <button type="button" class="btn btn-outline btn-sm" hx-post="{{ fetch_url }}" hx-target="#{{ prefix }}-host_keys-field" hx-select="#{{ prefix }}-host_keys-field" hx-swap="outerHTML ignoreTitle:true" hx-disable="this" hx-nonce="{{ csp_nonce }}">
+      <span class="spinner" aria-hidden="true"></span>
+      Fetch from server
+    </button>
+  </div>
+  {% endif %}
+</div>
+{%- endmacro %}
+
+{% macro option_field(prefix, option, form, helps, fetch_url=None) -%}
+{% if option.type == "hostkeys" %}{{ hostkeys_field(prefix, option, form, helps, fetch_url) }}
+{% elif option.type == "int" %}{{ int_field(prefix, option, form.values.get(option.name, ""), helps) }}
 {% elif option.type == "bool" %}{{ bool_field(prefix, option, form.values.get(option.name, ""), helps) }}
 {% elif option.type == "enum" %}{{ enum_field(prefix, option, form.values.get(option.name, ""), helps) }}
 {% elif option.type == "password" %}{{ password_field(prefix, option, form.stored, helps) }}
@@ -107,7 +138,7 @@
 {% endif %}
 {%- endmacro %}
 
-{% macro remote_fields(form, prefix, backend, helps) -%}
+{% macro remote_fields(form, prefix, backend, helps, fetch_url=None) -%}
 <div class="fieldset">
   <label class="fieldset-legend" for="{{ prefix }}-name">Name</label>
   <input id="{{ prefix }}-name" class="input w-full" name="name" value="{{ form.name }}" autocomplete="off" required maxlength="64" aria-describedby="{{ prefix }}-name-hint">
@@ -115,7 +146,7 @@
 </div>
 <fieldset class="fieldset flex flex-col gap-2">
   <legend class="fieldset-legend">{{ backend.label }}</legend>
-  {% for option in backend.options if not option.advanced %}{{ option_field(prefix, option, form, helps) }}{% endfor %}
+  {% for option in backend.options if not option.advanced %}{{ option_field(prefix, option, form, helps, fetch_url) }}{% endfor %}
   <div>
     <label class="label text-sm" for="{{ prefix }}-folder">{{ backend.folder_label }}</label>
     <input id="{{ prefix }}-folder" class="input w-full font-mono" name="folder" value="{{ form.values.get('folder', '') }}" maxlength="512" autocomplete="off" aria-describedby="{{ prefix }}-folder-hint">
@@ -126,7 +157,7 @@
 <details class="mt-2">
   <summary class="cursor-pointer text-sm font-semibold">Advanced</summary>
   <div class="mt-2 flex flex-col gap-2">
-    {% for option in backend.options if option.advanced %}{{ option_field(prefix, option, form, helps) }}{% endfor %}
+    {% for option in backend.options if option.advanced %}{{ option_field(prefix, option, form, helps, fetch_url) }}{% endfor %}
   </div>
 </details>
 {% endif %}

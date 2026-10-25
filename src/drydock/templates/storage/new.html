@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_macros.html" import alerts, submit %}
-{% from "storage/_fields.html" import storage_fields, remote_fields %}
+{% from "storage/_fields.html" import storage_fields, remote_fields with context %}
 {% block title %}Add storage{% endblock %}
 {% block content %}
 <section class="card mx-auto max-w-xl bg-base-100 shadow-sm">
@@ -18,7 +18,7 @@
     <form method="post" action="/storage" hx-post="/storage" hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-1">
       <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
       <input type="hidden" name="kind" value="{{ kind }}">
-      {% if kind == "local" %}{{ storage_fields(form, "new", roots) }}{% else %}{{ remote_fields(form, "new", backend, helps) }}{% endif %}
+      {% if kind == "local" %}{{ storage_fields(form, "new", roots) }}{% else %}{{ remote_fields(form, "new", backend, helps, "/storage/host-key") }}{% endif %}
       <div class="mt-2">{{ submit("Add storage") }}</div>
     </form>
   </div>

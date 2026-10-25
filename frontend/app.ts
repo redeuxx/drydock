@@ -47,6 +47,17 @@ function regionFailed(region: HTMLElement, message: string): void {
   region.setAttribute("aria-busy", "false");
 }
 
+// FORM FIELDS FILLED IN PLACE
+//
+// A field such as the SFTP host key (data-field-region) can fill itself from the server
+// (hx-select picks it from the whole page). A 422 page holds the field with its error; any
+// other error page does not, and swapping it would delete the field, so it is shown in the
+// client error box instead. After a swap, focus moves to the field's result.
+
+function isFieldRegion(target: unknown): target is HTMLElement {
+  return target instanceof HTMLElement && target.hasAttribute("data-field-region");
+}
+
 // THE RUN LOG POLLER
 //
 // The run page polls for new log lines every 2 seconds (routes/runs.py). Polls are
@@ -109,6 +120,11 @@ document.addEventListener("htmx:response:error", (event) => {
     regionFailed(ctx.target, `Could not load this section (HTTP ${status}). Reload the page.`);
     return;
   }
+  if (isFieldRegion(ctx.target) && status !== 422) {
+    ctx.swap = "none";
+    showClientError(`The request failed (HTTP ${status}). Reload the page and try again.`);
+    return;
+  }
   const contentType = ctx.response?.headers.get("content-type") ?? "";
   if (!contentType.startsWith("text/html")) {
     // Plain-text errors (413, 500) have no #main to select; keep the page as it is.
@@ -166,6 +182,17 @@ document.addEventListener("htmx:after:swap", (event) => {
   }
   if (isRegion(target)) {
     target.setAttribute("aria-busy", "false");
+    return;
+  }
+  if (isFieldRegion(target)) {
+    // outerHTML: the target is detached, its replacement has the same id.
+    const result = document
+      .getElementById(target.id)
+      ?.querySelector<HTMLElement>("[role=alert], [data-focus-result]");
+    if (result) {
+      result.tabIndex = -1;
+      result.focus();
+    }
     return;
   }
   if (!(target instanceof HTMLElement) || target.id !== "main") {
