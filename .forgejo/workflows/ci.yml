@@ -36,8 +36,12 @@ jobs:
           persist-credentials: false
       - name: Remove what cancelled runs left behind
         run: |
-          docker compose ls -a -q | grep '^drydock-ci-' | grep -v "^drydock-ci-${{ github.run_id }}-" \
-            | xargs -r -I{} docker compose -p {} down --volumes || true
+          # compose down keeps the one-off `compose run` container, which a cancelled job
+          # leaves running (with its volumes in use), so remove containers by label first.
+          for p in $(docker compose ls -a -q | grep '^drydock-ci-' | grep -v "^drydock-ci-${{ github.run_id }}-"); do
+            docker ps -aq --filter "label=com.docker.compose.project=$p" | xargs -r docker rm -f || true
+            docker compose -p "$p" down --volumes || true
+          done
           docker volume ls -q | grep '^drydock-ci-' | grep -v "^drydock-ci-${{ github.run_id }}-" \
             | xargs -r docker volume rm || true
       - name: Copy the checkout into a volume
