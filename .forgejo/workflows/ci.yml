@@ -4,16 +4,20 @@ name: CI
 #
 # Every job drives the runner host's Docker daemon (the runner mounts its socket), which
 # also runs Forgejo. So each job has its own Compose project, and runs never overlap: the
-# integration tests remove every container labelled drydock.test on that daemon.
+# integration tests remove every container labelled drydock.test on that daemon. A newer
+# push cancels the run in progress; a cancelled job may skip its cleanup, so the next run
+# removes what earlier runs left behind.
 
 on:
   push:
     branches: [main]
+    paths-ignore: ["**.md"]
   pull_request:
+    paths-ignore: ["**.md"]
 
 concurrency:
   group: ci-drydock
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   # Copies the checkout into the volume compose.ci.yaml mounts at /src.
@@ -30,6 +34,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Remove what cancelled runs left behind
+        run: |
+          docker compose ls -a -q | grep '^drydock-ci-' | grep -v "^drydock-ci-${{ github.run_id }}-" \
+            | xargs -r -I{} docker compose -p {} down --volumes || true
+          docker volume ls -q | grep '^drydock-ci-' | grep -v "^drydock-ci-${{ github.run_id }}-" \
+            | xargs -r docker volume rm || true
       - name: Copy the checkout into a volume
         run: |
           docker volume create "$COMPOSE_PROJECT_NAME-src"
