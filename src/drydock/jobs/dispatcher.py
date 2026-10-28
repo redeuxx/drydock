@@ -528,9 +528,12 @@ class Dispatcher:
         workers: int = WORKERS,
         on_end: Callable[[int], None] | None = None,
         rclone: RcloneDaemon | None = None,
+        on_reconnect: Callable[[int, str], None] | None = None,
     ) -> None:
         self.settings = settings
         self._rclone = rclone  # remote storage transfers; None leaves them refused
+        # Told the ID of a Google Drive target Google refused (gdrive_oauth.mark_reconnect).
+        self._on_reconnect = on_reconnect
         # Told the ID of each run whose end was committed (notify.Notifier.run_ended).
         self._on_end = on_end
         self._sessions = sessions
@@ -2167,12 +2170,19 @@ class Dispatcher:
     def _backend(self, plan: RunPlan) -> LocalStorage | RcloneBackend:
         if plan.storage_config is None:
             return LocalStorage(plan.storage_root, self.settings)
-        return self._remote(plan.storage_kind, plan.storage_config)
+        return self._remote(plan.storage_kind, plan.storage_config, plan.storage_target_id)
 
-    def _remote(self, kind: str, config: dict[str, Any]) -> RcloneBackend:
+    def _remote(self, kind: str, config: dict[str, Any], storage_id: int) -> RcloneBackend:
         if self._rclone is None:
             raise StorageError("Remote storage is not available in this drydock process.")
-        return RcloneBackend(self._rclone, kind, config, self.settings.staging_dir)
+        on_reconnect = self._on_reconnect
+        return RcloneBackend(
+            self._rclone,
+            kind,
+            config,
+            self.settings.staging_dir,
+            (lambda token: on_reconnect(storage_id, token)) if on_reconnect else None,
+        )
 
     def _restore_storage(
         self,
@@ -2189,7 +2199,7 @@ class Dispatcher:
         dest = restore_verify.restore_dir(self.settings.staging_dir, run_id)
         if cancel is None:
             return restore_verify.Downloaded(dest)
-        remote = self._remote(source.kind, source.config)
+        remote = self._remote(source.kind, source.config, source.storage_target_id)
         return restore_verify.Downloaded(dest, remote, cancel, run_log)
 
     def _hook_rows(

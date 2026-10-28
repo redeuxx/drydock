@@ -151,7 +151,9 @@ Then add it under **Storage > Add storage** (admins). A storage directory must r
 
 #### Remote storage
 
-A superadmin can also set up SFTP, SMB, WebDAV and Google Drive targets under **Storage > Add storage**. Jobs can back up to SFTP, SMB and WebDAV, and **Restore** lists such a target's archives with their previews and restores them. Backups to and restores from Google Drive arrive in a later release.
+A superadmin can also set up SFTP, SMB, WebDAV and Google Drive targets under **Storage > Add storage**. Jobs can back up to all of them, and **Restore** lists a target's archives with their previews and restores them.
+
+A Google Drive target uses your own Google OAuth client: the storage page links to a guide (**Storage > Add storage > Google Drive**, then "how to create the OAuth client"). Enter the client ID and secret, save, then click **Connect to Google** on the storage page. Use a *web application* client when you reach drydock over the SSH tunnel at `localhost` or on an https host name, with the redirect URI `<DRYDOCK_BASE_URL>/storage/oauth/callback`. Use a *desktop app* client when you reach it on a LAN address over plain http: Google then sends the browser to `http://127.0.0.1:<port>/`, where nothing answers, and you paste that address back into drydock. A connection attempt works once, for 10 minutes, and only for the superadmin who started it. Publish the client's consent screen: Google drops a testing-mode app's access after 7 days. If Google refuses drydock's access later (revoked, or a testing-mode client), the next transfer fails, the storage shows "reconnect required", and the failure notification targets of its jobs get one message. With the default `drive.file` access drydock sees only the files its client created, so deleting and recreating the client hides older backups. Changing the client ID or the access scope forgets the connection.
 
 A restore from remote storage first downloads the whole archive into the staging directory (`restore-<run id>/download/`), after checking that the disk there has the archive's size free plus a 64 MiB reserve; with less, it fails before downloading anything. Both verification passes then read that copy, and it is removed with the rest of the run's staged data when the run ends, is discarded or expires (startup recovery removes what a crash left). While retention deletes a remote archive, a restore of it is refused, and an archive an open restore names is kept.
 
@@ -170,7 +172,7 @@ Each form offers a short list of rclone's options, checked on the server; anythi
 - **sftp:** external `ssh`, every `*_command`, key and known_hosts *files* (paste the key instead), agents, proxies, cipher lists and insecure ciphers, `pin_host_key`. Drydock pins the host key itself (above) and tells rclone never to run commands on the server (`shell_type none`), so SFTP integrity is checked by size only until a restore verifies the archive.
 - **smb:** Kerberos, which needs local credential files. NTLM user, password and domain work.
 - **webdav:** plain `http://`, `bearer_token_command`, `unix_socket`, custom headers, `auth_redirect`, and the `sharepoint` and `infinitescale` vendors.
-- **drive:** service accounts, `env_auth`, custom auth and token URLs, and a pasted token. You use your own OAuth client; connecting to Google is part of the later release.
+- **drive:** service accounts, `env_auth`, impersonation, custom auth and token URLs, and a pasted token. You use your own OAuth client (above).
 
 Passwords, private keys and tokens are stored encrypted and never shown again. Leave a field empty to keep the stored value, or tick its **Clear** box. Changing where a target points (host, port, user, URL, domain, server type, host key or pinned certificate, OAuth client or Google Drive access, and for WebDAV the folder) requires entering its stored secrets again.
 

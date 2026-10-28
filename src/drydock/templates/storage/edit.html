@@ -74,6 +74,45 @@
     </div>
   </section>
 
+  {% if target.kind == "drive" %}
+  <section class="card bg-base-100 shadow-sm md:col-span-2" aria-labelledby="google-heading">
+    <div class="card-body">
+      <div class="flex flex-wrap items-center gap-2">
+        <h2 id="google-heading" class="card-title">Google connection</h2>
+        <span class="badge badge-soft {{ 'badge-success' if google == 'connected' else 'badge-warning' }}">{{ google }}</span>
+      </div>
+      <p class="text-sm opacity-70">Drydock uses your own Google OAuth client (its ID and secret are in the settings). See <a class="link" href="/storage/oauth/guide">how to create one</a>; publish its consent screen, or Google drops the access after 7 days.</p>
+      {% if google_flow %}
+      {% if google_flow.mode == "paste" %}
+      <ol class="list-decimal pl-5 text-sm">
+        <li>Open <a class="link" href="{{ google_flow.url }}" target="_blank" rel="noopener noreferrer">Google's consent page</a> and allow access.</li>
+        <li>Google then sends the browser to an address starting with <code>http://127.0.0.1:</code>, which shows an error page. Copy that whole address from the address bar.</li>
+        <li>Paste it here within 10 minutes.</li>
+      </ol>
+      <form method="post" action="/storage/{{ target.id }}/oauth/paste" hx-post="/storage/{{ target.id }}/oauth/paste" hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-2">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        <label class="label text-sm" for="google-url">Address from the browser</label>
+        <input id="google-url" class="input w-full font-mono" name="url" maxlength="4096" autocomplete="off" required>
+        <div>{{ submit("Connect") }}</div>
+      </form>
+      {% else %}
+      <p class="text-sm"><a class="link" href="{{ google_flow.url }}">Continue to Google</a> to allow access. Google sends you back here.</p>
+      {% endif %}
+      {% elif editor %}
+      <form method="post" action="/storage/{{ target.id }}/oauth/start" hx-post="/storage/{{ target.id }}/oauth/start" hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-2">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        <fieldset class="flex flex-col gap-1">
+          <legend class="text-sm font-semibold">The OAuth client is</legend>
+          <label class="label gap-2 text-sm"><input type="radio" class="radio radio-sm" name="mode" value="redirect" checked> a web application, redirecting to this drydock</label>
+          <label class="label gap-2 text-sm"><input type="radio" class="radio radio-sm" name="mode" value="paste"> a desktop app (for drydock on a LAN address: paste the address back)</label>
+        </fieldset>
+        <div>{{ submit("Connect to Google" if google == "not connected" else "Connect again") }}</div>
+      </form>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+
   {% if editor %}
   <section class="card border border-error/40 bg-base-100 shadow-sm md:col-span-2" aria-labelledby="danger-heading">
     <div class="card-body">

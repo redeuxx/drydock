@@ -5,17 +5,17 @@
   <h1 class="text-3xl font-bold">Storage</h1>
   <a href="/storage/new" class="btn btn-primary btn-sm">Add storage</a>
 </div>
-<p class="mb-4 opacity-70">Archives are written to local directories mounted into the drydock container. Remote storage (SFTP, SMB, WebDAV, Google Drive) can be set up by a superadmin. Backups to and restores from SFTP, SMB and WebDAV work; Google Drive arrives in a later release.</p>
+<p class="mb-4 opacity-70">Archives are written to local directories mounted into the drydock container. Remote storage (SFTP, SMB, WebDAV, Google Drive) can be set up by a superadmin. Backups to and restores from all of them work.</p>
 <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
   <table class="table table-zebra">
     <thead><tr><th scope="col">Name</th><th scope="col">Kind</th><th scope="col">Location</th><th scope="col">Status</th></tr></thead>
     <tbody>
-      {% for target, where in rows %}
+      {% for target, where, google in rows %}
       <tr>
         <td><a class="link" href="/storage/{{ target.id }}">{{ target.name }}</a></td>
         <td>{{ kind_labels.get(target.kind, target.kind) }}</td>
         <td class="font-mono text-sm break-all">{{ where }}</td>
-        <td><span class="badge badge-soft {{ 'badge-success' if target.enabled else 'badge-neutral' }}">{{ "enabled" if target.enabled else "disabled" }}</span></td>
+        <td><span class="badge badge-soft {{ 'badge-success' if target.enabled else 'badge-neutral' }}">{{ "enabled" if target.enabled else "disabled" }}</span>{% if google and google != "connected" %} <span class="badge badge-soft badge-warning">{{ google }}</span>{% endif %}</td>
       </tr>
       {% else %}
       <tr><td colspan="4">No storage yet. Add a directory to keep archives in.</td></tr>

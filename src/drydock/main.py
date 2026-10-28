@@ -1,6 +1,7 @@
 """App factory and lifespan. Uvicorn imports drydock.main:app."""
 
 import fcntl
+import functools
 import logging
 import os
 import sys
@@ -49,6 +50,7 @@ from drydock.security.headers import BodySizeLimitMiddleware, SecurityHeadersMid
 from drydock.security.ratelimit import LoginRateLimiter
 from drydock.security.rbac import RecentAuthRequired, Role
 from drydock.security.sessions import Auth, LoginRequired, clear_cookie
+from drydock.storage import gdrive_oauth
 from drydock.storage.rclone_rc import RcloneDaemon
 from drydock.templating import is_htmx, render
 
@@ -120,6 +122,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             load_instance_id(app.state.sessionmaker),
         )
         notifier = app.state.notifier = Notifier(settings, app.state.sessionmaker, app.state.crypto)
+        app.state.oauth_flows = gdrive_oauth.Flows()  # Google Drive connections under way
+        # A drive target Google refused: marked, and its jobs' failure targets told once.
+        app.state.mark_reconnect = functools.partial(
+            gdrive_oauth.mark_reconnect,
+            app.state.sessionmaker,
+            app.state.crypto,
+            notifier.storage_reconnect,
+        )
         dispatcher = app.state.dispatcher = Dispatcher(
             settings,
             app.state.sessionmaker,
@@ -128,6 +138,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             enabled=app.state.primary,
             on_end=notifier.run_ended,
             rclone=rclone,
+            on_reconnect=app.state.mark_reconnect,
         )
         scheduler = app.state.scheduler = Scheduler(
             settings, app.state.sessionmaker, dispatcher, host_manager

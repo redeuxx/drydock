@@ -35,7 +35,7 @@ from drydock.routes.auth import client_ip
 from drydock.routes.hosts import scan_now
 from drydock.security.rbac import Role, require_recent_auth, require_role
 from drydock.security.sessions import Auth
-from drydock.storage import certs, options
+from drydock.storage import certs, gdrive_oauth, options
 from drydock.storage.base import StorageError
 from drydock.storage.local import LocalStorage, validate_root
 from drydock.storage.rclone import KINDS as REMOTE_KINDS
@@ -204,6 +204,9 @@ def edit_page(
     **context: Any,
 ) -> Response:
     remote = target.kind != "local"
+    if target.kind == "drive":
+        context.setdefault("google", google_status(load_config(request, target)))
+        context.setdefault("google_flow", None)
     if remote:
         context.setdefault("form", remote_form(target, load_config(request, target)))
     else:
@@ -250,7 +253,14 @@ def store(request: Request, config: dict[str, Any]) -> str:
 @router.get("")
 def list_storage(request: Request, auth: Admin, db: Session = Depends(get_db)) -> Response:
     targets = db.scalars(select(StorageTarget).order_by(StorageTarget.name)).all()
-    rows = [(t, location(request, t)) for t in targets]
+    rows = [
+        (
+            t,
+            location(request, t),
+            google_status(load_config(request, t)) if t.kind == "drive" else "",
+        )
+        for t in targets
+    ]
     return render(request, "storage/list.html", auth=auth, rows=rows, kind_labels=KIND_LABELS)
 
 
@@ -446,6 +456,183 @@ def fetch_certificate(
     return edit_page(request, db, auth, target, status, form=form)
 
 
+# GOOGLE DRIVE
+
+
+def google_status(config: dict[str, Any] | None) -> str:
+    if not config or not config.get("token"):
+        return "not connected"
+    return "reconnect required" if config.get("reconnect") else "connected"
+
+
+def drive_target(db: Session, storage_id: int) -> StorageTarget:
+    target = get_target(db, storage_id)
+    if target.kind != "drive":
+        raise HTTPException(status_code=404)
+    return target
+
+
+def connect(
+    request: Request,
+    db: Session,
+    auth: Auth,
+    storage_id: int,
+    flow: gdrive_oauth.Flow | None,
+    code: str,
+    error: str | None = None,
+) -> str | None:
+    """Completes a flow taken for storage_id (or records error, when there is none): trades
+    the code for tokens and stores them on the target. Returns the error to show, or None.
+    Audited either way."""
+    username = auth.user.username  # read before the rollback expires auth.user
+    if flow is not None and error is None:
+        try:
+            stored = (load_config(request, get_target(db, storage_id)) or {}).get("options", {})
+            if not stored.get("client_id") or not stored.get("client_secret"):
+                raise gdrive_oauth.OAuthError(f"The settings {UNREADABLE}.")
+            unchanged(flow, stored)
+            db.rollback()  # no write lock while waiting on Google
+            token = gdrive_oauth.exchange(code, flow, stored["client_id"], stored["client_secret"])
+            target = get_target(db, storage_id)
+            config = load_config(request, target)
+            if config is None:
+                raise gdrive_oauth.OAuthError(f"The settings {UNREADABLE}.")
+            unchanged(flow, config.get("options", {}))
+        except gdrive_oauth.OAuthError as exc:
+            error = str(exc)
+        else:
+            config = {k: v for k, v in config.items() if k != "reconnect"}
+            target.config_enc = store(request, config | {"token": token})
+    audit.record(
+        db,
+        actor=username,
+        action="storage.oauth_connect",
+        target=f"storage:{storage_id}",
+        outcome="success" if error is None else "failure",
+        ip=client_ip(request),
+        details={"error": error} if error else {},
+    )
+    db.commit()
+    return error
+
+
+def unchanged(flow: gdrive_oauth.Flow, stored: dict[str, Any]) -> None:
+    """The target still has the client and scope the consent page asked for."""
+    if (stored.get("client_id"), stored.get("scope", "drive.file")) != (flow.client_id, flow.scope):
+        raise gdrive_oauth.OAuthError("The OAuth client or access changed. Connect again.")
+
+
+@router.get("/oauth/guide")
+def oauth_guide(request: Request, auth: Admin) -> Response:
+    callback = request.app.state.settings.base_url.rstrip("/") + gdrive_oauth.CALLBACK_PATH
+    return render(request, "storage/oauth_guide.html", auth=auth, callback=callback)
+
+
+@router.get("/oauth/callback")
+def oauth_callback(
+    request: Request,
+    auth: Admin,
+    state: str = Query(default="", max_length=64),
+    code: str = Query(default="", max_length=2048),
+    error: str = Query(default="", max_length=64),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Where Google sends the browser back in redirect mode. A GET that writes: its guard
+    is the flow (gdrive_oauth.Flows), single-use and bound to the user who started it."""
+    if auth.user.role < Role.superadmin:
+        raise HTTPException(status_code=403, detail="Only a superadmin can connect storage.")
+    try:
+        flow = request.app.state.oauth_flows.take(state, auth.user.id)
+    except gdrive_oauth.OAuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    drive_target(db, flow.storage_id)
+    problem = connect(
+        request,
+        db,
+        auth,
+        flow.storage_id,
+        flow,
+        code,
+        gdrive_oauth.denied(error) if error else None,
+    )
+    if problem is not None:
+        return edit_page(request, db, auth, get_target(db, flow.storage_id), 400, errors=[problem])
+    return see_other(request, f"/storage/{flow.storage_id}")
+
+
+@router.post("/{storage_id}/oauth/start")
+def oauth_start(
+    request: Request,
+    storage_id: int,
+    auth: Admin,
+    items: FormItems,
+    db: Session = Depends(get_db),
+) -> Response:
+    """Starts a flow. Redirect mode sends the browser to Google (HX-Redirect: a plain form
+    redirect to another origin is blocked by CSP form-action); paste mode shows the link
+    and the field for the address Google redirects to."""
+    require_remote_editor(auth)
+    target = drive_target(db, storage_id)
+    mode = last(items, "mode")
+    if mode not in gdrive_oauth.MODES:
+        raise HTTPException(status_code=422, detail="Choose how to connect.")
+    config = load_config(request, target)
+    stored = (config or {}).get("options", {})
+    client_id, scope = stored.get("client_id"), stored.get("scope", "drive.file")
+    if not client_id or scope not in gdrive_oauth.SCOPES:
+        return edit_page(request, db, auth, target, 422, errors=[f"The settings {UNREADABLE}."])
+    redirect = gdrive_oauth.redirect_uri(mode, request.app.state.settings.base_url)
+    flows: gdrive_oauth.Flows = request.app.state.oauth_flows
+    state, challenge = flows.start(auth.user.id, target.id, redirect, client_id, scope)
+    url = gdrive_oauth.authorize_url(client_id, scope, redirect, state, challenge)
+    audit.record(
+        db,
+        actor=auth.user.username,
+        action="storage.oauth_start",
+        target=f"storage:{target.id}",
+        ip=client_ip(request),
+        details={"mode": mode, "redirect_uri": redirect},
+    )
+    db.commit()
+    if mode == "redirect" and request.headers.get("hx-request") == "true":
+        return Response(status_code=204, headers={"HX-Redirect": url})
+    return edit_page(request, db, auth, target, google_flow={"mode": mode, "url": url})
+
+
+@router.post("/{storage_id}/oauth/paste")
+def oauth_paste(
+    request: Request,
+    storage_id: int,
+    auth: Admin,
+    items: FormItems,
+    db: Session = Depends(get_db),
+) -> Response:
+    """Completes a paste-mode flow from the address Google redirected the browser to."""
+    require_remote_editor(auth)
+    drive_target(db, storage_id)
+    try:
+        state, code, arrived_at = gdrive_oauth.pasted(last(items, "url"))
+        flow = request.app.state.oauth_flows.take(state, auth.user.id, storage_id)
+        if flow.redirect_uri != arrived_at:
+            raise gdrive_oauth.OAuthError("That is not the address Google redirected to.")
+    except gdrive_oauth.OAuthError as exc:
+        audit.record(
+            db,
+            actor=auth.user.username,
+            action="storage.oauth_connect",
+            target=f"storage:{storage_id}",
+            outcome="failure",
+            ip=client_ip(request),
+            details={"error": str(exc)},
+        )
+        db.commit()
+        return edit_page(request, db, auth, get_target(db, storage_id), 422, errors=[str(exc)])
+    error = connect(request, db, auth, storage_id, flow, code)
+    if error is not None:
+        return edit_page(request, db, auth, get_target(db, storage_id), 422, errors=[error])
+    return see_other(request, f"/storage/{storage_id}")
+
+
 # EDIT
 
 
@@ -489,6 +676,9 @@ def update_storage(
             form = RemoteForm(name, enabled, parsed.shown, secrets)
             return edit_page(request, db, auth, target, 422, form=form, errors=errors)
         config, changed = parsed.config, parsed.changed
+        # Google's tokens belong to the OAuth client and its scope: kept unless those change.
+        if target.kind == "drive" and not {"client_id", "scope"} & set(changed):
+            config |= {k: v for k, v in stored.items() if k in ("token", "reconnect")}
     before = summary(request, target)
     target.name = name
     target.enabled = enabled
@@ -541,13 +731,23 @@ def delete_storage(
     return see_other(request, "/storage")
 
 
-def remote_backend(request: Request, target: StorageTarget) -> RcloneBackend:
-    """A remote target's backend. Raises StorageError (safe to show)."""
+def remote_backend(
+    request: Request, target: StorageTarget, *, mark_reconnect: bool = False
+) -> RcloneBackend:
+    """A remote target's backend. Raises StorageError (safe to show). With mark_reconnect,
+    Google refusing a drive target's token marks it "reconnect required": never from a GET,
+    which writes nothing."""
     config = load_config(request, target)
     if config is None:
         raise StorageError(f"The settings {UNREADABLE}.")
-    state = request.app.state
-    return RcloneBackend(state.rclone, target.kind, config, state.settings.staging_dir)
+    state, storage_id = request.app.state, target.id
+    return RcloneBackend(
+        state.rclone,
+        target.kind,
+        config,
+        state.settings.staging_dir,
+        (lambda token: state.mark_reconnect(storage_id, token)) if mark_reconnect else None,
+    )
 
 
 @router.post("/{storage_id}/test")
@@ -564,7 +764,7 @@ def test_storage(
         if target.kind == "local":
             LocalStorage(where, request.app.state.settings).test()
         elif target.kind in REMOTE_KINDS:
-            backend = remote_backend(request, target)
+            backend = remote_backend(request, target, mark_reconnect=True)
             db.rollback()  # no write lock while on the network
             backend.test()
             target = get_target(db, storage_id)

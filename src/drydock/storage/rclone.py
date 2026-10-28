@@ -11,6 +11,9 @@ built here from the target's stored options and nothing else:
   kept across redirects.
 - WebDAV is https only, and a pinned certificate (storage.certs) goes to rclone as every
   call's _config CaCert, a file in the run directory named by its fingerprint.
+- Google Drive gets the token storage.gdrive_oauth stored, and Google's own auth and token
+  URLs, never a service account or the environment. Google answering invalid_grant calls
+  on_reconnect (the target is then "reconnect required") and raises ReconnectRequired.
 - Password options (rclone's IsPassword) are obscured through rclone, once per secret
   (RcloneDaemon.obscure). The private key carries its newlines as \\n, as rclone expects.
 - rc calls take the fs as a JSON object. read_head's ranged read goes through rcd's
@@ -34,6 +37,7 @@ would read in place, is refused.
 """
 
 import contextlib
+import json
 import logging
 import os
 import re
@@ -61,7 +65,7 @@ from drydock.storage.rclone_rc import (
 
 log = logging.getLogger("drydock.rclone")
 
-KINDS = frozenset({"sftp", "smb", "webdav"})  # kinds drydock transfers to; 6f adds drive
+KINDS = frozenset({"sftp", "smb", "webdav", "drive"})  # kinds drydock transfers to
 FIXED: dict[str, dict[str, str]] = {
     "sftp": {
         "shell_type": "none",
@@ -76,6 +80,15 @@ FIXED: dict[str, dict[str, str]] = {
         "headers": "",
         "unix_socket": "",
         "auth_redirect": "false",
+    },
+    "drive": {
+        "auth_url": "",
+        "token_url": "",
+        "client_credentials": "false",
+        "service_account_file": "",
+        "service_account_credentials": "",
+        "env_auth": "false",
+        "impersonate": "",
     },
 }
 # rclone writes <name>.<8 hex>.partial itself only where the backend has PartialUploads (sftp
@@ -110,12 +123,19 @@ UNTRUSTED = (
     "the storage page, compare its fingerprint and save it."
 )
 NOT_HTTPS = "WebDAV storage needs an https:// URL. Edit the storage and save it again."
+NOT_CONNECTED = "This storage is not connected to Google yet. Connect it on its storage page."
+RECONNECT = (
+    "Google refused drydock's access to this storage (it was revoked, or the OAuth client is "
+    "still in testing mode). Connect it again on its storage page."
+)
 SHARE_MISSING = "The share does not exist on the server."
 # (lower-case text in rclone's error, the message to show). First match wins.
 ERRORS = (
     ("host key mismatch", WRONG_KEY),
     ("no key is pinned for this algorithm", WRONG_KEY),
     ("no common algorithm for host key", WRONG_KEY),
+    ("invalid_client", "Google refused the OAuth client ID or secret."),
+    ("storage quota has been exceeded", "The remote storage is full."),
     ("ssh certificate", "The server presents an SSH certificate, which drydock cannot pin."),
     ("unable to authenticate", "The server refused the user name, password or key."),
     ("certificate signed by unknown authority", UNTRUSTED),
@@ -156,6 +176,10 @@ class NotFound(StorageError):
     """The object (or the folder) does not exist. The message is safe to show."""
 
 
+class ReconnectRequired(StorageError):
+    """Google refused drydock's access to a drive target. The message is safe to show."""
+
+
 def settings_for(
     kind: str, config: dict[str, Any], obscure: Callable[[str], str]
 ) -> dict[str, str]:
@@ -179,6 +203,15 @@ def settings_for(
             raise StorageError(NOT_HTTPS)
         if cert := pinned(config):
             values["description"] = f"drydock-cert-{certs.fingerprint(cert)}"
+    if kind == "drive":
+        if config.get("reconnect"):
+            raise StorageError(RECONNECT)
+        token = config.get("token")
+        if not isinstance(token, str) or not token:
+            raise StorageError(NOT_CONNECTED)
+        if "]" in token or options.CONTROL_RE.search(token):  # see connection_string
+            raise StorageError(BAD_CONFIG)
+        values["token"] = token
     allowed = {o.name: o for o in options.BACKENDS[kind].options}
     for name, value in stored.items():
         option = allowed.get(name)
@@ -274,10 +307,16 @@ def parse_time(value: Any) -> datetime:
 
 class RcloneBackend:
     def __init__(
-        self, daemon: RcloneDaemon, kind: str, config: dict[str, Any], staging_dir: Path
+        self,
+        daemon: RcloneDaemon,
+        kind: str,
+        config: dict[str, Any],
+        staging_dir: Path,
+        on_reconnect: Callable[[str], None] | None = None,
     ) -> None:
         if kind not in KINDS:
             raise StorageError(LATER)
+        self._on_reconnect = on_reconnect  # given the token Google answered invalid_grant to
         self._daemon = daemon
         self._kind = kind
         self._config = config
@@ -347,6 +386,14 @@ class RcloneBackend:
         stored = self._config.get("options")
         stored = stored if isinstance(stored, dict) else {}
         found = [str(stored[o.name]) for o in backend.secrets if stored.get(o.name)]
+        token = self._config.get("token")
+        if isinstance(token, str) and token:
+            found.append(token)
+            with contextlib.suppress(ValueError, AttributeError):
+                parsed = json.loads(token)
+                found += [
+                    str(parsed[k]) for k in ("access_token", "refresh_token") if parsed.get(k)
+                ]
         found += [v.replace("\n", "\\n") for v in found if "\n" in v]
         values = self._values or {}
         found += [values[o.name] for o in backend.options if o.obscure and values.get(o.name)]
@@ -389,6 +436,10 @@ class RcloneBackend:
                 lower = lower.replace(value.lower(), "")
         if "network name not found" in lower:  # not a missing object: the share is wrong
             return StorageError(SHARE_MISSING)
+        if self._kind == "drive" and "invalid_grant" in lower:
+            if self._on_reconnect is not None:
+                self._on_reconnect(str(self._config.get("token", "")))
+            return ReconnectRequired(RECONNECT)
         if missing is not None and (exc.status == 404 or "not found" in lower):
             return NotFound(f"{missing} does not exist in storage.")
         for needle, message in ERRORS:

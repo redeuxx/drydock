@@ -24,7 +24,7 @@ from drydock.restore import apply as restore_apply
 from drydock.restore import plan as restore_plan
 from drydock.security import csrf
 from drydock.security.rbac import Role, authenticated
-from drydock.storage import certs
+from drydock.storage import certs, gdrive_oauth
 from tests.conftest import PASSWORD, Browser, add_user
 from tests.rclone_support import certificate
 from tests.restore_support import build_archive, container_inspect, image_tar
@@ -44,12 +44,20 @@ SSH_HOST_FORM = {
 }
 FAKE_HOST_KEY = ssh.public_key_line(asyncssh.generate_private_key("ssh-ed25519"))
 FAKE_FINGERPRINT = "SHA256:" + "A" * 43
+DRIVE_FORM = {
+    "name": "gdrive",
+    "kind": "drive",
+    "enabled": "1",
+    "opt_client_id": "1234-abc.apps.googleusercontent.com",
+    "opt_client_secret": "secret",
+}
 
 # Reachable without a session. Everything else requires one.
 PUBLIC = {"/setup", "/login", "/healthz"}
 # GET routes allowed to write something other than sessions.last_seen_at, with their guard.
-# Phase 6 adds the OAuth callback, guarded by its single-use, user-bound state.
-GET_WRITE_EXEMPTIONS: dict[str, str] = {}
+GET_WRITE_EXEMPTIONS: dict[str, str] = {
+    "/storage/oauth/callback": "the single-use, user-bound OAuth state (storage.gdrive_oauth)",
+}
 # (methods, path pattern, minimum role); the first match wins.
 EXPECTED_MIN_ROLE = [
     ({"GET", "POST"}, re.compile(r"^/users"), Role.superadmin),
@@ -117,6 +125,10 @@ INVENTORY = {
     ("POST", "/storage/{storage_id}/test"),
     ("POST", "/storage/host-key"),
     ("POST", "/storage/certificate"),
+    ("GET", "/storage/oauth/guide"),
+    ("GET", "/storage/oauth/callback"),
+    ("POST", "/storage/{storage_id}/oauth/start"),
+    ("POST", "/storage/{storage_id}/oauth/paste"),
     ("GET", "/notifications"),
     ("POST", "/notifications"),
     ("GET", "/notifications/new"),
@@ -533,6 +545,14 @@ AUDITED_SUCCESS = [
         "storage.cert_fetch",
         200,
     ),
+    # On a Google Drive target of its own (DRIVE_FORM), Google faked.
+    ("/storage/{storage_id}/oauth/start", {"mode": "paste"}, "storage.oauth_start", 200),
+    (
+        "/storage/{storage_id}/oauth/paste",
+        {"url": "http://127.0.0.1:50000/?state=" + "s" * 43 + "&code=4/c"},
+        "storage.oauth_connect",
+        303,
+    ),
     (
         "/notifications",
         {
@@ -658,6 +678,19 @@ async def test_every_unsafe_route_audits_its_success(fresh: Browser, monkeypatch
     monkeypatch.setattr(ssh, "scan_host_key", fake_scan)
     cert, _ = certificate("dav", ["203.0.113.9"])
     monkeypatch.setattr(certs, "fetch", lambda host, port: (cert, False))
+    flow = gdrive_oauth.Flow(
+        "v" * 64,
+        1,
+        0,
+        "http://127.0.0.1:50000/",
+        float("inf"),
+        DRIVE_FORM["opt_client_id"],
+        "drive.file",
+    )
+    monkeypatch.setattr(
+        gdrive_oauth.Flows, "take", lambda self, state, user_id, storage_id=None: flow
+    )
+    monkeypatch.setattr(gdrive_oauth, "exchange", lambda code, flow, cid, secret: "{}")
     monkeypatch.setattr(HostManager, "docker_url", lambda self, host: "unix:///nonexistent")
     monkeypatch.setattr(docker_client, "open_client", lambda url, timeout=60: FakeDocker())
     monkeypatch.setattr(
@@ -698,6 +731,11 @@ async def test_every_unsafe_route_audits_its_success(fresh: Browser, monkeypatch
         elif path == "/login":
             response = await fresh.login("admin", NEW_PASSWORD)
         else:
+            if "/oauth/" in path:  # a Google Drive target's routes
+                if "drive_id" not in ids:
+                    created = await fresh.post("/storage", DRIVE_FORM)
+                    ids["drive_id"] = int(created.headers["location"].rsplit("/", 1)[1])
+                path = path.replace("{storage_id}", str(ids["drive_id"]))
             if path == "/jobs/{job_id}/delete":
                 await fresh.app.state.dispatcher.wait(ids["run_id"])
             if path == "/restore/runs/{restore_id}/plan":

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Google Drive OAuth client{% endblock %}
+{% block content %}
+<article class="card mx-auto max-w-3xl bg-base-100 shadow-sm">
+  <div class="card-body gap-3">
+    <h1 class="card-title text-2xl">Creating a Google OAuth client for drydock</h1>
+    <p>Drydock reaches Google Drive with your own OAuth client: rclone's shared client is being retired in 2026, and your own keeps your quota and your consent screen yours.</p>
+    <h2 class="text-lg font-semibold">1. A project and its consent screen</h2>
+    <ol class="list-decimal pl-5">
+      <li>In the Google Cloud console (<code>console.cloud.google.com</code>), create a project (or pick one) and enable the <strong>Google Drive API</strong>.</li>
+      <li>Under <strong>Google Auth Platform</strong>, set up the consent screen. Add the scope <code>https://www.googleapis.com/auth/drive.file</code> (or <code>.../auth/drive</code> if you chose full drive access).</li>
+      <li><strong>Publish the app</strong> (Audience: In production). An app left in testing mode loses its grants after 7 days, and drydock then shows the storage as "reconnect required". An unverified app in production shows Google's warning screen once; that is expected for your own client.</li>
+    </ol>
+    <h2 class="text-lg font-semibold">2. The OAuth client</h2>
+    <p>Pick the type by how you reach drydock:</p>
+    <ul class="list-disc pl-5">
+      <li><strong>Web application</strong>, when you reach drydock over the SSH tunnel at <code>localhost</code> or on an https host name. Add this authorized redirect URI: <code class="break-all">{{ callback }}</code> (it comes from <code>DRYDOCK_BASE_URL</code>). Then choose "a web application" when connecting.</li>
+      <li><strong>Desktop app</strong>, when you reach drydock on a LAN address over plain http, which Google does not accept as a redirect. Google then sends the browser to <code>http://127.0.0.1:&lt;port&gt;/</code>, where nothing answers; you paste that address into drydock. Choose "a desktop app" when connecting.</li>
+    </ul>
+    <p>Copy the client ID and the client secret into the storage's settings, save, then connect.</p>
+    <h2 class="text-lg font-semibold">What to know</h2>
+    <ul class="list-disc pl-5">
+      <li>With the default <code>drive.file</code> access, drydock sees only the files this OAuth client created. If you delete the client and make a new one, drydock no longer sees the backups made before; keep the client.</li>
+      <li>Drydock stores the tokens encrypted, never shows them, and never uses a service account.</li>
+      <li>Revoking drydock's access in your Google account makes the next transfer fail, marks the storage "reconnect required" and notifies the failure targets of the jobs using it.</li>
+    </ul>
+    <p><a class="link" href="/storage">Back to storage</a></p>
+  </div>
+</article>
+{% endblock %}

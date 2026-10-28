@@ -814,6 +814,12 @@ Test fixtures: `rclone serve sftp|webdav`, a Samba container, and a fake OAuth t
 - The OAuth endpoints, the guide page, the fake token server fixture, and `invalid_grant` setting "reconnect required" plus a notification (uses 5d).
 - Exit criteria covered: all automated OAuth checks. The manual check with a real Google account is done by the user and recorded in the PR.
 
+6f result (2026-10-28):
+- The token lives in the target's encrypted config (`config["token"]`, rclone's oauth2 JSON), next to `config["reconnect"]`. Editing keeps it unless the client ID or scope changes. Drive gets fixed `auth_url`/`token_url` (Google's), `client_credentials=false`, no service account, `env_auth=false` and no impersonation.
+- Redirect mode answers the start with `HX-Redirect` (204); without htmx it shows a link. Paste mode shows the consent link and a field; the pasted address must be `http://127.0.0.1:<the flow's port>/` exactly.
+- `invalid_grant` from rclone raises `ReconnectRequired`, and the backend's `on_reconnect` (dispatcher and routes) runs `gdrive_oauth.mark_reconnect`: sets the flag once, audits `storage.oauth_revoked`, and notifies the on-failure targets of the jobs using the target.
+- Checked live: rclone v1.75.2 takes the inline drive config and token, refreshes at Google, and a wrong client maps to "Google refused the OAuth client ID or secret". The manual check with a real account is still the user's.
+
 ## Phase 7: Restore from upload and from a server path
 
 **Goal:** Restore from an archive uploaded in the browser (up to 50 GB) or from an allowlisted server path. Both go through the same verify-before-touch pipeline.

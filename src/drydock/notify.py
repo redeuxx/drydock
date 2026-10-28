@@ -43,7 +43,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from drydock.config import Settings
 from drydock.crypto import Crypto, CryptoError
-from drydock.models import Host, Job, JobNotification, NotificationTarget, Run
+from drydock.models import Host, Job, JobNotification, NotificationTarget, Run, StorageTarget
 
 log = logging.getLogger("drydock.notify")
 # Apprise logs recipients, topics and partly masked URLs; drydock logs outcomes itself.
@@ -319,6 +319,61 @@ class Notifier:
                     self._submit(self._send_one, run_id, target, url, title, body, failure)
         except Exception:
             log.exception("Run %d: notifications failed", run_id)
+
+    def storage_reconnect(self, storage_id: int) -> None:
+        """Tells the failure targets of the jobs using a Google Drive target that Google
+        refused drydock's access (storage.gdrive_oauth.mark_reconnect). Thread-safe."""
+        self._submit(self._notify_reconnect, storage_id)
+
+    def _notify_reconnect(self, storage_id: int) -> None:
+        try:
+            with self._sessions() as db:
+                storage = db.get(StorageTarget, storage_id)
+                if storage is None:
+                    return
+                rows: list[Any] = list(
+                    db.scalars(
+                        select(NotificationTarget)
+                        .join(JobNotification, JobNotification.target_id == NotificationTarget.id)
+                        .join(Job, Job.id == JobNotification.job_id)
+                        .where(
+                            Job.storage_target_id == storage_id,
+                            JobNotification.on_failure,
+                            NotificationTarget.enabled,
+                        )
+                        .distinct()
+                        .order_by(NotificationTarget.name)
+                    )
+                )
+                name = storage.name
+            title = f"drydock: storage {name} needs reconnecting"
+            body = (
+                f"Google refused drydock's access to the Google Drive storage {name}, so "
+                "backups to it fail. Connect it again on its storage page.\n"
+                f"{self._settings.base_url}/storage/{storage_id}"
+            )
+            for target in rows:
+                try:
+                    url = self._crypto.decrypt(target.url_enc)
+                except CryptoError:
+                    log.warning("Notification %s cannot be decrypted", target.name)
+                    continue
+                with self._lock:  # close() may have run while this loaded
+                    closing = self._closed
+                args = (storage_id, target.name, url, title, body)
+                if closing:
+                    self._send_reconnect(*args)
+                else:
+                    self._submit(self._send_reconnect, *args)
+        except Exception:
+            log.exception("Storage %d: the reconnect notification failed", storage_id)
+
+    def _send_reconnect(
+        self, storage_id: int, target: str, url: str, title: str, body: str
+    ) -> None:
+        outcome = send(target, url, title, body, failure=True)
+        level = logging.INFO if outcome.ok else logging.WARNING
+        log.log(level, "Storage %d: notification %s: %s", storage_id, target, outcome.detail)
 
     def _send_one(
         self, run_id: int, target: str, url: str, title: str, body: str, failure: bool

@@ -300,10 +300,10 @@ async def test_remote_storage_is_changed_by_superadmins_with_recent_auth(admin: 
     assert deleted == [("success",), ("success",)]  # the local one, then the remote one
 
 
-# NOT YET USABLE FOR TRANSFERS
+# GOOGLE DRIVE BEFORE CONNECTING
 
 
-async def test_jobs_and_restores_refuse_remote_storage(admin: Browser) -> None:
+async def test_an_unconnected_drive_says_so(admin: Browser) -> None:
     storage_id = await new_remote(admin, "drive", "nas-share")
     host_id = add_host(admin)
     response = await admin.post(
@@ -317,18 +317,12 @@ async def test_jobs_and_restores_refuse_remote_storage(admin: Browser) -> None:
             "enabled": "1",
         },
     )
-    assert response.status_code == 422 and "drive storage arrive" in response.text
-    assert "nas-share" not in (await admin.get("/jobs/new")).text
+    assert response.status_code == 303, response.text
     listing = await admin.get(f"/restore/storage/{storage_id}")
-    assert "this kind of storage arrive in a later release" in listing.text
-    name = "drydock-web-00000000-0000-4000-8000-000000000000-20261022T000000Z.tar.zst"
-    response = await admin.post(
-        "/restore/from-storage", {"storage_id": str(storage_id), "name": name}
-    )
-    assert response.status_code == 409
-    assert admin.sql("SELECT COUNT(*) FROM runs") == [(0,)]
+    assert "not connected to Google yet" in listing.text
     test = await admin.post(f"/storage/{storage_id}/test")
-    assert "arrive in a later release" in test.text
+    assert "not connected to Google yet" in test.text
+    assert admin.sql("SELECT COUNT(*) FROM runs") == [(0,)]
 
 
 # FIELD CHECKS

@@ -359,7 +359,7 @@ def test_drydock_sets_the_security_options_last() -> None:
     assert values["shell_type"] == "none" and values["known_hosts_file"] == ""
     assert values["pin_host_key"] == "false" and values["key_use_agent"] == "false"
     assert values["host_keys"] == HOST_KEY
-    for kind in ("drive", "local", "s3"):
+    for kind in ("local", "s3"):
         with pytest.raises(StorageError, match="later release"):
             settings_for(kind, config, lambda secret: secret)
 
