@@ -304,7 +304,7 @@ async def test_remote_storage_is_changed_by_superadmins_with_recent_auth(admin: 
 
 
 async def test_jobs_and_restores_refuse_remote_storage(admin: Browser) -> None:
-    storage_id = await new_remote(admin, "smb", "nas-share")
+    storage_id = await new_remote(admin, "drive", "nas-share")
     host_id = add_host(admin)
     response = await admin.post(
         "/jobs",
@@ -317,10 +317,10 @@ async def test_jobs_and_restores_refuse_remote_storage(admin: Browser) -> None:
             "enabled": "1",
         },
     )
-    assert response.status_code == 422 and "smb storage arrive" in response.text
+    assert response.status_code == 422 and "drive storage arrive" in response.text
     assert "nas-share" not in (await admin.get("/jobs/new")).text
     listing = await admin.get(f"/restore/storage/{storage_id}")
-    assert "Restoring from remote storage arrives" in listing.text
+    assert "this kind of storage arrive in a later release" in listing.text
     name = "drydock-web-00000000-0000-4000-8000-000000000000-20261022T000000Z.tar.zst"
     response = await admin.post(
         "/restore/from-storage", {"storage_id": str(storage_id), "name": name}
@@ -362,23 +362,25 @@ async def test_jobs_and_restores_refuse_remote_storage(admin: Browser) -> None:
         ("smb", {"folder": ""}, "Enter the share"),
         ("smb", {"folder": "/share"}, "must not start with /"),
         ("smb", {"opt_domain": "bad domain"}, "Domain: use"),
-        ("webdav", {"opt_url": "ftp://dav.example.com"}, "http:// or https://"),
+        ("smb", {"opt_host": "fd00::1"}, "SMB storage needs a host name or an IPv4"),
+        ("smb", {"opt_user": "a]b"}, "without ]"),
+        ("webdav", {"opt_url": "ftp://dav.example.com"}, "as https:// with a host"),
+        ("webdav", {"opt_url": "http://dav.lan"}, "does not use plain http"),
+        ("webdav", {"opt_url": "https://[::1]/dav"}, "IPv4 address, and no ]"),
+        ("webdav", {"opt_url": "https://dav.lan/a]b"}, "IPv4 address, and no ]"),
         ("webdav", {"opt_url": "https://u:p@dav.example.com"}, "user name, password"),
         ("webdav", {"opt_url": "https://dav.example.com/?x=1"}, "query"),
         ("webdav", {"opt_url": "https://dav.example.com:99999"}, "invalid port"),
         ("webdav", {"opt_url": "https://dav.example.com:0/"}, "invalid port"),
-        ("webdav", {"opt_url": "http://[::1/x"}, "http:// or https://"),
-        ("webdav", {"opt_url": "http://a]b/"}, "http:// or https://"),
-        ("webdav", {"opt_url": "http://[notip]/"}, "http:// or https://"),
+        ("webdav", {"opt_url": "https://[::1/x"}, "as https:// with a host"),
+        ("webdav", {"opt_url": "https://a]b/"}, "as https:// with a host"),
+        ("webdav", {"opt_url": "https://[notip]/"}, "as https:// with a host"),
         ("webdav", {"opt_vendor": "sharepoint"}, "from the list"),
         ("webdav", {"opt_vendor": "infinitescale"}, "from the list"),
         ("webdav", {"opt_user": "a:b"}, "without a colon"),
         ("webdav", {"opt_bearer_token": "t"}, "not both"),
-        (
-            "webdav",
-            {"opt_url": "http://dav.lan", "opt_vendor": "sharepoint-ntlm"},
-            "needs an https:// URL",
-        ),
+        ("webdav", {"opt_pass": "", "opt_bearer_token": "a]b"}, "must not contain ]"),
+        ("webdav", {"opt_tls_cert": "junk"}, "Server certificate: Paste exactly one"),
         ("drive", {"opt_client_id": "my-client"}, "apps.googleusercontent.com"),
         ("drive", {"opt_client_secret": ""}, "Enter the oauth client secret"),
         ("drive", {"opt_scope": "drive.readonly"}, "from the list"),

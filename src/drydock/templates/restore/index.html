@@ -18,7 +18,7 @@
           <tr>
             <td>{{ target.name }}{% if not target.enabled %} <span class="badge badge-soft badge-neutral">disabled</span>{% endif %}</td>
             <td>{{ kind_labels.get(target.kind, target.kind) }}</td>
-            <td>{% if target.kind in listed_kinds %}<a class="link" href="/restore/storage/{{ target.id }}">List archives<span class="sr-only"> in {{ target.name }}</span></a>{% else %}<span class="text-sm opacity-70">Remote restores arrive in a later release</span>{% endif %}</td>
+            <td>{% if target.kind in listed_kinds %}<a class="link" href="/restore/storage/{{ target.id }}">List archives<span class="sr-only"> in {{ target.name }}</span></a>{% else %}<span class="text-sm opacity-70">Restores from this kind of storage arrive in a later release</span>{% endif %}</td>
           </tr>
           {% endfor %}
         </tbody>

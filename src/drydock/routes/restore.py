@@ -4,7 +4,7 @@
    target's archives straight from the storage, so it works without the backup catalog,
    with what each archive's first bytes say. That preview is not verified and is only
    shown; an encrypted archive shows its name, size and time only. Remote storage is
-   listed too, but restores from it arrive in a later release.
+   listed too, and its archive is downloaded to the staging directory before pass 1.
 2. POST /restore/from-storage creates a restore run, and the dispatcher verifies the
    archive (pass 1) without touching any host. The plan page follows its log meanwhile.
 3. POST /restore/runs/{restore_id}/plan plans the restore against the chosen host's
@@ -80,7 +80,7 @@ from drydock.storage.base import (
 )
 from drydock.storage.local import LocalStorage
 from drydock.storage.rclone import KINDS as REMOTE_KINDS
-from drydock.storage.rclone import REMOTE_RESTORE_LATER
+from drydock.storage.rclone import LATER
 from drydock.templating import render, see_other
 
 router = APIRouter(prefix="/restore")
@@ -435,7 +435,7 @@ def storage_archives(
     first = (page - 1) * LISTING_LIMIT
     root = target_root(request, target)
     if target.kind not in ("local", *REMOTE_KINDS):
-        error = REMOTE_RESTORE_LATER
+        error = LATER
     elif target.kind == "local" and root is None:
         error = UNDECRYPTABLE_STORAGE
     else:
@@ -511,9 +511,9 @@ def restore_from_storage(
         record("failure", None, storage_id=storage_id[:32], archive=archive[:255], error=error)
         return index_page(request, db, auth, 422, [error])
     username = auth.user.username  # read before the release expires auth.user
-    if release(db, get_target(db, target_id)).kind != "local":
-        record("failure", None, storage_id=target_id, archive=archive, error=REMOTE_RESTORE_LATER)
-        return index_page(request, db, auth, 409, [REMOTE_RESTORE_LATER])
+    if release(db, get_target(db, target_id)).kind not in ("local", *REMOTE_KINDS):
+        record("failure", None, storage_id=target_id, archive=archive, error=LATER)
+        return index_page(request, db, auth, 409, [LATER])
     try:
         run_id = anyio.from_thread.run(
             dispatcher(request).submit_restore, target_id, archive, username

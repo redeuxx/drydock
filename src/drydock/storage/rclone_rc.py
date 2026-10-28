@@ -50,8 +50,8 @@ log = logging.getLogger("drydock.rclone")
 RCLONE_BINARY = Path("/opt/rclone/rclone")  # pinned and checksummed in the image
 LOG_LEVEL = "INFO"
 RC_USER = "drydock"
-# The rc methods PLAN.md Phase 6 uses. Never options/*, config/* (except the provider
-# list) or core/command.
+# The rc methods PLAN.md Phase 6 uses, plus movefile. Never options/*, config/* (except
+# the provider list) or core/command.
 METHODS = frozenset(
     {
         "rc/noop",
@@ -63,6 +63,7 @@ METHODS = frozenset(
         "operations/copyfile",
         "operations/deletefile",
         "operations/list",
+        "operations/movefile",  # a WebDAV upload's partial name to the archive name
         "operations/stat",
     }
 )

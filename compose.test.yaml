@@ -67,12 +67,18 @@ services:
       - .:/src
       - venv:/venv
       - cache:/cache
+      # The samba share, to check what the SMB tests wrote.
+      - smb-share:/smb-share
     environment:
       DRYDOCK_TEST_DOCKER_URL: tcp://socket-proxy:2375
       DRYDOCK_TEST_SSH_HOST: sshhost
       DRYDOCK_TEST_SSHHOST_PLAIN_URL: tcp://sshhost:2375
       DRYDOCK_TEST_AGE_DIR: /opt/age
       DRYDOCK_TEST_SMALL_DIR: /small
+      DRYDOCK_TEST_SMB_HOST: samba
+      DRYDOCK_TEST_SMB_SHARE_DIR: /smb-share
+      # Test only: the samba service's throwaway user. Never use it anywhere else.
+      DRYDOCK_TEST_SMB_PASS: smb-test-only-6f2a
     # A deliberately small disk for the full-disk tests in tests/test_runs_docker.py.
     tmpfs:
       - /small:size=160m,uid=10001,gid=10001,mode=0700
@@ -84,6 +90,8 @@ services:
       socket-proxy:
         condition: service_started
       sshhost:
+        condition: service_healthy
+      samba:
         condition: service_healthy
     command:
       - sh
@@ -210,6 +218,45 @@ services:
       timeout: 5s
       retries: 60
 
+  # Stand-in SMB server for tests/test_smb_webdav_storage.py: one share, "backups", for
+  # one user. smbd writes as that user, uid 10001, so the tests container reads (and
+  # cleans) the share through the same volume.
+  samba:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM docker.io/library/alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+        RUN apk add --no-cache samba-server samba-common-tools \
+         && adduser -D -H -u 10001 -s /sbin/nologin drydock \
+         && printf '%s\n' \
+              '[global]' \
+              'server role = standalone server' \
+              'map to guest = never' \
+              'server min protocol = SMB2' \
+              'disable netbios = yes' \
+              'smb ports = 445' \
+              'load printers = no' \
+              'log file = /dev/stdout' \
+              '[backups]' \
+              'path = /share' \
+              'read only = no' \
+              'valid users = drydock' \
+              > /etc/samba/smb.conf \
+         && printf '%s\n' '#!/bin/sh' 'set -e' 'chown 10001:10001 /share' \
+              'printf "%s\n%s\n" "$$SMB_PASS" "$$SMB_PASS" | smbpasswd -a -s drydock' \
+              'exec smbd --foreground --no-process-group' > /usr/local/bin/samba-entrypoint \
+         && chmod 0755 /usr/local/bin/samba-entrypoint
+        ENTRYPOINT ["samba-entrypoint"]
+    environment:
+      SMB_PASS: smb-test-only-6f2a
+    volumes:
+      - smb-share:/share
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 445"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
 networks:
   docker-proxy:
     internal: true
@@ -219,3 +266,4 @@ volumes:
   cache:
   dind-data:
   smoke-data:
+  smb-share:

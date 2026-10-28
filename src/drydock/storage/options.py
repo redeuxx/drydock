@@ -17,6 +17,10 @@ input keeps the stored value and a clear_<name> box removes it. Changing a desti
 field (host, port, user, URL, client ID, ...) requires every stored secret to be entered
 again or cleared, so stored credentials are never sent to a new destination unseen.
 
+WebDAV URLs are https only (see storage.certs): over http, a redirect could send rclone's
+requests to the Docker socket proxy. A server certificate no public authority signed can be
+pinned (tls_cert, a drydock option that never reaches rclone as one).
+
 Why the rest is denied, from rclone v1.75.2's source: sftp ssh, bearer_token_command and
 the *_command options run commands; *_file options, kerberos and env_auth read local files
 (with $VAR expansion); webdav unix_socket dials any local socket; drive token_url,
@@ -34,6 +38,7 @@ from urllib.parse import urlsplit
 import asyncssh
 
 from drydock.hosts import ssh
+from drydock.storage import certs
 
 OWN_FIELDS = frozenset({"csrf_token", "kind", "name", "enabled", "folder"})
 OPTION_PREFIX = "opt_"
@@ -61,7 +66,7 @@ class OptionsError(Exception):
 class Option:
     name: str  # rclone's option name, exactly
     label: str
-    type: str  # the form macro: string, int, bool, enum, password, pem, hostkeys
+    type: str  # the form macro: string, int, bool, enum, password, pem, hostkeys, certificate
     rclone_type: str  # the type config/providers must report
     required: bool = False
     advanced: bool = False
@@ -73,6 +78,7 @@ class Option:
     destination: bool = False  # a change needs the stored secrets entered again
     help: str = ""  # drydock's own help where rclone's would describe a refused feature
     obscure: bool = False  # rclone's IsPassword: sent through core/obscure
+    rclone: bool = True  # False: drydock's own, never sent to rclone as an option
 
     @property
     def secret(self) -> bool:
@@ -183,7 +189,15 @@ BACKENDS: dict[str, Backend] = {
         (
             host_option(),
             port_option("445"),
-            Option("user", "User", "string", "string", destination=True),
+            Option(
+                "user",
+                "User",
+                "string",
+                "string",
+                pattern=re.compile(r"[^\]]{1,256}"),  # see rclone.connection_string
+                pattern_hint="a user name without ]",
+                destination=True,
+            ),
             password_option(),
             Option(
                 "domain",
@@ -213,7 +227,30 @@ BACKENDS: dict[str, Backend] = {
         "Folder",
         "An optional folder below the URL.",
         (
-            Option("url", "URL", "string", "string", True, max_length=2048, destination=True),
+            Option(
+                "url",
+                "URL",
+                "string",
+                "string",
+                True,
+                max_length=2048,
+                destination=True,
+                help="The https:// address of the WebDAV folder. Drydock does not use plain "
+                "http for WebDAV.",
+            ),
+            Option(
+                "tls_cert",
+                "Server certificate",
+                "certificate",
+                "",
+                max_length=16384,
+                destination=True,
+                rclone=False,
+                help="Only for a server whose certificate no public authority signed, such as "
+                "a NAS with a self-signed one: fetch it from the server and compare its "
+                "fingerprint. Drydock then trusts that certificate, and only it, for this "
+                "storage. Leave it empty otherwise.",
+            ),
             Option(
                 "vendor",
                 "Server",
@@ -228,8 +265,9 @@ BACKENDS: dict[str, Backend] = {
                 "User",
                 "string",
                 "string",
-                pattern=re.compile(r"[^:]{1,256}"),  # basic auth splits at the first colon
-                pattern_hint="a user name without a colon",
+                # Basic auth splits at the first colon; see rclone.connection_string for ].
+                pattern=re.compile(r"[^:\]]{1,256}"),
+                pattern_hint="a user name without a colon or ]",
                 destination=True,
             ),
             password_option(),
@@ -348,10 +386,11 @@ def parse(kind: str, items: list[tuple[str, Any]], stored: dict[str, Any] | None
         for o in backend.secrets
         if o.required and not new.get(o.name)
     ]
+    # An option a target was saved without (one added in a later release) is its default.
     moved = [
         o.label.lower()
         for o in backend.options
-        if o.destination and new.get(o.name) != old.get(o.name)
+        if o.destination and new.get(o.name, o.default) != old.get(o.name, o.default)
     ]
     # WebDAV appends the folder to the URL: a shared host's other paths are other tenants.
     if kind == "webdav" and stored is not None and stored.get("folder", "") != folder:
@@ -364,7 +403,12 @@ def parse(kind: str, items: list[tuple[str, Any]], stored: dict[str, Any] | None
     errors += combination_errors(kind, new, {o.name for o in kept})
     if errors:
         return Parsed(errors, shown=shown)
-    changed = sorted(n for n in new.keys() | old.keys() if new.get(n) != old.get(n))
+    defaults = {o.name: o.default for o in backend.options}
+    changed = sorted(
+        n
+        for n in new.keys() | old.keys()
+        if new.get(n, defaults.get(n)) != old.get(n, defaults.get(n))
+    )
     if stored is not None and stored.get("folder") != folder:
         changed.append("folder")
     return Parsed([], {"folder": folder, "options": new}, shown, changed)
@@ -393,6 +437,15 @@ def shape_errors(backend: Backend, items: list[tuple[str, Any]]) -> list[str]:
 def check_value(option: Option, raw: str) -> tuple[str, str | None]:
     """The value to store for a non-secret option, or an error."""
     label = option.label
+    if option.type == "certificate":
+        if not raw.strip():
+            return "", None
+        if len(raw) > option.max_length:
+            return "", f"{label} is longer than {option.max_length} characters."
+        try:
+            return certs.pem(certs.load(raw)), None
+        except certs.CertificateError as exc:
+            return "", f"{label}: {exc}"
     if option.type == "bool":
         if raw not in ("", "1"):
             return "", f"{label}: tick the box or leave it clear."
@@ -444,6 +497,8 @@ def secret_error(option: Option, raw: str, clear: str) -> str | None:
             return f"{label} is not a PEM or OpenSSH private key."
     elif CONTROL_RE.search(text):
         return f"{label} must not contain control characters."
+    elif not option.obscure and "]" in text:  # sent as is: see rclone.connection_string
+        return f"{label} must not contain ]."
     return None
 
 
@@ -492,8 +547,8 @@ def url_error(value: str) -> str | None:
         hostname = parts.hostname  # raises on malformed brackets
     except ValueError:
         hostname = None
-    if hostname is None or parts.scheme not in ("http", "https"):
-        return "Enter the URL as http:// or https:// with a host."
+    if hostname is None or parts.scheme != "https":
+        return "Enter the URL as https:// with a host. Drydock does not use plain http for WebDAV."
     if parts.username or parts.password or parts.query or parts.fragment:
         return "The URL must not hold a user name, password, query or fragment."
     try:
@@ -504,6 +559,8 @@ def url_error(value: str) -> str | None:
         return "The URL has an invalid port."
     if not valid_host(hostname):
         return "The URL has an invalid host."
+    if ":" in hostname or "]" in value:  # see rclone.connection_string
+        return "The URL must hold a host name or an IPv4 address, and no ]."
     return None
 
 
@@ -532,11 +589,11 @@ def check_folder(kind: str, raw: str) -> tuple[str, str | None]:
 def combination_errors(kind: str, opts: dict[str, str], kept: set[str]) -> list[str]:
     """Rules across options. kept names the secrets carried over from the stored config."""
     errors = []
+    # rclone joins host and port without brackets, and brackets cannot go into the
+    # connection string read_head needs.
+    if ":" in opts.get("host", ""):
+        errors.append(f"{BACKENDS[kind].label} storage needs a host name or an IPv4 address.")
     if kind == "sftp":
-        # rclone joins host and port without brackets, and brackets cannot go into the
-        # connection string read_head needs.
-        if ":" in opts.get("host", ""):
-            errors.append("SFTP storage needs a host name or an IPv4 address.")
         key, passphrase = opts.get("key_pem", ""), opts.get("key_file_pass", "")
         if not opts.get("pass") and not key:
             errors.append("Enter a password or a private key.")
@@ -550,13 +607,12 @@ def combination_errors(kind: str, opts: dict[str, str], kept: set[str]) -> list[
                 )
             errors.append(key_error)
     if kind == "webdav":
-        https = opts["url"].lower().startswith("https://")
         if opts.get("bearer_token") and (opts.get("user") or opts.get("pass")):
             errors.append("Use a user and password or a bearer token, not both.")
-        if opts.get("bearer_token") and not https:
-            errors.append("A bearer token needs an https:// URL.")
-        if opts["vendor"] == "sharepoint-ntlm" and not https:
-            errors.append("SharePoint with NTLM needs an https:// URL.")
+        host = urlsplit(opts["url"]).hostname
+        cert = certs.load(opts["tls_cert"]) if opts.get("tls_cert") else None
+        if cert is not None and host and (error := certs.problem(cert, host)):
+            errors.append(f"Server certificate: {error}")
     return errors
 
 
@@ -612,6 +668,8 @@ def help_texts(providers: Any) -> dict[str, dict[str, str]]:
         }
         texts[kind] = {}
         for option in backend.options:
+            if not option.rclone:
+                continue
             rclone = rclone_options.get(option.name)
             if (
                 rclone is None

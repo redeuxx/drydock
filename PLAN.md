@@ -793,9 +793,21 @@ Test fixtures: `rclone serve sftp|webdav`, a Samba container, and a fake OAuth t
 - The full cycle on each backend, plus a 5 GB transfer with a matching sha256.
 - Exit criteria covered: the remaining "each backend passes a full cycle" checks and no secret in logs.
 
+6d result (2026-10-28, rclone v1.75.2):
+- WebDAV is https only (user decision). rclone's WebDAV client follows redirects to any host with the method kept, and refuses only https to http, so over http a server could send a retention DELETE to the socket proxy, which allows DELETE.
+- Self-signed WebDAV servers (user request): **Fetch from server** next to a "Server certificate" field (`POST /storage/certificate`, superadmin with recent auth, audited `storage.cert_fetch`) shows the certificate; saving pins it. It reaches rclone as each call's `_config` `CaCert` (a file in `/run/drydock/certs` named by its SHA-256), which replaces the system roots for that call's connections. rclone caches a connection by its options and the ranged GET cannot carry `_config`, so the fs carries `description='drydock-cert-<sha256>'`, and `read_head` first makes an rc call under the same connection string; a cold GET fails closed.
+- SMB and WebDAV hosts must be host names or IPv4 addresses, and no value sent as is may hold `]` (both for the connection string). SMB gets `use_kerberos=false`; WebDAV gets no `bearer_token_command`, headers, `unix_socket` or `auth_redirect`.
+- rclone writes `.partial` files only for backends with PartialUploads (SFTP, SMB). For WebDAV `put` uploads as `<name>.<8 hex>.partial` itself and renames it with `operations/movefile`.
+- Test fixtures: `rclone serve webdav` over TLS with a throwaway CA, and a samba service in compose.test.yaml (one share, a test-only password).
+
 **6e: Restore from remote storage**
 - Free-space check under `$DRYDOCK_STAGING_DIR` before downloading, a full download to staging, the Phase 3 two-pass verify, and cleanup when the run ends.
 - Exit criteria covered: remote restore applies, short free space fails before any download, and staging is empty afterwards.
+
+6e result (2026-10-28):
+- `RcloneBackend.get` downloads with `operations/copyfile` into `restore-<run id>/download/`. Before that, it checks free space against the listed size plus the 64 MiB reserve and the bytes other downloads in flight hold (`Reserved`). A transfer that goes past the listed size is stopped (checked each poll). A full staging disk is reported as such, not as a remote error. `open` refuses to read in place.
+- `restore.verify.Downloaded`: pass 1 downloads inside `verify_archive`'s cleanup, and pass 2 reopens that same copy, so the identity check still holds.
+- Retention and restores: the dispatcher marks an archive it is deleting in memory, in the same write transaction where it checks for open restores, and deletes over the network outside it. `_create_restore_run` refuses a marked archive. Only the primary process runs either.
 
 **6f: Google Drive OAuth**
 - `storage/gdrive_oauth.py`: PKCE S256, the in-memory single-use state store, and both redirect modes.

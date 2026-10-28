@@ -1,11 +1,13 @@
-"""RcloneBackend over SFTP (Phase 6c), against `rclone serve sftp` and a real rcd: the
-full cycle, host key pinning, cancel, rclone's death, what reaches rclone, and the logs."""
+"""RcloneBackend over SFTP (Phases 6c and 6e), against `rclone serve sftp` and a real rcd:
+the full cycle, host key pinning, cancel, rclone's death, downloads, what reaches rclone,
+and the logs."""
 
 import asyncio
 import json
 import logging
 import os
 import re
+import shutil
 import signal
 import threading
 import uuid
@@ -18,6 +20,8 @@ import asyncssh
 import httpx
 import pytest
 
+from drydock.archive import writer
+from drydock.archive.writer import InsufficientSpace
 from drydock.crypto import Crypto
 from drydock.restore import verify
 from drydock.storage.base import StorageError, archive_name
@@ -28,6 +32,7 @@ from drydock.storage.rclone import (
     UNKNOWN,
     WRONG_KEY,
     RcloneBackend,
+    Reserved,
     connection_string,
     settings_for,
 )
@@ -44,12 +49,15 @@ HOST_KEY = public_key(asyncssh.generate_private_key("ssh-ed25519"))
 
 @pytest.fixture
 async def daemon(tmp_path: Path) -> AsyncIterator[RcloneDaemon]:
+    """rclone as the app runs it: under the lifespan's umask 077, which files it makes keep."""
+    umask = os.umask(0o077)
     rclone = RcloneDaemon(tmp_path / "rc")
-    await rclone.start()
     try:
+        await rclone.start()
         yield rclone
     finally:
         await rclone.close()
+        os.umask(umask)
 
 
 @pytest.fixture
@@ -71,6 +79,10 @@ def upload_file(staging: Path, data: bytes) -> Path:
 
 def new_name() -> str:
     return archive_name(str(uuid.uuid4()), "web", datetime.now(UTC), False)
+
+
+def names(folder: Path) -> list[str]:
+    return sorted(p.name for p in folder.iterdir())
 
 
 async def put(storage: RcloneBackend, local: Path, name: str, **kwargs):
@@ -347,7 +359,7 @@ def test_drydock_sets_the_security_options_last() -> None:
     assert values["shell_type"] == "none" and values["known_hosts_file"] == ""
     assert values["pin_host_key"] == "false" and values["key_use_agent"] == "false"
     assert values["host_keys"] == HOST_KEY
-    for kind in ("smb", "webdav", "drive", "local", "s3"):
+    for kind in ("drive", "local", "s3"):
         with pytest.raises(StorageError, match="later release"):
             settings_for(kind, config, lambda secret: secret)
 
@@ -441,14 +453,155 @@ async def test_the_test_leaves_nothing_behind(
         await asyncio.to_thread(wrong.test)
 
 
-async def test_restores_from_remote_storage_are_refused(
+# DOWNLOADS
+
+
+async def get(storage: RcloneBackend, name: str, local: Path, **kwargs) -> int:
+    cancel = kwargs.pop("cancel", None) or threading.Event()
+    return await asyncio.to_thread(storage.get, name, local, kwargs.get("progress"), cancel)
+
+
+async def test_get_downloads_into_staging(
     daemon: RcloneDaemon, staging: Path, sftp: SftpServer
 ) -> None:
     storage = backend(daemon, staging, sftp.config())
-    with pytest.raises(StorageError, match="later release"):
-        storage.open(new_name())
-    with pytest.raises(StorageError, match="later release"):
-        storage.get(new_name(), staging / "x", None, threading.Event())
+    name, data = new_name(), os.urandom(3 * MiB)
+    await put(storage, upload_file(staging, data), name)
+    folder = staging / "restore-1" / "download"
+    folder.mkdir(parents=True, mode=0o700)
+    seen: list[int] = []
+    assert await get(storage, name, folder / name, progress=seen.append) == len(data)
+    assert (folder / name).read_bytes() == data and names(folder) == [name]
+    assert (folder / name).stat().st_mode & 0o077 == 0
+    assert seen == sorted(seen)
+    with pytest.raises(StorageError, match="already in the staging directory"):
+        await get(storage, name, folder / name)
+    assert (folder / name).read_bytes() == data
+    missing = new_name()
+    with pytest.raises(StorageError, match="does not exist in storage"):
+        await get(storage, missing, folder / missing)
+    assert names(folder) == [name]
+    # Restores read the download; reading in place is refused.
+    with pytest.raises(StorageError, match="download in the staging directory"):
+        storage.open(name)
+
+
+async def test_get_writes_only_below_staging(
+    daemon: RcloneDaemon, staging: Path, tmp_path: Path, sftp: SftpServer
+) -> None:
+    storage = backend(daemon, staging, sftp.config())
+    name = new_name()
+    for local in (tmp_path / name, staging / ".." / name, staging / "x" / ".." / ".." / name):
+        with pytest.raises(ValueError, match="staging"):
+            await get(storage, name, local)
+    with pytest.raises(StorageError, match="Invalid archive name"):
+        await get(storage, name, staging / "../escape")
+    assert not (tmp_path / name).exists()
+
+
+async def test_get_checks_free_space_before_downloading(
+    daemon: RcloneDaemon, staging: Path, sftp: SftpServer, monkeypatch
+) -> None:
+    storage = backend(daemon, staging, sftp.config())
+    name = new_name()
+    await put(storage, upload_file(staging, os.urandom(MiB)), name)
+    real = shutil.disk_usage
+    monkeypatch.setattr(
+        writer.shutil, "disk_usage", lambda path: real(path)._replace(free=writer.RESERVE)
+    )
+    calls = spy(daemon, monkeypatch)
+    with pytest.raises(InsufficientSpace, match="Not enough free space in the staging"):
+        await get(storage, name, staging / name)
+    assert "operations/copyfile" not in [method for method, _ in calls]
+    assert not any(n.startswith(name) for n in names(staging))
+    # The archive's listed size is what counts: one byte short fails, exactly enough works.
+    for free, works in ((MiB + writer.RESERVE - 1, False), (MiB + writer.RESERVE, True)):
+        monkeypatch.setattr(
+            writer.shutil, "disk_usage", lambda path, free=free: real(path)._replace(free=free)
+        )
+        if works:
+            assert await get(storage, name, staging / name) == MiB
+        else:
+            with pytest.raises(InsufficientSpace):
+                await get(storage, name, staging / name)
+
+
+async def test_downloads_in_flight_count_against_free_space(
+    daemon: RcloneDaemon, staging: Path, sftp: SftpServer, monkeypatch
+) -> None:
+    storage = backend(daemon, staging, sftp.config())
+    name = new_name()
+    await put(storage, upload_file(staging, os.urandom(MiB)), name)
+    free = shutil.disk_usage(staging).free
+    monkeypatch.setattr(Reserved, "total", free)  # another download holds it all
+    calls = spy(daemon, monkeypatch)
+    with pytest.raises(InsufficientSpace):
+        await get(storage, name, staging / name)
+    assert "operations/copyfile" not in [method for method, _ in calls]
+    monkeypatch.setattr(Reserved, "total", 0)
+    assert await get(storage, name, staging / name) == MiB
+    assert Reserved.total == 0  # released
+
+
+async def test_a_download_larger_than_listed_is_stopped(
+    daemon: RcloneDaemon, staging: Path, slow_sftp: SftpServer, monkeypatch
+) -> None:
+    """A remote that lists a small size and sends more must not fill the staging disk."""
+    storage = backend(daemon, staging, slow_sftp.config())
+    name = new_name()
+    (slow_sftp.root / "backups").mkdir()
+    (slow_sftp.root / "backups" / name).write_bytes(os.urandom(32 * MiB))
+    real = storage._stat
+    monkeypatch.setattr(storage, "_stat", lambda n, timeout=90.0: real(n, timeout) | {"Size": 1024})
+    folder = staging / "download"
+    folder.mkdir()
+    with pytest.raises(StorageError, match="larger than it was listed"):
+        await asyncio.wait_for(get(storage, name, folder / name), 40)
+    assert names(folder) == []
+
+
+async def test_cancel_mid_download_leaves_nothing(
+    daemon: RcloneDaemon, staging: Path, slow_sftp: SftpServer
+) -> None:
+    storage = backend(daemon, staging, slow_sftp.config())
+    name = new_name()
+    data = os.urandom(32 * MiB)
+    (slow_sftp.root / "backups").mkdir()
+    (slow_sftp.root / "backups" / name).write_bytes(data)  # the server throttles reads too
+    folder = staging / "download"
+    folder.mkdir()
+    cancel = threading.Event()
+    task = asyncio.create_task(
+        get(storage, name, folder / name, cancel=cancel, progress=lambda n: n > 0 and cancel.set())
+    )
+    with pytest.raises(StorageError) as caught:
+        await asyncio.wait_for(task, 40)
+    assert str(caught.value) == CANCELLED
+    assert names(folder) == []
+    assert slow_sftp.files() == [name]
+
+
+async def test_a_failed_download_removes_rclones_partial_file(
+    daemon: RcloneDaemon, staging: Path, slow_sftp: SftpServer
+) -> None:
+    storage = backend(daemon, staging, slow_sftp.config())
+    name = new_name()
+    (slow_sftp.root / "backups").mkdir()
+    (slow_sftp.root / "backups" / name).write_bytes(os.urandom(32 * MiB))
+    folder = staging / "download"
+    folder.mkdir()
+    started = threading.Event()
+    task = asyncio.create_task(
+        get(storage, name, folder / name, progress=lambda n: n > 0 and started.set())
+    )
+    await wait_until(started.is_set, 30, "the download to start")
+    (partial,) = names(folder)
+    assert re.fullmatch(re.escape(name) + r"\.[0-9a-f]{8}\.partial", partial)
+    assert daemon.pid is not None
+    os.kill(daemon.pid, signal.SIGKILL)  # rclone cannot remove its partial file itself
+    with pytest.raises(StorageError, match="rclone restarted"):
+        await asyncio.wait_for(task, READY_TIMEOUT + 30)
+    assert names(folder) == []
 
 
 # LOGS

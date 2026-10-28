@@ -5,7 +5,7 @@
 <h1 class="mb-4 text-3xl font-bold break-all">Archives in {{ target.name }}</h1>
 <p class="mb-4"><a class="link" href="/restore">Back to Restore</a></p>
 {{ alerts([error] if error else []) }}
-<p class="mb-4 opacity-70">Read from the storage itself, newest first. What an archive holds is read from its first bytes and is not verified until you choose it; an encrypted archive shows only its name, size and time.{% if target.kind != "local" %} Restoring from remote storage arrives in a later release.{% endif %}</p>
+<p class="mb-4 opacity-70">Read from the storage itself, newest first. What an archive holds is read from its first bytes and is not verified until you choose it; an encrypted archive shows only its name, size and time.{% if target.kind != "local" %} Choosing one downloads it whole into drydock's staging directory first, which needs as much free space as the archive is large.{% endif %}</p>
 {% if rows and (page > 1 or more) %}<p class="mb-4 text-sm">Showing archives {{ first + 1 }} to {{ first + rows|length }} of {{ total }}, newest first.</p>{% endif %}
 <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
   <table class="table table-zebra table-sm">
@@ -33,14 +33,12 @@
           {% endif %}
         </td>
         <td>
-          {% if target.kind == "local" %}
           <form method="post" action="/restore/from-storage" hx-post="/restore/from-storage" hx-nonce="{{ csp_nonce }}">
             <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
             <input type="hidden" name="storage_id" value="{{ target.id }}">
             <input type="hidden" name="name" value="{{ obj.name }}">
             {{ submit("Verify and restore", "btn-primary btn-sm", obj.name) }}
           </form>
-          {% endif %}
         </td>
       </tr>
       {% else %}

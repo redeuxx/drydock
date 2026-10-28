@@ -1,5 +1,5 @@
 """Backups to SFTP storage through the app (Phase 6c): runs with retention, cancel mid-upload,
-"Test connection", the host key field, and what stays refused until restores download."""
+"Test connection" and the host key field."""
 
 import hashlib
 import json
@@ -127,15 +127,11 @@ async def test_backups_to_sftp_with_retention(
     for name, (size, digest) in zip(names, sizes, strict=True):
         data = (sftp.root / "backups" / name).read_bytes()
         assert len(data) == size and hashlib.sha256(data).hexdigest() == digest
-    # The listing reads the manifests through the ranged read; restoring is refused.
+    # The listing reads the manifests through the ranged read and offers each archive
+    # (tests/test_remote_restore.py restores them).
     listing = (await admin.get(f"/restore/storage/{storage_id}")).text
     assert listing.count("unverified preview</span>") == 2
-    assert "Verify and restore" not in listing and "Restoring from remote storage" in listing
-    response = await admin.post(
-        "/restore/from-storage", {"storage_id": str(storage_id), "name": names[0]}
-    )
-    assert response.status_code == 409
-    assert admin.sql("SELECT COUNT(*) FROM runs WHERE kind = 'restore'") == [(0,)]
+    assert listing.count("Verify and restore") == 2 and "downloads it whole" in listing
     index = (await admin.get("/restore")).text
     assert f'href="/restore/storage/{storage_id}"' in index
 

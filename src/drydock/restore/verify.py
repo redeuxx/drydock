@@ -20,7 +20,8 @@ checked again on the same descriptor afterwards. In the same single read:
 Every member must be referenced by a manifest entry of the type its prefix names, and is
 checked as what that entry restores it as.
 Everything goes to $DRYDOCK_STAGING_DIR/restore-<run id>/ (0700, files 0600), named from
-the run ID only, and is removed if anything fails.
+the run ID only, and is removed if anything fails. An archive on remote storage is first
+downloaded whole into download/ there (Downloaded), and both passes read that copy.
 
 Pass 2 (open_verified) opens the archive once more, again by a single descriptor whose
 fstat must match pass 1, and streams the data members in archive order. Every member is
@@ -85,9 +86,11 @@ from drydock.archive.writer import (
 from drydock.crypto import Crypto, CryptoError
 from drydock.engine.compose_files import dotenv_values
 from drydock.jobs.runlog import env_values
-from drydock.storage.base import StorageBackend, StorageError, parse_name
+from drydock.storage.base import StorageBackend, StorageError, check_name, parse_name
+from drydock.storage.local import open_regular
 
 RESTORE_DIR_RE = re.compile(r"restore-\d{1,12}")
+DOWNLOAD_DIR = "download"  # a remote archive's copy, inside the restore directory
 HEAD_BYTES = 2 * 1024 * 1024
 FIRST_HEAD_BYTES = 64 * 1024  # what preview reads first
 TOO_LARGE = "the manifest is larger than the preview"
@@ -160,6 +163,41 @@ def remove_restore_dir(staging: Path, run_id: int) -> None:
         return
     with contextlib.suppress(FileNotFoundError):
         shutil.rmtree(path)
+
+
+class Downloaded:
+    """A remote archive as a restore reads it: from its copy in the run's restore directory.
+
+    Pass 1 gives the remote backend, so open downloads the archive there first (verify_archive
+    has just made the directory, and removes it, copy and all, if anything fails). Pass 2
+    gives none, so open reopens that same copy, whose fstat identity pass 1 recorded."""
+
+    def __init__(
+        self,
+        dest: Path,
+        remote: StorageBackend | None = None,
+        cancel: threading.Event | None = None,
+        log: Log | None = None,
+    ) -> None:
+        self.folder = dest / DOWNLOAD_DIR
+        self.remote = remote
+        self.cancel = cancel or threading.Event()
+        self.log = log
+
+    def open(self, name: str) -> BinaryIO:
+        check_name(name)
+        if self.remote is not None:
+            with staging_writes():
+                self.folder.mkdir(mode=0o700)
+            if self.log is not None:
+                self.log(f"Downloading {name} to the staging directory.")
+            size = self.remote.get(name, self.folder / name, None, self.cancel)
+            if self.log is not None:
+                self.log(f"Downloaded {size} bytes.")
+        try:
+            return open_regular(self.folder / name)
+        except StorageError:
+            raise VerifyError(GONE) from None
 
 
 # DATA SHAPES

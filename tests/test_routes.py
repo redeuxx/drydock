@@ -24,7 +24,9 @@ from drydock.restore import apply as restore_apply
 from drydock.restore import plan as restore_plan
 from drydock.security import csrf
 from drydock.security.rbac import Role, authenticated
+from drydock.storage import certs
 from tests.conftest import PASSWORD, Browser, add_user
+from tests.rclone_support import certificate
 from tests.restore_support import build_archive, container_inspect, image_tar
 
 pytestmark = pytest.mark.anyio
@@ -114,6 +116,7 @@ INVENTORY = {
     ("POST", "/storage/{storage_id}/delete"),
     ("POST", "/storage/{storage_id}/test"),
     ("POST", "/storage/host-key"),
+    ("POST", "/storage/certificate"),
     ("GET", "/notifications"),
     ("POST", "/notifications"),
     ("GET", "/notifications/new"),
@@ -525,6 +528,12 @@ AUDITED_SUCCESS = [
         200,
     ),
     (
+        "/storage/certificate",
+        {"kind": "webdav", "name": "dav", "opt_url": "https://203.0.113.9"},
+        "storage.cert_fetch",
+        200,
+    ),
+    (
         "/notifications",
         {
             "name": "ops",
@@ -647,6 +656,8 @@ async def test_every_unsafe_route_audits_its_success(fresh: Browser, monkeypatch
         return f"{address} {FAKE_HOST_KEY}", FAKE_FINGERPRINT
 
     monkeypatch.setattr(ssh, "scan_host_key", fake_scan)
+    cert, _ = certificate("dav", ["203.0.113.9"])
+    monkeypatch.setattr(certs, "fetch", lambda host, port: (cert, False))
     monkeypatch.setattr(HostManager, "docker_url", lambda self, host: "unix:///nonexistent")
     monkeypatch.setattr(docker_client, "open_client", lambda url, timeout=60: FakeDocker())
     monkeypatch.setattr(

@@ -8,7 +8,9 @@ its settings point, from a container that can reach the unauthenticated Docker s
 proxy. Like notification targets, only a superadmin with a recent password check may create,
 change or remove one, and admins see it read-only (they may test it and back up to it). Its
 fields are checked against storage.options' allowlist, and its secrets are never rendered.
-Transfers go through storage.rclone, for the kinds in its KINDS so far.
+Transfers go through storage.rclone, for the kinds in its KINDS so far. An sftp host key and
+a WebDAV server certificate can be fetched from the server for the editor to compare; only
+saving the form trusts them.
 
 Every target's settings are stored encrypted.
 """
@@ -17,6 +19,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from typing import Annotated, Any
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
@@ -32,7 +35,7 @@ from drydock.routes.auth import client_ip
 from drydock.routes.hosts import scan_now
 from drydock.security.rbac import Role, require_recent_auth, require_role
 from drydock.security.sessions import Auth
-from drydock.storage import options
+from drydock.storage import certs, options
 from drydock.storage.base import StorageError
 from drydock.storage.local import LocalStorage, validate_root
 from drydock.storage.rclone import KINDS as REMOTE_KINDS
@@ -67,7 +70,7 @@ class RemoteForm:
     enabled: bool = True
     values: dict[str, str] = field(default_factory=dict)  # non-secret options and folder
     stored: frozenset[str] = frozenset()  # secret options that hold a value
-    fetched: dict[str, str] | None = None  # the sftp host key just read from the server
+    fetched: dict[str, Any] | None = None  # the host key or certificate just fetched
     fetch_error: str | None = None
 
 
@@ -376,6 +379,67 @@ def fetch_host_key(
     if target is None:
         form = RemoteForm(name, enabled, values, fetched=fetched, fetch_error=error)
         return new_page(request, auth, "sftp", status, form=form)
+    target = get_target(db, target.id)
+    stored = remote_form(target, load_config(request, target)).stored
+    form = RemoteForm(name, enabled, values, stored, fetched, error)
+    return edit_page(request, db, auth, target, status, form=form)
+
+
+# WEBDAV CERTIFICATES
+
+
+@router.post("/certificate")
+def fetch_certificate(
+    request: Request,
+    auth: Admin,
+    items: FormItems,
+    storage_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Fills the form's WebDAV server certificate with the one the server at the typed URL
+    presents, and shows it to compare, like fetch_host_key. A certificate a public authority
+    already vouches for is shown but not filled: pinning it would break at its renewal."""
+    require_remote_editor(auth)
+    target = get_target(db, storage_id) if storage_id is not None else None
+    if (target.kind if target is not None else last(items, "kind")) != "webdav":
+        raise HTTPException(status_code=404)
+    backend = options.BACKENDS["webdav"]
+    values = typed_values(backend, items)
+    by_name = {o.name: o for o in backend.options}
+    url, error = options.check_value(by_name["url"], values["url"].strip())
+    parts = urlsplit(url)
+    host, port = parts.hostname or "", parts.port or 443
+    fetched = None
+    username = auth.user.username  # read before the rollback expires auth.user
+    if error is None:
+        db.rollback()  # no write lock while waiting on the network
+        try:
+            cert, trusted = certs.fetch(host, port)
+        except certs.CertificateError as exc:
+            error = str(exc)
+        else:
+            fetched = certs.details(cert) | {"trusted": trusted}
+            if not trusted:
+                error = certs.problem(cert, host)
+                if error is None:
+                    values["tls_cert"] = certs.pem(cert)
+    audit.record(
+        db,
+        actor=username,
+        action="storage.cert_fetch",
+        target=f"storage:{storage_id}" if storage_id is not None else None,
+        outcome="success" if error is None else "failure",
+        ip=client_ip(request),
+        details={"host": host, "port": port}
+        | ({"fingerprint": fetched["fingerprint"]} if fetched else {})
+        | ({"error": error} if error else {}),
+    )
+    db.commit()
+    name, enabled = last(items, "name").strip(), last(items, "enabled") == "1"
+    status = 200 if error is None else 422
+    if target is None:
+        form = RemoteForm(name, enabled, values, fetched=fetched, fetch_error=error)
+        return new_page(request, auth, "webdav", status, form=form)
     target = get_target(db, target.id)
     stored = remote_form(target, load_config(request, target)).stored
     form = RemoteForm(name, enabled, values, stored, fetched, error)

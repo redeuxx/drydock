@@ -155,7 +155,7 @@ from drydock.storage.base import (
 )
 from drydock.storage.local import LocalStorage
 from drydock.storage.rclone import KINDS as REMOTE_KINDS
-from drydock.storage.rclone import REMOTE_RESTORE_LATER, RcloneBackend
+from drydock.storage.rclone import LATER, RcloneBackend
 from drydock.storage.rclone_rc import RcloneDaemon
 
 log = logging.getLogger("drydock.jobs")
@@ -267,12 +267,15 @@ class Target:
 
 @dataclass(frozen=True)
 class RestoreSource:
-    """Where a restore run's archive is, and its runs.plan document."""
+    """Where a restore run's archive is, and its runs.plan document. Local storage has a
+    root; remote storage has its kind and decrypted config instead."""
 
     storage_target_id: int
     archive: str
     root: str
     doc: dict[str, Any]
+    kind: str = "local"
+    config: dict[str, Any] | None = None
 
 
 @dataclass
@@ -544,6 +547,9 @@ class Dispatcher:
         self._jobs: set[int] = set()  # jobs with a queued or running run
         self._last_stamp: dict[str, datetime] = {}
         self._stamp_lock = threading.Lock()
+        # (storage target ID, archive): remote archives retention is deleting. Added and read
+        # only inside write transactions, which orders the two (see _delete_archive).
+        self._deleting: set[tuple[int, str]] = set()
         self._pending_restarts: dict[int, list[tuple[int, dict[str, Any]]]] = {}
         self._pending_unpauses: dict[int, list[tuple[int, dict[str, Any]]]] = {}
         self._pending_rollbacks: dict[int, list[tuple[int, dict[str, Any]]]] = {}
@@ -1514,7 +1520,7 @@ class Dispatcher:
         try:
             source = await run_blocking(self._load_restore, run_id)
             run_log.add_secrets(self._passphrases(source.archive))
-            storage = LocalStorage(source.root, self.settings)
+            storage = self._restore_storage(source, run_id, active.cancel, run_log)
             loop = asyncio.get_running_loop()
             staged = await loop.run_in_executor(
                 self._executor,
@@ -1645,7 +1651,7 @@ class Dispatcher:
         run_id = active.run_id
         opener = functools.partial(
             restore_verify.open_verified,
-            LocalStorage(source.root, self.settings),
+            self._restore_storage(source, run_id),
             staged,
             self._crypto,
             active.cancel,
@@ -2161,11 +2167,30 @@ class Dispatcher:
     def _backend(self, plan: RunPlan) -> LocalStorage | RcloneBackend:
         if plan.storage_config is None:
             return LocalStorage(plan.storage_root, self.settings)
+        return self._remote(plan.storage_kind, plan.storage_config)
+
+    def _remote(self, kind: str, config: dict[str, Any]) -> RcloneBackend:
         if self._rclone is None:
             raise StorageError("Remote storage is not available in this drydock process.")
-        return RcloneBackend(
-            self._rclone, plan.storage_kind, plan.storage_config, self.settings.staging_dir
-        )
+        return RcloneBackend(self._rclone, kind, config, self.settings.staging_dir)
+
+    def _restore_storage(
+        self,
+        source: RestoreSource,
+        run_id: int,
+        cancel: threading.Event | None = None,
+        run_log: RunLog | None = None,
+    ) -> LocalStorage | restore_verify.Downloaded:
+        """Where a restore reads its archive: in place in a local root, or a remote
+        archive's copy in the restore directory. Given cancel (pass 1), the copy is
+        downloaded first; pass 2 reads the copy pass 1 verified."""
+        if source.config is None:
+            return LocalStorage(source.root, self.settings)
+        dest = restore_verify.restore_dir(self.settings.staging_dir, run_id)
+        if cancel is None:
+            return restore_verify.Downloaded(dest)
+        remote = self._remote(source.kind, source.config)
+        return restore_verify.Downloaded(dest, remote, cancel, run_log)
 
     def _hook_rows(
         self, db: Session, job: Job
@@ -2209,10 +2234,9 @@ class Dispatcher:
         return [names[hook_id] for hook_id in ids if hook_id in names]
 
     def _root(self, target: StorageTarget) -> str:
-        """A local target's directory. Restores read only these until remote ones download
-        first."""
+        """A local target's directory."""
         if target.kind != "local":
-            raise StorageError(REMOTE_RESTORE_LATER)
+            raise StorageError(f"Storage {target.name} is not a local directory.")
         return str(json.loads(self._crypto.decrypt(target.config_enc))["path"])
 
     def _storage_root(self, target: StorageTarget) -> str:
@@ -2234,8 +2258,10 @@ class Dispatcher:
             target = db.get(StorageTarget, storage_target_id)
             if target is None:
                 raise DispatchError("The storage does not exist.")
-            if target.kind != "local":  # see _delete_archive before lifting this
-                raise DispatchError(REMOTE_RESTORE_LATER)
+            if target.kind != "local" and target.kind not in REMOTE_KINDS:
+                raise DispatchError(LATER)
+            if (storage_target_id, archive) in self._deleting:  # see _delete_archive
+                raise DispatchError("Retention is deleting this archive.")
             expired = self._expire_stale(db)
             pending = db.scalar(
                 select(func.count())
@@ -2305,6 +2331,9 @@ class Dispatcher:
             target = db.get(StorageTarget, target_id)
             if target is None:
                 raise DispatchError("The storage no longer exists.")
+            if target.kind in REMOTE_KINDS:
+                config = self._remote_config(target)
+                return RestoreSource(target_id, archive, "", doc, target.kind, config)
             return RestoreSource(target_id, archive, self._storage_root(target), doc)
 
     def _verified(
@@ -2443,13 +2472,21 @@ class Dispatcher:
         an archive already gone still loses its row.
 
         Remote storage: the network delete holds no transaction, so it never holds the
-        write lock that every request needs. Nothing orders it with a restore, which is
-        safe only while restores from remote storage are refused (_create_restore_run)."""
+        write lock that every request needs. Instead the archive is marked as being deleted
+        in the same write transaction that finds no open restore of it, and
+        _create_restore_run refuses a marked archive in its own, so here too a restore is
+        either seen or refused. Only the primary process creates restores and deletes."""
         if not isinstance(storage, LocalStorage):
-            with self._sessions() as db:
+            key = (plan.storage_target_id, name)
+            with self._sessions() as db, db.begin():
                 busy = restore_uses(db, name)
+                if not busy:
+                    self._deleting.add(key)
             if not busy:
-                delete_or_gone(storage, name)
+                try:
+                    delete_or_gone(storage, name)
+                finally:
+                    self._deleting.discard(key)  # gone, or kept: a restore may have it now
                 with self._sessions() as db, db.begin():
                     self._forget_archive(db, plan, name)
         else:

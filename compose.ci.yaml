@@ -13,6 +13,7 @@ services:
       - src:/src
       - venv:/venv
       - cache:/cache
+      - smb-share:/smb-share
 
 volumes:
   src:

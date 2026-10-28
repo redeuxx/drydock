@@ -99,8 +99,20 @@
 
 {# The sftp host key, with a button that fills it with the key the server presents (it
    posts the whole form; htmx swaps only this field, so typed passwords stay). Not a
-   submit button: Enter in the form must still save it. Without JavaScript, paste the key. #}
-{% macro hostkeys_field(prefix, option, form, helps, fetch_url) -%}
+   submit button: Enter in the form must still save it. Without JavaScript, paste the key.
+   fetch_query is "" on a new target's page and "?storage_id=<id>" on an edit page. #}
+{% macro fetch_button(prefix, option, path, fetch_query) -%}
+{% if fetch_query is not none %}
+<div class="mt-1">
+  <button type="button" class="btn btn-outline btn-sm" hx-post="{{ path }}{{ fetch_query }}" hx-target="#{{ prefix }}-{{ option.name }}-field" hx-select="#{{ prefix }}-{{ option.name }}-field" hx-swap="outerHTML ignoreTitle:true" hx-disable="this" hx-nonce="{{ csp_nonce }}">
+    <span class="spinner" aria-hidden="true"></span>
+    Fetch from server
+  </button>
+</div>
+{% endif %}
+{%- endmacro %}
+
+{% macro hostkeys_field(prefix, option, form, helps, fetch_query) -%}
 <div id="{{ prefix }}-host_keys-field" data-field-region>
   <label class="label text-sm" for="{{ prefix }}-{{ option.name }}">{{ option.label }}</label>
   <input id="{{ prefix }}-{{ option.name }}" class="input w-full font-mono" name="opt_{{ option.name }}" value="{{ form.values.get(option.name, '') }}" maxlength="{{ option.max_length }}" autocomplete="off" required{{ described(prefix, option, helps) }}>
@@ -116,19 +128,44 @@
   {% elif form.fetch_error %}
   <div role="alert" class="alert alert-error alert-soft mt-1" data-focus-result><span>{{ form.fetch_error }}</span></div>
   {% endif %}
-  {% if fetch_url %}
-  <div class="mt-1">
-    <button type="button" class="btn btn-outline btn-sm" hx-post="{{ fetch_url }}" hx-target="#{{ prefix }}-host_keys-field" hx-select="#{{ prefix }}-host_keys-field" hx-swap="outerHTML ignoreTitle:true" hx-disable="this" hx-nonce="{{ csp_nonce }}">
-      <span class="spinner" aria-hidden="true"></span>
-      Fetch from server
-    </button>
-  </div>
-  {% endif %}
+  {{ fetch_button(prefix, option, "/storage/host-key", fetch_query) }}
 </div>
 {%- endmacro %}
 
-{% macro option_field(prefix, option, form, helps, fetch_url=None) -%}
-{% if option.type == "hostkeys" %}{{ hostkeys_field(prefix, option, form, helps, fetch_url) }}
+{# The WebDAV server certificate (PEM), filled the same way. A certificate a public authority
+   already vouches for is shown but not filled. #}
+{% macro certificate_field(prefix, option, form, helps, fetch_query) -%}
+<div id="{{ prefix }}-{{ option.name }}-field" data-field-region>
+  <label class="label text-sm" for="{{ prefix }}-{{ option.name }}">{{ option.label }}</label>
+  <textarea id="{{ prefix }}-{{ option.name }}" class="textarea w-full font-mono text-xs" rows="4" name="opt_{{ option.name }}" maxlength="{{ option.max_length }}" autocomplete="off" spellcheck="false"{{ described(prefix, option, helps) }}>{{ form.values.get(option.name, "") }}</textarea>
+  {{ hint(prefix, option, helps) }}
+  {% if form.fetched %}
+  {% set cert = form.fetched %}
+  <div role="{{ 'alert' if form.fetch_error else 'status' }}" class="alert {{ 'alert-error' if form.fetch_error else 'alert-info' }} alert-soft mt-1" data-focus-result>
+    <div>
+      {% if form.fetch_error %}<p>{{ form.fetch_error }}</p>
+      {% elif cert.trusted %}<p>A public certificate authority vouches for this certificate, so drydock trusts it without pinning. Leave the field empty: a pinned certificate stops working when the server renews it.</p>
+      {% else %}<p>The server presents this certificate:</p>{% endif %}
+      <dl class="mt-1 grid grid-cols-[max-content_1fr] gap-x-4 text-sm">
+        <dt>Subject</dt><dd class="break-all">{{ cert.subject }}</dd>
+        <dt>Issuer</dt><dd class="break-all">{{ cert.issuer }}</dd>
+        <dt>Names</dt><dd class="break-all">{{ cert.names | join(", ") or "none" }}</dd>
+        <dt>Valid</dt><dd>{{ cert.not_before }} to {{ cert.not_after }}</dd>
+        <dt>SHA-256</dt><dd><code class="break-all">{{ cert.fingerprint }}</code></dd>
+      </dl>
+      {% if not form.fetch_error and not cert.trusted %}<p class="text-sm">Compare the fingerprint with the server's own (<code>openssl x509 -noout -fingerprint -sha256 -in</code> its certificate file, or the NAS's certificate page) before you save: saving trusts this certificate.</p>{% endif %}
+    </div>
+  </div>
+  {% elif form.fetch_error %}
+  <div role="alert" class="alert alert-error alert-soft mt-1" data-focus-result><span>{{ form.fetch_error }}</span></div>
+  {% endif %}
+  {{ fetch_button(prefix, option, "/storage/certificate", fetch_query) }}
+</div>
+{%- endmacro %}
+
+{% macro option_field(prefix, option, form, helps, fetch_query=None) -%}
+{% if option.type == "hostkeys" %}{{ hostkeys_field(prefix, option, form, helps, fetch_query) }}
+{% elif option.type == "certificate" %}{{ certificate_field(prefix, option, form, helps, fetch_query) }}
 {% elif option.type == "int" %}{{ int_field(prefix, option, form.values.get(option.name, ""), helps) }}
 {% elif option.type == "bool" %}{{ bool_field(prefix, option, form.values.get(option.name, ""), helps) }}
 {% elif option.type == "enum" %}{{ enum_field(prefix, option, form.values.get(option.name, ""), helps) }}
@@ -138,7 +175,7 @@
 {% endif %}
 {%- endmacro %}
 
-{% macro remote_fields(form, prefix, backend, helps, fetch_url=None) -%}
+{% macro remote_fields(form, prefix, backend, helps, fetch_query=None) -%}
 <div class="fieldset">
   <label class="fieldset-legend" for="{{ prefix }}-name">Name</label>
   <input id="{{ prefix }}-name" class="input w-full" name="name" value="{{ form.name }}" autocomplete="off" required maxlength="64" aria-describedby="{{ prefix }}-name-hint">
@@ -146,7 +183,7 @@
 </div>
 <fieldset class="fieldset flex flex-col gap-2">
   <legend class="fieldset-legend">{{ backend.label }}</legend>
-  {% for option in backend.options if not option.advanced %}{{ option_field(prefix, option, form, helps, fetch_url) }}{% endfor %}
+  {% for option in backend.options if not option.advanced %}{{ option_field(prefix, option, form, helps, fetch_query) }}{% endfor %}
   <div>
     <label class="label text-sm" for="{{ prefix }}-folder">{{ backend.folder_label }}</label>
     <input id="{{ prefix }}-folder" class="input w-full font-mono" name="folder" value="{{ form.values.get('folder', '') }}" maxlength="512" autocomplete="off" aria-describedby="{{ prefix }}-folder-hint">
@@ -157,7 +194,7 @@
 <details class="mt-2">
   <summary class="cursor-pointer text-sm font-semibold">Advanced</summary>
   <div class="mt-2 flex flex-col gap-2">
-    {% for option in backend.options if option.advanced %}{{ option_field(prefix, option, form, helps, fetch_url) }}{% endfor %}
+    {% for option in backend.options if option.advanced %}{{ option_field(prefix, option, form, helps, fetch_query) }}{% endfor %}
   </div>
 </details>
 {% endif %}
