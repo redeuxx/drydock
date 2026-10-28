@@ -104,6 +104,7 @@ PARTIAL_MAX = 100
 PARTIAL_SUFFIX_LEN = len(".01234567.partial")
 POLL = 1.0  # seconds between job/status calls during a transfer
 STOP_WAIT = 15.0  # for a stopped job to finish; with the sweep, well inside SHUTDOWN_WAIT
+LEFTOVER_WAIT, LEFTOVER_PAUSE = 8.0, 1.0  # removing a partial file the server still holds
 QUICK = 10.0  # timeout of calls that open no connection, and of those made while stopping
 TIMEOUT = 90.0  # above rclone's 1 minute connect timeout, so its own error arrives first
 PREVIEW_TIMEOUT = 15.0  # read_head: a listing previews archives one after another
@@ -571,13 +572,21 @@ class RcloneBackend:
         except StorageError:
             return f" A partial upload may be left on the storage as {stem}.<8 hex>.partial."
         left = []
+        # A server may still hold a stopped upload open for a moment (WebDAV: 423 Locked),
+        # so a failed delete is tried again until LEFTOVER_WAIT has passed.
+        deadline = time.monotonic() + LEFTOVER_WAIT
         for entry in found:
-            try:
-                self._call("operations/deletefile", {"fs": self._fs(), "remote": entry}, QUICK)
-            except NotFound:
-                pass
-            except StorageError:
-                left.append(entry)
+            while True:
+                try:
+                    self._call("operations/deletefile", {"fs": self._fs(), "remote": entry}, QUICK)
+                    break
+                except NotFound:
+                    break
+                except StorageError:
+                    if time.monotonic() + LEFTOVER_PAUSE > deadline:
+                        left.append(entry)
+                        break
+                    time.sleep(LEFTOVER_PAUSE)
         if left:
             return f" A partial upload is left on the storage: {', '.join(left)}. Remove it."
         return ""
