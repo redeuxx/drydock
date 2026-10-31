@@ -21,9 +21,10 @@ once, an older one is logged and audited as missed and does not run.
 
 System jobs: every MAINTENANCE_EVERY (first MAINTENANCE_FIRST after start) the scheduler
 reaps orphaned helpers on every reachable host (helpers in use are skipped), cleans the
-staging directory (Dispatcher.clean_staging_now) and prunes finished runs older than
-DRYDOCK_RUN_HISTORY_DAYS with their log files (Dispatcher.prune_history). Each step's
-failure is logged and does not stop the others.
+staging directory (Dispatcher.clean_staging_now), prunes finished runs older than
+DRYDOCK_RUN_HISTORY_DAYS with their log files (Dispatcher.prune_history) and deletes
+expired uploads (restore.uploads.expire). Each step's failure is logged and does not stop
+the others.
 """
 
 import asyncio
@@ -49,6 +50,7 @@ from drydock.hosts.client import run_blocking
 from drydock.hosts.manager import HostManager
 from drydock.jobs.dispatcher import Dispatcher, DispatchError
 from drydock.models import Job, utcnow
+from drydock.restore import uploads
 
 log = logging.getLogger("drydock.scheduler")
 
@@ -314,6 +316,7 @@ class Scheduler:
             ("helper reaper", self._hosts.reap_all),
             ("staging cleanup", self._dispatcher.clean_staging_now),
             ("run history pruning", lambda: run_blocking(self._dispatcher.prune_history, days)),
+            ("upload expiry", lambda: run_blocking(uploads.expire, self._sessions, self._settings)),
         )
         for name, step in steps:
             if not self.running:

@@ -249,7 +249,7 @@ async def test_retention_and_a_remote_restore_never_cross(admin: Browser, sftp: 
         def delete(self, archive: str) -> None:
             # Mid-delete: a restore of the archive is refused, not created.
             with pytest.raises(DispatchError, match="Retention is deleting this archive"):
-                worker._create_restore_run(storage_id, archive, "admin")
+                worker._create_restore_run({"storage_target_id": storage_id}, archive, "admin")
             deleted.append(archive)
 
         def list(self, prefix: str = "") -> list:
@@ -262,7 +262,7 @@ async def test_retention_and_a_remote_restore_never_cross(admin: Browser, sftp: 
     assert worker._deleting == set()
     assert admin.sql("SELECT COUNT(*) FROM runs WHERE kind = 'restore'") == [(0,)]
     # Once the delete is over, a restore can be created, and retention then keeps it.
-    run_id, _ = worker._create_restore_run(storage_id, name, "admin")
+    run_id, _ = worker._create_restore_run({"storage_target_id": storage_id}, name, "admin")
     assert run_id is not None
     worker._delete_archive(plan, Remote(), name, lines.append)
     assert deleted == [name] and lines[-1] == f"Retention: kept {name}, an open restore uses it."
@@ -286,5 +286,5 @@ async def test_a_failed_retention_delete_releases_the_archive(
     with pytest.raises(StorageError):
         worker._delete_archive(plan, Failing(), name, lambda line: None)
     assert worker._deleting == set()
-    run_id, _ = worker._create_restore_run(storage_id, name, "admin")
+    run_id, _ = worker._create_restore_run({"storage_target_id": storage_id}, name, "admin")
     assert run_id is not None

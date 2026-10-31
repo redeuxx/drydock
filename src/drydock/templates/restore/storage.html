@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import alerts, submit, when %}
+{% from "_macros.html" import alerts, passphrase_field, submit, when %}
 {% block title %}Archives in {{ target.name }}{% endblock %}
 {% block content %}
 <h1 class="mb-4 text-3xl font-bold break-all">Archives in {{ target.name }}</h1>
@@ -37,6 +37,7 @@
             <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
             <input type="hidden" name="storage_id" value="{{ target.id }}">
             <input type="hidden" name="name" value="{{ obj.name }}">
+            {% if obj.name.endswith(".age") %}{{ passphrase_field("passphrase-" ~ loop.index) }}{% endif %}
             {{ submit("Verify and restore", "btn-primary btn-sm", obj.name) }}
           </form>
         </td>

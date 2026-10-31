@@ -90,7 +90,7 @@ async def test_csp_nonce_is_fresh_and_matches_the_page(admin: Browser) -> None:
         assert nonce
         nonces.append(nonce.group(1))
         scripts = re.findall(r"<script[^>]*>", response.text)
-        assert len(scripts) == 3
+        assert len(scripts) == 4
         assert all(f'nonce="{nonce.group(1)}"' in tag for tag in scripts)
         assert f'hx-nonce="{nonce.group(1)}"' in response.text  # the logout form
     assert nonces[0] != nonces[1]
@@ -114,6 +114,7 @@ def test_templates_load_only_the_bundled_assets() -> None:
         "/static/vendor/htmx/htmx.min.js",
         "/static/vendor/htmx/ext/hx-csp.min.js",
         "/static/js/app.js",
+        "/static/js/upload.js",
     }
     for name, text in template_sources():
         stylesheets = re.findall(r"<link\b[^>]*>", text)

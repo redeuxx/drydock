@@ -235,7 +235,7 @@ def test_upgrade_keeps_job_links_and_ids(tmp_path: Path) -> None:
             assert sequence(conn, "runs") == runs_sequence
             assert conn.execute(INSERT_RUN, (1,)).lastrowid == 3
             conn.commit()
-            assert version(conn) == [("0009",)]
+            assert version(conn) == [("0010",)]
         assert foreign_keys(engine) == 1
     finally:
         engine.dispose()
@@ -425,7 +425,7 @@ def test_downgrade_refuses_while_a_run_lists_paused_containers(tmp_path: Path) -
             alembic_to(engine, "0004", down=True)
 
         with closing(sqlite3.connect(path)) as conn:
-            assert version(conn) == [("0009",)]
+            assert version(conn) == [("0010",)]
             runs = table_sql(conn, "runs")
             assert runs is not None
             assert "paused_containers_json" in runs

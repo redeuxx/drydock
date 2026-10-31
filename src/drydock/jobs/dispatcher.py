@@ -139,10 +139,12 @@ from drydock.hosts.inventory import (
 from drydock.hosts.manager import HostManager, HostUnavailable
 from drydock.jobs import hooks, retention
 from drydock.jobs.runlog import RunLog, env_values, log_dir, log_path
-from drydock.models import Backup, Host, Job, Run, StorageTarget, utcnow
+from drydock.models import Backup, Host, Job, Run, StorageTarget, Upload, utcnow
 from drydock.models import Hook as HookRow
 from drydock.restore import apply as restore_apply
+from drydock.restore import paths as restore_paths
 from drydock.restore import plan as restore_plan
+from drydock.restore import uploads as restore_uploads
 from drydock.restore import verify as restore_verify
 from drydock.security import hostpaths
 from drydock.storage import options
@@ -151,7 +153,6 @@ from drydock.storage.base import (
     StorageError,
     archive_name,
     check_name,
-    parse_name,
 )
 from drydock.storage.local import LocalStorage
 from drydock.storage.rclone import KINDS as REMOTE_KINDS
@@ -268,7 +269,10 @@ class Target:
 @dataclass(frozen=True)
 class RestoreSource:
     """Where a restore run's archive is, and its runs.plan document. Local storage has a
-    root; remote storage has its kind and decrypted config instead."""
+    root; remote storage has its kind and decrypted config instead. An archive uploaded in
+    the browser (kind "upload") or at a server path (kind "path") is in no storage
+    (storage_target_id 0): location is the upload's file, which pass 1 moves into the
+    restore directory, or the path."""
 
     storage_target_id: int
     archive: str
@@ -276,6 +280,7 @@ class RestoreSource:
     doc: dict[str, Any]
     kind: str = "local"
     config: dict[str, Any] | None = None
+    location: str | None = None
 
 
 @dataclass
@@ -553,6 +558,9 @@ class Dispatcher:
         # (storage target ID, archive): remote archives retention is deleting. Added and read
         # only inside write transactions, which orders the two (see _delete_archive).
         self._deleting: set[tuple[int, str]] = set()
+        # Passphrases entered for archives from another drydock, by restore run. Only in
+        # memory: a restart interrupts every open restore, so none outlives its run.
+        self._entered: dict[int, str] = {}
         self._pending_restarts: dict[int, list[tuple[int, dict[str, Any]]]] = {}
         self._pending_unpauses: dict[int, list[tuple[int, dict[str, Any]]]] = {}
         self._pending_rollbacks: dict[int, list[tuple[int, dict[str, Any]]]] = {}
@@ -591,13 +599,29 @@ class Dispatcher:
     ) -> int:
         """Creates a restore run and verifies the archive in the background. Returns the run
         ID. Raises DispatchError."""
+        return await self.submit_restore_from(
+            {"storage_target_id": storage_target_id}, archive, triggered_by
+        )
+
+    async def submit_restore_from(
+        self,
+        source: dict[str, Any],
+        archive: str,
+        triggered_by: str | None,
+        passphrase: str | None = None,
+    ) -> int:
+        """submit_restore from a source: {"storage_target_id": id}, {"upload_id": id} or
+        {"path": resolved server path}. passphrase is one entered for an archive from
+        another drydock, used by both passes and never stored."""
         self._check_open()
         run_id, expired = await run_blocking(
-            self._create_restore_run, storage_target_id, archive, triggered_by
+            self._create_restore_run, source, archive, triggered_by
         )
         await run_blocking(self._expired, expired)
         if run_id is None:
             raise DispatchError("Too many restores are awaiting confirmation. Discard one first.")
+        if passphrase:
+            self._entered[run_id] = passphrase
         active = ActiveRun(run_id, None, started=True)  # no lock: cancel only sets the event
         self._active[run_id] = active
         active.task = asyncio.create_task(self._verify_restore(active), name=f"run-{run_id}")
@@ -1520,9 +1544,10 @@ class Dispatcher:
         a host before the archive is verified."""
         run_id = active.run_id
         run_log = RunLog(log_path(self.settings.data_dir, run_id))
+        source = None
         try:
             source = await run_blocking(self._load_restore, run_id)
-            run_log.add_secrets(self._passphrases(source.archive))
+            run_log.add_secrets(self._passphrases(source.archive, run_id))
             storage = self._restore_storage(source, run_id, active.cancel, run_log)
             loop = asyncio.get_running_loop()
             staged = await loop.run_in_executor(
@@ -1537,6 +1562,7 @@ class Dispatcher:
                     run_id,
                     cancel=active.cancel,
                     log=run_log,
+                    passphrase=self._entered.get(run_id),
                 ),
             )
             run_log.add_secrets(restore_verify.secret_values(staged))
@@ -1544,6 +1570,10 @@ class Dispatcher:
         except BaseException as exc:
             await self._ended(active, run_log, exc)
             await self._remove_staged(run_id)
+            if source is not None and source.kind == "upload" and source.location:
+                # The restore took the upload: not moved yet, it is nobody's now.
+                with contextlib.suppress(OSError):
+                    await run_blocking(Path(source.location).unlink, missing_ok=True)
             if not isinstance(exc, Exception | asyncio.CancelledError):
                 raise
         finally:
@@ -1560,7 +1590,7 @@ class Dispatcher:
             confirmed = source.doc.get("summary")
             if not isinstance(confirmed, dict):
                 raise DispatchError("The restore has no confirmed plan. Plan the restore again.")
-            run_log.add_secrets(self._passphrases(source.archive))
+            run_log.add_secrets(self._passphrases(source.archive, run_id))
             staged = await run_blocking(
                 restore_verify.load_staged,
                 restore_verify.restore_dir(self.settings.staging_dir, run_id),
@@ -1658,6 +1688,7 @@ class Dispatcher:
             staged,
             self._crypto,
             active.cancel,
+            self._entered.get(run_id),
         )
         env = restore_apply.ApplyEnv(
             handle, self.settings.helper_image, self._hosts.instance_id, run_id
@@ -1763,18 +1794,21 @@ class Dispatcher:
                 return None
 
     async def _remove_staged(self, run_id: int) -> None:
+        """Every end of a restore run comes here (or to _expired): its entered passphrase
+        goes with its staged data."""
+        self._entered.pop(run_id, None)
         try:
             await run_blocking(restore_verify.remove_restore_dir, self.settings.staging_dir, run_id)
         except OSError:
             log.exception("Could not remove the staged data of run %d", run_id)
 
-    def _passphrases(self, archive: str) -> list[str]:
-        """The passphrases an archive may be encrypted with: secrets of its run log."""
+    def _passphrases(self, archive: str, run_id: int) -> list[str]:
+        """The passphrases an archive may be encrypted with, and the one entered for the
+        restore run_id: secrets of its run log."""
         try:
-            job_uuid = parse_name(archive).job_uuid
+            return restore_verify.candidates(self._crypto, archive, self._entered.get(run_id))
         except StorageError:
             raise DispatchError("The archive name is not valid.") from None
-        return list(self._crypto.job_passphrases(job_uuid))
 
     async def _expiry_loop(self) -> None:
         """Cancels restores not confirmed within CONFIRM_TTL and removes their staged
@@ -2190,16 +2224,24 @@ class Dispatcher:
         run_id: int,
         cancel: threading.Event | None = None,
         run_log: RunLog | None = None,
-    ) -> LocalStorage | restore_verify.Downloaded:
-        """Where a restore reads its archive: in place in a local root, or a remote
-        archive's copy in the restore directory. Given cancel (pass 1), the copy is
-        downloaded first; pass 2 reads the copy pass 1 verified."""
-        if source.config is None:
+    ) -> LocalStorage | restore_verify.Downloaded | restore_paths.ServerFile:
+        """Where a restore reads its archive: in place in a local root or at a server path,
+        or a remote archive's or an upload's copy in the restore directory. Given cancel
+        (pass 1), the copy is downloaded (an upload moved) first; pass 2 reads the copy
+        pass 1 verified."""
+        if source.kind == "path" and source.location is not None:
+            return restore_paths.ServerFile(source.location, self.settings.restore_paths)
+        if source.kind == "local":
             return LocalStorage(source.root, self.settings)
         dest = restore_verify.restore_dir(self.settings.staging_dir, run_id)
         if cancel is None:
             return restore_verify.Downloaded(dest)
-        remote = self._remote(source.kind, source.config, source.storage_target_id)
+        if source.kind == "upload":
+            if source.location is None:
+                raise DispatchError(restore_uploads.GONE)
+            move = restore_uploads.UploadMove(Path(source.location))
+            return restore_verify.Downloaded(dest, move, cancel)  # type: ignore[arg-type]
+        remote = self._remote(source.kind, source.config or {}, source.storage_target_id)
         return restore_verify.Downloaded(dest, remote, cancel, run_log)
 
     def _hook_rows(
@@ -2256,7 +2298,7 @@ class Dispatcher:
             raise DispatchError(UNDECRYPTABLE_STORAGE) from None
 
     def _create_restore_run(
-        self, storage_target_id: int, archive: str, triggered_by: str | None
+        self, source: dict[str, Any], archive: str, triggered_by: str | None
     ) -> tuple[int | None, list[int]]:
         """The new restore run's ID (None when too many restores are pending), and the IDs
         of the restores that expired meanwhile."""
@@ -2265,13 +2307,20 @@ class Dispatcher:
         except StorageError:
             raise DispatchError("The archive name is not valid.") from None
         with self._sessions() as db, db.begin():
-            target = db.get(StorageTarget, storage_target_id)
-            if target is None:
-                raise DispatchError("The storage does not exist.")
-            if target.kind != "local" and target.kind not in REMOTE_KINDS:
-                raise DispatchError(LATER)
-            if (storage_target_id, archive) in self._deleting:  # see _delete_archive
-                raise DispatchError("Retention is deleting this archive.")
+            upload = None
+            if "upload_id" in source:
+                upload = db.get(Upload, source["upload_id"])
+                if not restore_uploads.available(upload, archive):
+                    raise DispatchError(restore_uploads.GONE)
+            elif "path" not in source:
+                storage_target_id = source["storage_target_id"]
+                target = db.get(StorageTarget, storage_target_id)
+                if target is None:
+                    raise DispatchError("The storage does not exist.")
+                if target.kind != "local" and target.kind not in REMOTE_KINDS:
+                    raise DispatchError(LATER)
+                if (storage_target_id, archive) in self._deleting:  # see _delete_archive
+                    raise DispatchError("Retention is deleting this archive.")
             expired = self._expire_stale(db)
             pending = db.scalar(
                 select(func.count())
@@ -2283,14 +2332,17 @@ class Dispatcher:
             )
             if pending >= MAX_AWAITING:
                 return None, expired
-            source = {"storage_target_id": storage_target_id, "archive": archive}
+            if upload is not None:
+                # The restore takes the upload: its row goes, and pass 1 moves its file.
+                source = source | {"file": upload.path}
+                db.delete(upload)
             run = Run(
                 job_id=None,
                 kind="restore",
                 status="verifying",
                 triggered_by=triggered_by,
                 archive_name=archive,
-                plan=json.dumps({"source": source}),
+                plan=json.dumps({"source": source | {"archive": archive}}),
             )
             db.add(run)
             db.flush()
@@ -2320,6 +2372,7 @@ class Dispatcher:
     def _expired(self, run_ids: list[int]) -> None:
         """After _expire_stale committed: the final log line, and the staged data removed."""
         for run_id in run_ids:
+            self._entered.pop(run_id, None)
             log.info("Restore run %d was not confirmed in time", run_id)
             try:
                 RunLog(log_path(self.settings.data_dir, run_id))(f"Run cancelled: {NOT_CONFIRMED}")
@@ -2336,7 +2389,16 @@ class Dispatcher:
             source = doc.get("source")
             source = source if isinstance(source, dict) else {}
             target_id, archive = source.get("storage_target_id"), source.get("archive")
-            if type(target_id) is not int or not isinstance(archive, str):
+            upload_id, path = source.get("upload_id"), source.get("path")
+            if not isinstance(archive, str):
+                raise DispatchError("The restore names no archive.")
+            if type(upload_id) is int:
+                upload_file = source.get("file")
+                location = upload_file if isinstance(upload_file, str) else None
+                return RestoreSource(0, archive, "", doc, "upload", location=location)
+            if isinstance(path, str):
+                return RestoreSource(0, archive, "", doc, "path", location=path)
+            if type(target_id) is not int:
                 raise DispatchError("The restore names no archive.")
             target = db.get(StorageTarget, target_id)
             if target is None:

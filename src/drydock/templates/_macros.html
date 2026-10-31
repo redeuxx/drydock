@@ -22,6 +22,13 @@
 </button>
 {%- endmacro %}
 
+{# Optional: only an encrypted archive from another drydock needs it. This drydock re-derives
+   the passphrases of its own archives from the secret key and the job ID in the name. #}
+{% macro passphrase_field(id) -%}
+<label class="mb-1 block text-xs" for="{{ id }}">Passphrase, if the archive is from another drydock</label>
+<input id="{{ id }}" type="password" name="passphrase" class="input input-sm mb-2 w-full font-mono" maxlength="1024" autocomplete="off">
+{%- endmacro %}
+
 {% macro alerts(messages, tone="alert-error") -%}
 {% if messages %}
 <div role="alert" class="alert {{ tone }} alert-soft mb-4">

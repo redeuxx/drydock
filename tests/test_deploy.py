@@ -80,6 +80,12 @@ def test_compose_binds_loopback_and_hardens_the_container(name: str) -> None:
     assert not data_mounts[0].startswith((".", "/")), "/data must be a named volume"
 
 
+def test_compose_mounts_the_restore_inbox_read_only() -> None:
+    service = load_compose("compose.yaml")["services"]["drydock"]
+    assert "./restore-inbox:/restore-inbox:ro" in service["volumes"]
+    assert service["environment"]["DRYDOCK_RESTORE_PATHS"] == "/restore-inbox"
+
+
 def test_dev_compose_reloads_with_polling() -> None:
     service = load_compose("compose.dev.yaml")["services"]["drydock"]
     assert "--reload" in service["command"]

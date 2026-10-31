@@ -319,6 +319,32 @@ class Run(Base):
     restore_originals_json: Mapped[str] = mapped_column(Text, default="{}", server_default="{}")
 
 
+UPLOAD_STATUSES = ("receiving", "complete")
+
+
+class Upload(Base):
+    """An archive uploaded in the browser for a restore (restore.uploads). A failed upload
+    leaves no row and no file; a complete one is deleted at expires_at."""
+
+    __tablename__ = "uploads"
+    __table_args__ = (
+        CheckConstraint(in_list("status", UPLOAD_STATUSES), name="ck_uploads_status"),
+        {"sqlite_autoincrement": True},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(255))  # the archive name, as check_name allows
+    declared_size: Mapped[int] = mapped_column(Integer)
+    received: Mapped[int] = mapped_column(Integer, default=0)
+    path: Mapped[str] = mapped_column(String(1024))  # server-named, in <staging>/uploads
+    status: Mapped[str] = mapped_column(String(16), default="receiving")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
 class Backup(Base):
     """Catalog of archives in storage. Restore can also list storage without it."""
 

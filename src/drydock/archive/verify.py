@@ -420,6 +420,13 @@ def check_work_factor(head: bytes) -> None:
         )
 
 
+class NoKeyError(VerifyError):
+    """No candidate passphrase decrypts the archive."""
+
+
+NO_KEY = "No configured secret key decrypts this archive."
+
+
 @contextlib.contextmanager
 def decrypted(
     opener: Opener, passphrases: Sequence[str], *, require_complete: bool = True
@@ -466,7 +473,7 @@ def decrypted(
             stdout.close()
             drain.join(timeout=5)
             stderr.close()
-    raise VerifyError("No configured secret key decrypts this archive.")
+    raise NoKeyError(NO_KEY)
 
 
 def drain_stderr(stream: BinaryIO) -> bytes:

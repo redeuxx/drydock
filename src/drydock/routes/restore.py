@@ -15,6 +15,10 @@
    carries a digest of the plan it shows, so a plan stored again meanwhile (by anyone)
    is refused rather than run under the confirmation given for another.
 
+PUT /restore/uploads takes an archive uploaded in the browser (restore.uploads), and
+POST /restore/from-upload/{upload_id} and POST /restore/from-path (restore.paths) start
+the same wizard from an upload or from a file on the server.
+
 Beyond the admin role, the bodies check: an archive this drydock did not sign, and any
 risk-flagged field (signed or not), need a superadmin, a per-field acknowledgement and the
 password from the last 10 minutes. Overwrite needs the container name (a stack's project
@@ -40,7 +44,7 @@ from typing import Annotated, Any, NoReturn
 
 import anyio.from_thread
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -49,6 +53,7 @@ from drydock.archive import manifest as m
 from drydock.archive.verify import VerifyError
 from drydock.crypto import CryptoError
 from drydock.db import get_db
+from drydock.hosts.client import run_blocking
 from drydock.jobs.dispatcher import (
     ACTIVE_STATUSES,
     UNDECRYPTABLE_STORAGE,
@@ -58,9 +63,11 @@ from drydock.jobs.dispatcher import (
     json_object,
 )
 from drydock.jobs.runlog import log_path, read_log
-from drydock.models import Host, Run, StorageTarget
+from drydock.models import Host, Run, StorageTarget, Upload, utcnow
 from drydock.restore import apply as restore_apply
+from drydock.restore import paths as restore_paths
 from drydock.restore import plan as restore_plan
+from drydock.restore import uploads as restore_uploads
 from drydock.restore import verify as restore_verify
 from drydock.routes.auth import FormStr, client_ip
 from drydock.routes.hosts import DOCKER_ERRORS, INVENTORY_TIMEOUT, open_host
@@ -97,6 +104,8 @@ MAX_AUDITED_ERRORS = 10
 UNSIGNED = "Only a superadmin can restore an archive that is not signed by this drydock."
 FLAGGED = "Flagged fields need a superadmin."
 PLAN_CHANGED = "The plan changed since you viewed it. Review it again."
+MIN_PASSPHRASE = 8  # entered for an archive from another drydock
+MAX_PASSPHRASE = 1024  # age reads it from a pipe
 MODE_LABELS = {
     "new-name": "New name: restore beside the original under a new name",
     "overwrite": "Overwrite: replace the original container and the data it uses",
@@ -329,6 +338,12 @@ def index_page(
     runs = db.scalars(
         select(Run).where(Run.kind == "restore").order_by(Run.id.desc()).limit(RECENT_RESTORES)
     ).all()
+    uploads = db.scalars(
+        select(Upload)
+        .where(Upload.status == "complete", Upload.expires_at > utcnow())
+        .order_by(Upload.id.desc())
+        .limit(RECENT_RESTORES)
+    ).all()
     return render(
         request,
         "restore/index.html",
@@ -339,6 +354,10 @@ def index_page(
         kind_labels=KIND_LABELS,
         runs=runs,
         errors=list(errors),
+        max_upload=restore_uploads.MAX_UPLOAD,
+        max_upload_gb=restore_uploads.MAX_UPLOAD // 10**9,
+        uploads=uploads,
+        restore_paths=request.app.state.settings.restore_paths,
     )
 
 
@@ -484,6 +503,7 @@ def restore_from_storage(
     auth: Admin,
     storage_id: FormStr = "",
     name: FormStr = "",
+    passphrase: FormStr = "",
     db: Session = Depends(get_db),
 ) -> Response:
     """Starts a restore run: the archive is verified before anything else happens."""
@@ -514,15 +534,161 @@ def restore_from_storage(
     if release(db, get_target(db, target_id)).kind not in ("local", *REMOTE_KINDS):
         record("failure", None, storage_id=target_id, archive=archive, error=LATER)
         return index_page(request, db, auth, 409, [LATER])
+    details = {"storage_id": target_id, "archive": archive}
+    source = {"storage_target_id": target_id}
+    return start_restore(request, db, auth, username, source, archive, details, passphrase)
+
+
+# UPLOAD AND SERVER PATH
+
+
+def start_restore(
+    request: Request,
+    db: Session,
+    auth: Auth,
+    username: str,
+    source: dict[str, Any],
+    archive: str,
+    audited: dict[str, Any],
+    passphrase: str,
+) -> Response:
+    """Starts a restore run from storage, an upload or a server path: the archive is
+    verified before anything else happens. username is read before any release, which
+    expires auth.user. passphrase, when entered, is for an archive from another drydock:
+    the dispatcher keeps it in memory for the run, and the audit records only that one
+    was entered."""
+
+    def record(outcome: str, target: str | None, **details: Any) -> None:
+        audit.record(
+            db,
+            actor=username,
+            action="restore.verify",
+            target=target,
+            outcome=outcome,
+            ip=client_ip(request),
+            details=audited | details,
+        )
+        db.commit()
+
+    entered = passphrase.strip()
+    audited = audited | {"entered_phrase": bool(entered)}
+    if entered and not MIN_PASSPHRASE <= len(entered) <= MAX_PASSPHRASE:
+        # Shorter ones would not be redacted from run logs (runlog.MIN_SECRET_LEN).
+        error = f"A passphrase has {MIN_PASSPHRASE} to {MAX_PASSPHRASE} characters."
+        record("failure", None, error=error)
+        return index_page(request, db, auth, 422, [error])
+    if "upload_id" in source and archive.endswith(ENCRYPTED_SUFFIX):
+        # A restore uses the upload up even when verification fails: check the
+        # passphrase first, so a mistyped one costs no upload.
+        try:
+            restore_verify.check_decrypts(
+                Path(source["file"]), request.app.state.crypto, archive, entered or None
+            )
+        except (VerifyError, StorageError) as exc:
+            record("failure", None, error=str(exc))
+            return index_page(request, db, auth, 422, [str(exc)])
     try:
         run_id = anyio.from_thread.run(
-            dispatcher(request).submit_restore, target_id, archive, username
+            dispatcher(request).submit_restore_from, source, archive, username, entered or None
         )
     except DispatchError as exc:
-        record("failure", None, storage_id=target_id, archive=archive, error=str(exc))
+        record("failure", None, error=str(exc))
         return index_page(request, db, auth, 409, [str(exc)])
-    record("success", f"run:{run_id}", storage_id=target_id, archive=archive)
+    record("success", f"run:{run_id}")
     return see_other(request, f"/restore/runs/{run_id}/plan")
+
+
+@router.post("/from-upload/{upload_id}")
+def restore_from_upload(
+    request: Request,
+    upload_id: int,
+    auth: Admin,
+    passphrase: FormStr = "",
+    db: Session = Depends(get_db),
+) -> Response:
+    upload = db.get(Upload, upload_id)
+    if upload is None or not restore_uploads.available(upload):
+        audit.record(
+            db,
+            actor=auth.user.username,
+            action="restore.verify",
+            outcome="failure",
+            ip=client_ip(request),
+            details={"upload_id": upload_id, "error": restore_uploads.GONE},
+        )
+        db.commit()
+        return index_page(request, db, auth, 404, [restore_uploads.GONE])
+    username = auth.user.username
+    upload = release(db, upload)
+    archive = upload.name
+    details = {"upload_id": upload_id, "archive": archive}
+    source = {"upload_id": upload_id, "file": upload.path}
+    return start_restore(request, db, auth, username, source, archive, details, passphrase)
+
+
+@router.post("/from-path")
+def restore_from_path(
+    request: Request,
+    auth: Admin,
+    path: FormStr = "",
+    passphrase: FormStr = "",
+    db: Session = Depends(get_db),
+) -> Response:
+    """Checks the path now, to answer at once; the dispatcher opens it again for each pass."""
+    entered = path.strip()
+    try:
+        handle, real = restore_paths.open_checked(entered, request.app.state.settings.restore_paths)
+    except restore_paths.PathError as exc:
+        audit.record(
+            db,
+            actor=auth.user.username,
+            action="restore.verify",
+            outcome="failure",
+            ip=client_ip(request),
+            details={"path": entered[:1024], "error": str(exc)},
+        )
+        db.commit()
+        return index_page(request, db, auth, 422, [str(exc)])
+    handle.close()
+    details = {"path": str(real), "archive": real.name}
+    source = {"path": str(real)}
+    username = auth.user.username
+    return start_restore(request, db, auth, username, source, real.name, details, passphrase)
+
+
+# UPLOAD
+
+
+@router.put("/uploads")
+async def upload_archive(request: Request, auth: Admin, name: str = "") -> Response:
+    """Receives one archive as the raw request body (restore.uploads). Answers in plain
+    text or JSON, for frontend/upload.ts."""
+    sessions = request.app.state.sessionmaker
+    username, ip = auth.user.username, client_ip(request)
+
+    def record(outcome: str, target: str | None, **details: Any) -> None:
+        with sessions() as db, db.begin():
+            audit.record(
+                db,
+                actor=username,
+                action="restore.upload",
+                target=target,
+                outcome=outcome,
+                ip=ip,
+                details={"archive": name[:255], **details},
+            )
+
+    try:
+        archive, declared = restore_uploads.checked_request(request, name)
+        upload_id = await restore_uploads.receive(
+            request, sessions, auth.user.id, archive, declared
+        )
+    except restore_uploads.UploadError as exc:
+        length = request.headers.get("content-length", "")[:20]
+        await run_blocking(record, "failure", None, content_length=length, error=str(exc))
+        return PlainTextResponse(str(exc), exc.status_code)
+    await run_blocking(record, "success", f"upload:{upload_id}", declared_size=declared)
+    return JSONResponse({"id": upload_id, "name": archive, "size": declared}, 201)
 
 
 # PLAN AND CONFIRM

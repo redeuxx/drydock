@@ -65,6 +65,7 @@ from drydock.archive.verify import (
     ZSTD_MAGIC,
     HeaderGuard,
     MemberSink,
+    NoKeyError,
     Opener,
     TrailerReader,
     VerifyError,
@@ -115,6 +116,11 @@ PAX_TIME_RE = re.compile(rb"-?(\d{1,19})(\.\d{1,20})?")
 INT64_LIMIT = 2**63  # Go's archive/tar fails on any number from here up
 
 GONE = "The verified data of this restore is gone. Start the restore again."
+NO_KEY_HERE = (
+    "No configured secret key decrypts this archive. If it is from another drydock, enter "
+    "its passphrase."
+)
+NOT_DECRYPTED = "Neither the passphrase entered nor a configured secret key decrypts this archive."
 UNUSABLE = "The staging directory is not usable."
 CHANGED_SINCE = "The archive changed since it was verified. Start the restore again."
 TOO_MUCH_CONFIG = "The archive's configuration is larger than drydock's limit."
@@ -124,6 +130,29 @@ GuardKind = Literal["dir", "file", "image"]
 
 
 # DIRECTORIES
+
+
+def check_decrypts(path: Path, crypto: Crypto, name: str, passphrase: str | None) -> None:
+    """Fails fast, at age's header and before any output, unless a candidate passphrase
+    decrypts the encrypted archive at path. For an upload, which a restore uses up even
+    when verification fails. Raises VerifyError or StorageError."""
+    with open_regular(path) as handle:
+        try:
+            with decrypted(
+                fd_opener(handle.fileno()),
+                candidates(crypto, name, passphrase),
+                require_complete=False,
+            ):
+                pass
+        except NoKeyError:
+            raise VerifyError(NOT_DECRYPTED if passphrase else NO_KEY_HERE) from None
+
+
+def candidates(crypto: Crypto, name: str, passphrase: str | None) -> list[str]:
+    """The passphrases to try, in the same order in both passes, so the index pass 1
+    records still points at the one that worked: the entered one, then this drydock's."""
+    derived = crypto.job_passphrases(parse_name(name).job_uuid)
+    return [passphrase, *derived] if passphrase else derived
 
 
 def restore_dir(staging: Path, run_id: int) -> Path:
@@ -349,11 +378,15 @@ def verify_archive(
     *,
     cancel: threading.Event,
     log: Log,
+    passphrase: str | None = None,
 ) -> Staged:
     """Verifies the archive name and stages what a restore needs. Raises VerifyError,
-    StorageError, Cancelled or InsufficientSpace; nothing is left behind then."""
+    StorageError, Cancelled or InsufficientSpace; nothing is left behind then.
+
+    passphrase is one entered for an archive from another drydock, tried first; this
+    drydock's own are re-derived from the job UUID in the name (candidates)."""
     info = parse_name(name)
-    passphrases = crypto.job_passphrases(info.job_uuid)
+    passphrases = candidates(crypto, name, passphrase)
     prepare_staging(staging)
     dest = restore_dir(staging, run_id)
     try:
@@ -378,6 +411,10 @@ def verify_archive(
                     cancel=cancel,
                     on_member=stager,
                 )
+            except NoKeyError:
+                if passphrase:
+                    raise VerifyError(NOT_DECRYPTED) from None
+                raise
             finally:
                 stager.discard()
             try:
@@ -1232,10 +1269,15 @@ def link_key(canonical: str) -> bytes:
 
 @contextlib.contextmanager
 def open_verified(
-    storage: StorageBackend, staged: Staged, crypto: Crypto, cancel: threading.Event | None
+    storage: StorageBackend,
+    staged: Staged,
+    crypto: Crypto,
+    cancel: threading.Event | None,
+    passphrase: str | None = None,
 ) -> Iterator[ArchiveReader]:
     """The archive pass 1 verified, open for streaming its members. Use it before any
-    mutation: it refuses a file whose fstat identity changed since pass 1."""
+    mutation: it refuses a file whose fstat identity changed since pass 1. passphrase is
+    the one pass 1 was given, if any."""
     verification = staged.verification
     handle = storage.open(verification.archive)
     try:
@@ -1245,9 +1287,7 @@ def open_verified(
         opener = fd_opener(fd)
         with contextlib.ExitStack() as stack:
             if verification.encrypted:
-                passphrases = list(
-                    crypto.job_passphrases(parse_name(verification.archive).job_uuid)
-                )
+                passphrases = candidates(crypto, verification.archive, passphrase)
                 # Rotating the keys since pass 1 shifts the indexes, so the recorded one
                 # only goes first; a wrong one fails at age's header, before any output.
                 index = verification.passphrase_index

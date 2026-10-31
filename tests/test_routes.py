@@ -1,5 +1,6 @@
 """Route inventory: every route is classified, guarded and audited."""
 
+import dataclasses
 import inspect
 import re
 import secrets
@@ -71,7 +72,7 @@ EXPECTED_MIN_ROLE = [
     ({"POST"}, re.compile(r"^/jobs/[^/]+/passphrase$"), Role.superadmin),
     ({"POST"}, re.compile(r"^/jobs/[^/]+/run$"), Role.operator),
     ({"POST"}, re.compile(r"^/runs/[^/]+/cancel$"), Role.operator),
-    ({"GET", "POST"}, re.compile(r"^/restore"), Role.admin),
+    ({"GET", "POST", "PUT"}, re.compile(r"^/restore"), Role.admin),
     ({"GET"}, re.compile(r"^/hooks/new$"), Role.superadmin),
     ({"POST"}, re.compile(r"^/hooks"), Role.superadmin),
     ({"GET"}, re.compile(r"^/hooks"), Role.admin),
@@ -159,6 +160,9 @@ INVENTORY = {
     ("GET", "/restore"),
     ("GET", "/restore/storage/{storage_id}"),
     ("POST", "/restore/from-storage"),
+    ("PUT", "/restore/uploads"),
+    ("POST", "/restore/from-upload/{upload_id}"),
+    ("POST", "/restore/from-path"),
     ("GET", "/restore/runs/{restore_id}/plan"),
     ("POST", "/restore/runs/{restore_id}/plan"),
     ("POST", "/restore/runs/{restore_id}/execute"),
@@ -191,7 +195,16 @@ def dependency_calls(route: RouteContext) -> list:
 
 def fill(path: str, user_id: int, **ids: int) -> str:
     """Replaces {user_id} and any other {name} placeholder (default: user_id)."""
-    for name in ("host_id", "storage_id", "job_id", "hook_id", "run_id", "restore_id", "target_id"):
+    for name in (
+        "host_id",
+        "storage_id",
+        "job_id",
+        "hook_id",
+        "run_id",
+        "restore_id",
+        "target_id",
+        "upload_id",
+    ):
         path = path.replace("{" + name + "}", str(ids.get(name, user_id)))
     return path.replace("{user_id}", str(user_id))
 
@@ -579,6 +592,7 @@ AUDITED_SUCCESS = [
         "restore.verify",
         303,
     ),
+    ("/restore/uploads", None, "restore.upload", 201),  # a PUT of the archive itself
     (
         "/restore/runs/{restore_id}/plan",
         {"host_id": "{host_id}", "mode": "image-only"},
@@ -591,6 +605,8 @@ AUDITED_SUCCESS = [
         "restore.execute",
         303,
     ),
+    ("/restore/from-upload/{upload_id}", {}, "restore.verify", 303),
+    ("/restore/from-path", {"path": "{storage_root}/{archive}"}, "restore.verify", 303),
     ("/hooks", hook_form("{host_id}"), "hook.create", 303),
     ("/hooks/{hook_id}", hook_form("{host_id}", timeout_s="60"), "hook.update", 303),
     ("/jobs", job_form("{host_id}", "{storage_id}", pre_hooks="dump"), "job.create", 303),
@@ -701,6 +717,11 @@ async def test_every_unsafe_route_audits_its_success(fresh: Browser, monkeypatch
     monkeypatch.setattr(Dispatcher, "_backup", wait_for_cancel)
     monkeypatch.setattr(restore_apply, "inspect_target", empty_target)
     monkeypatch.setattr(restore_apply, "apply", lambda *args, **kwargs: None)
+    # The storage root doubles as the allowed restore path.
+    root_path = fresh.settings.local_storage_roots[0]
+    allowed = dataclasses.replace(fresh.settings, restore_paths=(root_path,))
+    monkeypatch.setattr(fresh.app.state, "settings", allowed)
+    monkeypatch.setattr(fresh.app.state.dispatcher, "settings", allowed)
     monkeypatch.setattr(
         Notifier, "test", lambda self, name, url_enc: notify.Outcome(name, True, "ntfy: success")
     )
@@ -716,7 +737,7 @@ async def test_every_unsafe_route_audits_its_success(fresh: Browser, monkeypatch
         "/jobs": "job_id",
         "/hooks": "hook_id",
     }
-    root = str(fresh.settings.local_storage_roots[0])
+    root = str(root_path)
     image_id = "sha256:" + "a" * 64
     archive, _ = build_archive(
         fresh.settings.local_storage_roots[0],
@@ -730,6 +751,17 @@ async def test_every_unsafe_route_audits_its_success(fresh: Browser, monkeypatch
             response = await fresh.setup()
         elif path == "/login":
             response = await fresh.login("admin", NEW_PASSWORD)
+        elif path == "/restore/uploads":
+            response = await fresh.client.put(
+                path,
+                params={"name": archive},
+                content=(root_path / archive).read_bytes(),
+                headers=fresh.origin_headers
+                | {
+                    "X-CSRF-Token": await fresh.csrf_token(),
+                    "Content-Type": "application/octet-stream",
+                },
+            )
         else:
             if "/oauth/" in path:  # a Google Drive target's routes
                 if "drive_id" not in ids:
@@ -761,6 +793,11 @@ async def test_every_unsafe_route_audits_its_success(fresh: Browser, monkeypatch
             ids["restore_id"] = int(response.headers["location"].split("/")[3])
         if path == "/restore/runs/{restore_id}/execute":
             await fresh.app.state.dispatcher.wait(ids["restore_id"])
+        if path == "/restore/uploads":
+            ids["upload_id"] = response.json()["id"]
+        if path in ("/restore/from-upload/{upload_id}", "/restore/from-path"):
+            await fresh.app.state.dispatcher.wait(int(response.headers["location"].split("/")[3]))
         assert successes(fresh, action) == before + 1, f"POST {path} did not audit {action}"
     statuses = fresh.sql("SELECT kind, status FROM runs ORDER BY id")
-    assert statuses == [("restore", "done"), ("backup", "cancelled")]
+    awaiting = ("restore", "awaiting_confirmation")
+    assert statuses == [("restore", "done"), awaiting, awaiting, ("backup", "cancelled")]

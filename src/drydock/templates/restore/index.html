@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import alerts, run_status_badge, when %}
+{% from "_macros.html" import alerts, passphrase_field, run_status_badge, submit, when %}
 {% block title %}Restore{% endblock %}
 {% block content %}
 <h1 class="mb-4 text-3xl font-bold">Restore</h1>
@@ -29,6 +29,64 @@
     {% endif %}
   </div>
 </section>
+
+<section class="card mb-4 bg-base-100 shadow-sm" aria-labelledby="upload-heading">
+  <div class="card-body">
+    <h2 id="upload-heading" class="card-title">Or upload an archive</h2>
+    <p class="text-sm">An archive drydock wrote, under its original name, up to {{ max_upload_gb }} GB. It goes to drydock's staging disk and is verified like an archive in storage. Restoring it uses it up, even when verification fails; one not restored is deleted 24 hours after it finished uploading. An encrypted archive from another drydock waits in the list below for its passphrase. Behind a reverse proxy, the proxy must accept a request body that large.</p>
+    <form action="/restore/uploads" data-upload data-csrf="{{ auth.csrf_token }}" data-max-bytes="{{ max_upload }}" class="flex flex-col gap-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <label for="upload-file" class="sr-only">Archive file</label>
+        <input id="upload-file" type="file" accept=".zst,.age" class="file-input">
+        <button type="submit" class="btn btn-primary">Upload</button>
+      </div>
+      <progress class="progress w-full" value="0" max="1" aria-label="Upload progress" hidden></progress>
+      <p data-upload-status role="status" class="text-sm"></p>
+    </form>
+    {% if uploads %}
+    <div class="overflow-x-auto">
+      <table class="table table-sm">
+        <caption class="text-left text-sm opacity-70">Uploaded archives</caption>
+        <thead><tr><th scope="col">Archive</th><th scope="col">Size</th><th scope="col">Deleted at (UTC)</th><th scope="col"><span class="sr-only">Action</span></th></tr></thead>
+        <tbody>
+          {% for upload in uploads %}
+          <tr>
+            <td class="font-mono text-xs break-all">{{ upload.name }}</td>
+            <td class="whitespace-nowrap">{{ upload.declared_size|filesize }}</td>
+            <td class="whitespace-nowrap">{{ when(upload.expires_at) }}</td>
+            <td>
+              <form method="post" action="/restore/from-upload/{{ upload.id }}" hx-post="/restore/from-upload/{{ upload.id }}" hx-nonce="{{ csp_nonce }}">
+                <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+                {% if upload.name.endswith(".age") %}{{ passphrase_field("upload-passphrase-" ~ upload.id) }}{% endif %}
+                {{ submit("Verify and restore", "btn-primary btn-sm", upload.name) }}
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+</section>
+
+{% if restore_paths %}
+<section class="card mb-4 bg-base-100 shadow-sm" aria-labelledby="path-heading">
+  <div class="card-body">
+    <h2 id="path-heading" class="card-title">Or restore a file on the server</h2>
+    <p class="text-sm">An archive drydock wrote, under its original name, inside {% for root in restore_paths %}<span class="font-mono">{{ root }}</span>{% if not loop.last %}, {% endif %}{% endfor %} (DRYDOCK_RESTORE_PATHS).</p>
+    <form method="post" action="/restore/from-path" hx-post="/restore/from-path" hx-nonce="{{ csp_nonce }}" class="flex flex-wrap items-end gap-2">
+      <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+      <fieldset class="fieldset grow">
+        <label class="fieldset-legend" for="restore-path">Path of the archive</label>
+        <input id="restore-path" name="path" class="input w-full font-mono" maxlength="4096" autocomplete="off" required placeholder="{{ restore_paths[0] }}/drydock-...tar.zst">
+      </fieldset>
+      <div class="grow">{{ passphrase_field("path-passphrase") }}</div>
+      {{ submit("Verify and restore") }}
+    </form>
+  </div>
+</section>
+{% endif %}
 
 <section class="card bg-base-100 shadow-sm" aria-labelledby="restores-heading">
   <div class="card-body">

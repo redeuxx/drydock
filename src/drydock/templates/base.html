@@ -10,6 +10,7 @@
   <script nonce="{{ csp_nonce }}" src="/static/vendor/htmx/htmx.min.js" defer></script>
   <script nonce="{{ csp_nonce }}" src="/static/vendor/htmx/ext/hx-csp.min.js" defer></script>
   <script nonce="{{ csp_nonce }}" src="/static/js/app.js" defer></script>
+  <script nonce="{{ csp_nonce }}" src="/static/js/upload.js" defer></script>
 </head>
 {# Logged-in pages: htmx requests carry the CSRF header, and every response (including 4xx
    error pages) is swapped by selecting its #main. Submit buttons are disabled in flight. #}

@@ -32,6 +32,7 @@ from drydock.jobs.dispatcher import Dispatcher
 from drydock.jobs.scheduler import Scheduler
 from drydock.models import User
 from drydock.notify import Notifier
+from drydock.restore import uploads
 from drydock.routes import (
     account,
     auth,
@@ -68,6 +69,7 @@ def run_startup_hooks(app: FastAPI) -> None:
     scheduler starts later in the lifespan, once the dispatcher has started."""
     log.info("Running startup hooks")
     app.state.dispatcher.recover()
+    uploads.recover(app.state.sessionmaker, app.state.settings)
 
 
 def acquire_lock(path: Path) -> int | None:

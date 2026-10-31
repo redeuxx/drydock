@@ -29,6 +29,15 @@ BASE_HEADERS = {
 # HTTPS would break the SSH tunnel and every other local service on that port.
 HSTS = "max-age=31536000"
 MAX_BODY_BYTES = 64 * 1024
+UPLOAD_PATH = "/restore/uploads"
+
+
+def is_upload(scope: Scope) -> bool:
+    if scope["method"] != "PUT" or scope["path"] != UPLOAD_PATH:
+        return False
+    # The first one, as Starlette (and so the CSRF check's form parsing) reads it.
+    content_type = next((v for k, v in scope["headers"] if k == b"content-type"), b"")
+    return content_type.partition(b";")[0].strip().lower() == b"application/octet-stream"
 
 
 class SecurityHeadersMiddleware:
@@ -65,14 +74,15 @@ class SecurityHeadersMiddleware:
 class BodySizeLimitMiddleware:
     """Rejects request bodies over MAX_BODY_BYTES, declared or streamed.
 
-    Phase 7's upload endpoint will be the one exemption, with its own limits.
+    The one exemption is an application/octet-stream PUT to the upload route, which sets
+    limits of its own (restore.uploads). Only that type: the CSRF check parses a form body.
     """
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
+        if scope["type"] != "http" or is_upload(scope):
             await self.app(scope, receive, send)
             return
         for name, value in scope["headers"]:

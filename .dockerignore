@@ -6,6 +6,7 @@
 node_modules
 data
 secrets
+restore-inbox
 src/drydock/static/js
 src/drydock/static/vendor
 *.db
