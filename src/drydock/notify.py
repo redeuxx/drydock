@@ -246,9 +246,11 @@ def message(run: Run, job: Job, host: Host | None, base_url: str) -> tuple[str, 
         "cancelled": "was cancelled",
         "interrupted": "was interrupted",
     }.get(run.status, run.status)
-    title = f"drydock: backup {job.name} {outcome}"
+    # A job with several targets has a run for each; say which one this was.
+    subject = f"{job.name} ({run.target_label})" if run.target_label else job.name
+    title = f"drydock: backup {subject} {outcome}"
     lines = [
-        f"Run #{run.id} of job {job.name} on host {host.name if host else '?'} {outcome}.",
+        f"Run #{run.id} of job {subject} on host {host.name if host else '?'} {outcome}.",
     ]
     if run.archive_name and run.status == "done":
         lines.append(f"Archive: {run.archive_name}")

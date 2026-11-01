@@ -397,7 +397,8 @@ check(await previewShows("not both"), "the preview explains a refused expression
 await page.selectOption("#new-cron-preset", "manual");
 check(await previewShows("started by hand"), "the preview says a manual job has no schedule");
 await page.selectOption("#new-timezone", "");
-await Promise.all([page.waitForURL(/\/jobs\/\d+$/), page.click("main button[type=submit]")]);
+// Enter in a field saves (the form's hidden default button), not "Add another".
+await Promise.all([page.waitForURL(/\/jobs\/\d+$/), page.press("#new-name", "Enter")]);
 const jobPath = path(page);
 check(/^\/jobs\/\d+$/.test(jobPath), "HX-Redirect navigates to the new job");
 

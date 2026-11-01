@@ -20,7 +20,8 @@ from drydock.hosts import helper
 from drydock.hosts.manager import HostManager
 from drydock.jobs import dispatcher as dispatcher_module
 from drydock.jobs import runlog
-from drydock.jobs.dispatcher import Dispatcher, DispatchError, Target
+from drydock.jobs.dispatcher import Dispatcher, DispatchError, Target, for_target
+from drydock.jobs.hooks import Hook
 from drydock.models import Host, Run
 from tests.conftest import Browser, add_user, running
 from tests.docker_support import wait_until
@@ -534,16 +535,14 @@ async def test_the_target_field_loads_suggestions_for_the_chosen_host(admin: Bro
 
 async def test_an_unreachable_host_still_lets_the_target_be_typed(admin: Browser) -> None:
     host_id = add_host(admin)  # tcp://127.0.0.1:9: nothing listens
-    response = await admin.get(
-        "/jobs/target-options", params={"host_id": host_id, "target_type": "stack"}
-    )
+    response = await admin.get("/jobs/target-options", params={"host_id": host_id})
     assert response.status_code == 200
     assert "Could not list the host" in response.text and "Type the name instead." in response.text
 
 
 @pytest.mark.parametrize(
     "params",
-    [{"host_id": "\u00b2"}, {"host_id": "9" * 20}, {"host_id": "1", "target_type": "stacks"}],
+    [{"host_id": "\u00b2"}, {"host_id": "9" * 20}],
 )
 async def test_odd_target_option_requests_list_nothing(admin: Browser, params: dict) -> None:
     add_host(admin)
@@ -647,6 +646,183 @@ async def test_mount_options_need_a_host_and_target(admin: Browser) -> None:
 async def test_the_job_list_shows_the_retention(admin: Browser, fields: dict, shown: str) -> None:
     await add_job(admin, "kept", **fields)
     assert shown in (await admin.get("/jobs")).text
+
+
+# SEVERAL TARGETS
+
+
+def extra_rows(*pairs: tuple[str, str]) -> dict:
+    return {
+        "extra_targets_sent": "1",
+        "extra_target_type": [kind for kind, _ in pairs],
+        "extra_target": [name for _, name in pairs],
+    }
+
+
+def stored_targets(browser: Browser, job_id: int) -> list[tuple]:
+    return browser.sql(
+        "SELECT position, target_type, target, uuid FROM job_targets WHERE job_id = ?"
+        " ORDER BY position",
+        (job_id,),
+    )
+
+
+async def test_a_job_keeps_each_targets_id_across_saves(admin: Browser) -> None:
+    host_id, storage_id = str(add_host(admin)), str(await add_storage(admin))
+    form = {
+        "name": "several",
+        "host_id": host_id,
+        "target": "web",
+        "storage_target_id": storage_id,
+        "scope": "config",
+        "encrypted": "1",
+        "enabled": "1",
+    }
+    # An empty row is dropped.
+    job_id = await add_job(
+        admin, **form | extra_rows(("stack", "app"), ("container", "worker"), ("container", " "))
+    )
+    first = stored_targets(admin, job_id)
+    assert [row[:3] for row in first] == [(1, "stack", "app"), (2, "container", "worker")]
+    page = (await admin.get(f"/jobs/{job_id}")).text
+    assert 'Compose project <span class="font-mono">app</span>' in page
+    assert "One after another, each into its own archive." in page
+    assert "+2 more" in (await admin.get("/jobs")).text
+
+    # Reordered: the same UUIDs at new positions.
+    response = await admin.post(
+        f"/jobs/{job_id}", form | extra_rows(("container", "worker"), ("stack", "app"))
+    )
+    assert response.status_code == 303, response.text
+    assert stored_targets(admin, job_id) == [(1, *first[1][1:]), (2, *first[0][1:])]
+
+    # A client that sends no rows keeps them; an emptied row removes its target.
+    assert (await admin.post(f"/jobs/{job_id}", form)).status_code == 303
+    assert len(stored_targets(admin, job_id)) == 2
+    response = await admin.post(f"/jobs/{job_id}", form | extra_rows(("stack", "app")))
+    assert response.status_code == 303
+    assert stored_targets(admin, job_id) == [(1, *first[0][1:])]
+
+    # Each target's archives have a passphrase of their own.
+    crypto = admin.app.state.crypto
+    revealed = (await admin.post(f"/jobs/{job_id}/passphrase")).text
+    job_uuid = admin.sql("SELECT uuid FROM jobs WHERE id = ?", (job_id,))[0][0]
+    for each in (job_uuid, first[0][3]):
+        assert crypto.job_passphrase(uuid.UUID(each)) in revealed
+
+    # Deleting the job deletes its targets.
+    assert (await admin.post(f"/jobs/{job_id}/delete")).status_code == 303
+    assert admin.sql("SELECT COUNT(*) FROM job_targets") == [(0,)]
+
+
+async def test_add_another_target_shows_an_empty_row_and_saves_nothing(admin: Browser) -> None:
+    host_id = str(add_host(admin))
+    response = await admin.post(
+        "/jobs",
+        {"name": "draft", "host_id": host_id, "target": "web", "add_target": "1"}
+        | extra_rows(("stack", "app")),
+    )
+    assert response.status_code == 200
+    assert response.text.count('name="extra_target"') == 2
+    assert 'value="app"' in response.text
+    assert admin.sql("SELECT COUNT(*) FROM jobs") == [(0,)]
+
+
+@pytest.mark.parametrize(
+    ("pairs", "error"),
+    [
+        ((("container", "web"),), "Each container or stack can be in a job once."),
+        ((("container", "bad name!"),), "bad name!:"),
+        (tuple(("container", f"c{n}") for n in range(20)), "at most 20"),
+    ],
+)
+async def test_bad_extra_targets_are_refused(admin: Browser, pairs: tuple, error: str) -> None:
+    host_id, storage_id = str(add_host(admin)), str(await add_storage(admin))
+    response = await admin.post(
+        "/jobs",
+        {
+            "name": "refused",
+            "host_id": host_id,
+            "target": "web",
+            "storage_target_id": storage_id,
+            "scope": "config",
+            "enabled": "1",
+        }
+        | extra_rows(*pairs),
+    )
+    assert response.status_code == 422 and error in response.text
+    assert admin.sql("SELECT COUNT(*) FROM jobs") == [(0,)]
+
+
+def test_each_target_runs_the_hooks_bound_to_it() -> None:
+    def hook(hook_id: int, container: str, project: str | None = None) -> Hook:
+        return Hook(hook_id, f"h{hook_id}", container, ("true",), host_id=1, project=project)
+
+    web, worker, app, stray = hook(1, "web"), hook(2, "worker"), hook(3, "db", "app"), hook(4, "x")
+    found = (web, worker, app, stray)
+    siblings = (("container", "worker"), ("stack", "app"))
+    # Another target's hooks are left to it; one bound to none stays, so the run refuses it.
+    assert for_target(found, 1, "container", "web", siblings) == (web, stray)
+    siblings = (("container", "web"), ("container", "worker"))
+    assert for_target(found, 1, "stack", "app", siblings) == (app, stray)
+
+
+async def test_a_jobs_targets_run_one_after_another(admin: Browser, fake_docker: dict) -> None:
+    job_id = await add_job(
+        admin, "several", **extra_rows(("container", "worker"), ("container", "cache"))
+    )
+    first = await start_run(admin, job_id)
+    second, third = first + 1, first + 2
+    await wait_until(lambda: run_status(admin, first) == "running", 5, "first run starts")
+    await anyio.sleep(0.3)
+    assert run_status(admin, second) == "queued"
+    log = runlog.log_path(admin.settings.data_dir, second).read_text()
+    assert f"Waiting for run {first}, the job's previous target, to finish." in log
+    assert admin.sql("SELECT target_uuid IS NULL, target_label FROM runs ORDER BY id") == [
+        (1, "container web"),
+        (0, "container worker"),
+        (0, "container cache"),
+    ]
+    # Cancelling a queued run lets nothing after it jump ahead of the running one.
+    await admin.post(f"/runs/{second}/cancel")
+    await admin.app.state.dispatcher.wait(second)
+    await anyio.sleep(0.3)
+    assert run_status(admin, third) == "queued"
+    # The job stays busy until its last target is done.
+    assert (await admin.post(f"/jobs/{job_id}/run")).status_code == 409
+    await admin.post(f"/runs/{first}/cancel")
+    await wait_until(lambda: run_status(admin, third) == "running", 5, "third run starts")
+    assert (await admin.post(f"/jobs/{job_id}/run")).status_code == 409
+    await admin.post(f"/runs/{third}/cancel")
+    await admin.app.state.dispatcher.wait(third)
+    assert "container cache" in (await admin.get("/runs")).text
+    again = await start_run(admin, job_id)
+    await wait_until(lambda: run_status(admin, again) == "running", 5, "the job runs again")
+    await admin.post(f"/runs/{again}/cancel")
+    for run_id in (again + 1, again + 2):
+        await admin.post(f"/runs/{run_id}/cancel")
+        await admin.app.state.dispatcher.wait(run_id)
+
+
+async def test_the_job_list_shows_the_worst_run_of_the_newest_sequence(admin: Browser) -> None:
+    job_id = await add_job(admin, "several", **extra_rows(("container", "worker")))
+    target_uuid = admin.sql("SELECT uuid FROM job_targets")[0][0]
+    for status, uuid_value in (("done", None), ("failed", None), ("done", target_uuid)):
+        admin.sql(
+            "INSERT INTO runs (job_id, kind, status, stopped_containers_json, target_uuid,"
+            " created_at) VALUES (?, 'backup', ?, '[]', ?, datetime('now'))",
+            (job_id, status, uuid_value),
+        )
+    listing = (await admin.get("/jobs")).text
+    assert ">failed<" in listing
+
+
+async def test_enter_in_the_job_form_saves_rather_than_adding_a_row(admin: Browser) -> None:
+    page = (await admin.get("/jobs/new")).text
+    form = page[page.index('action="/jobs"') :]
+    hidden = form.index('<button type="submit" class="sr-only"')
+    assert 'type="submit"' not in form[:hidden]
+    assert hidden < form.index('name="add_target"')
 
 
 # DASHBOARD, BELL AND ABOUT

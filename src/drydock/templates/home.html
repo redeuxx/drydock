@@ -50,7 +50,7 @@
       {% if upcoming %}
       <ul class="flex flex-col gap-1 text-sm">
         {% for when, job in upcoming %}
-        <li><a class="link" href="/jobs/{{ job.id }}">{{ job.name }}</a> <span class="opacity-70">{{ when.strftime("%a %Y-%m-%d %H:%M %Z") }}</span></li>
+        <li><a class="link" href="/jobs/{{ job.id }}">{{ job.name }}</a> <span class="opacity-70">{{ when|stamp(False) }}</span></li>
         {% endfor %}
       </ul>
       {% else %}

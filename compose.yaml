@@ -21,7 +21,9 @@ services:
       DRYDOCK_BASE_URL: "${DRYDOCK_BASE_URL:-http://localhost:8000}"
       # Suggested when an admin adds the local host. Drydock never registers it on its own.
       DRYDOCK_LOCAL_DOCKER_URL: tcp://socket-proxy:2375
-      TZ: UTC
+      # Schedules without a zone of their own use this one. Set TZ in .env to the host's zone
+      # (a container does not inherit it); the README's install step does.
+      TZ: "${TZ:-UTC}"
       # Backup storage: list each directory mounted below (see docs/backups.md, Storage).
       # DRYDOCK_LOCAL_STORAGE_ROOTS: /backups
       # Restores from a file on this server: archives put in ./restore-inbox (readable by

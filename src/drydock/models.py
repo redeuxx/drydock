@@ -227,6 +227,25 @@ class Job(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
+class JobTarget(Base):
+    """A job's second and later containers or Compose projects (drydock.jobs.targets), each
+    with a UUID of its own for its archive names. The first is the job's own target."""
+
+    __tablename__ = "job_targets"
+    __table_args__ = (
+        CheckConstraint(in_list("target_type", TARGET_TYPES), name="ck_job_targets_target_type"),
+        UniqueConstraint("uuid", name="uq_job_targets_uuid"),
+        {"sqlite_autoincrement": True},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
+    position: Mapped[int] = mapped_column(Integer)
+    target_type: Mapped[str] = mapped_column(String(16))
+    target: Mapped[str] = mapped_column(String(255))
+    uuid: Mapped[str] = mapped_column(String(36))
+
+
 class NotificationTarget(Base):
     """One Apprise URL (notify.py), stored only encrypted and never decrypted for display."""
 
@@ -325,6 +344,10 @@ class Run(Base):
     plan: Mapped[str | None] = mapped_column(Text)
     # The restore journal: what to roll back or finish after a failure or crash.
     restore_originals_json: Mapped[str] = mapped_column(Text, default="{}", server_default="{}")
+    # Which of its job's targets a backup ran for (drydock.jobs.targets): None for the job's
+    # own; the label stays readable after the target is removed.
+    target_uuid: Mapped[str | None] = mapped_column(String(36), default=None)
+    target_label: Mapped[str | None] = mapped_column(String(300), default=None)
 
 
 UPLOAD_STATUSES = ("receiving", "complete")

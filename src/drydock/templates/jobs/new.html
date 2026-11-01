@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_macros.html" import alerts, submit %}
-{% from "jobs/_fields.html" import job_fields %}
+{% from "jobs/_fields.html" import job_fields with context %}
 {% block title %}Add job{% endblock %}
 {% block content %}
 <section class="card mx-auto max-w-xl bg-base-100 shadow-sm">

@@ -40,10 +40,11 @@ On the Docker host, over SSH. You need Docker Engine 25 or later with the Compos
    sudo chmod 0400 secrets/drydock_secret_key
    ```
 
-3. Set the address you will browse to, exactly as you will type it: a domain if you have one, otherwise the host's IP. You can [change it later](docs/configuration.md#changing-the-address).
+3. Set the address you will browse to, exactly as you will type it (a domain if you have one, otherwise the host's IP; you can [change it later](docs/configuration.md#changing-the-address)), and the host's time zone, which schedules use:
 
    ```sh
    echo "DRYDOCK_BASE_URL=http://192.168.1.50:8000" > .env
+   echo "TZ=$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone)" >> .env
    ```
 
 4. Start drydock:

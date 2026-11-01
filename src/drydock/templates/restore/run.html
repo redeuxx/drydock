@@ -42,7 +42,7 @@
     <dl class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
       <dt class="opacity-70">Job</dt><dd class="break-all">{{ manifest.job.name }} (scope {{ manifest.job.scope }})</dd>
       <dt class="opacity-70">Source host</dt><dd class="break-all">{{ manifest.source.host_name }} ({{ manifest.source.os }}/{{ manifest.source.arch }})</dd>
-      <dt class="opacity-70">Captured</dt><dd>{{ when(manifest.created_at) }} UTC</dd>
+      <dt class="opacity-70">Captured</dt><dd>{{ when(manifest.created_at) }}</dd>
       {% if stack %}<dt class="opacity-70">Stack</dt><dd class="break-all">Compose project <span class="font-mono">{{ manifest.job.project }}</span>, {{ manifest.containers|length }} containers</dd>{% endif %}
       <dt class="opacity-70">Containers</dt><dd class="font-mono break-all">{{ manifest.containers|map(attribute="name")|join(", ") or "none" }}</dd>
       <dt class="opacity-70">Volumes</dt><dd class="font-mono break-all">{{ manifest.volumes|map(attribute="name")|join(", ") or "none" }}</dd>

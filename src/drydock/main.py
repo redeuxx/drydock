@@ -53,7 +53,7 @@ from drydock.security.rbac import RecentAuthRequired, Role
 from drydock.security.sessions import Auth, LoginRequired, clear_cookie
 from drydock.storage import gdrive_oauth
 from drydock.storage.rclone_rc import RcloneDaemon
-from drydock.templating import is_htmx, render
+from drydock.templating import is_htmx, render, set_zone
 
 log = logging.getLogger("drydock")
 
@@ -277,6 +277,7 @@ async def validation_error(request: Request, _exc: RequestValidationError) -> Re
 
 
 def create_app(settings: Settings) -> FastAPI:
+    set_zone(settings.tz)  # pages show times in drydock's zone
     app = FastAPI(
         title="Drydock",
         lifespan=lifespan,

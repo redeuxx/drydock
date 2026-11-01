@@ -14,12 +14,12 @@
 <p class="mb-4 opacity-70">Finished runs{% if auth.user.role >= Role.admin %}, missed schedules, host key mismatches and storage that needs reconnecting{% endif %}, newest first. Messages to external services are set up under <a class="link" href="/notifications">Notification targets</a>{% if auth.user.role < Role.admin %} by an admin{% endif %}.</p>
 <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
   <table class="table">
-    <thead><tr><th scope="col">What</th><th scope="col">When (UTC)</th><th scope="col"><span class="sr-only">Unread</span></th></tr></thead>
+    <thead><tr><th scope="col">What</th><th scope="col">When</th><th scope="col"><span class="sr-only">Unread</span></th></tr></thead>
     <tbody>
       {% for item in entries %}
       <tr>
         <td><a class="link" href="{{ item.link }}">{{ item.title }}</a></td>
-        <td class="whitespace-nowrap text-sm">{{ item.when.strftime("%Y-%m-%d %H:%M") }} <span class="opacity-60">({{ item.when|ago }})</span></td>
+        <td class="whitespace-nowrap text-sm">{{ item.when|stamp(False) }} <span class="opacity-60">({{ item.when|ago }})</span></td>
         <td>{% if item.unread %}<span class="badge badge-soft badge-warning">unread</span>{% endif %}</td>
       </tr>
       {% else %}

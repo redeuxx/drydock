@@ -41,11 +41,12 @@
       <dt class="opacity-70">Signature</dt><dd>{{ "signed by this drydock" if restore_doc.get("signed") is sameas true else "not signed by this drydock" if restore_doc.get("signed") is sameas false else "not verified yet" }}</dd>
       {% else %}
       <dt class="opacity-70">Job</dt><dd>{% if job %}<a class="link" href="/jobs/{{ job.id }}">{{ job.name }}</a>{% else %}deleted job{% endif %}</dd>
+      {% if run.target_label %}<dt class="opacity-70">Target</dt><dd class="break-all">{{ run.target_label }}</dd>{% endif %}
       {% endif %}
       <dt class="opacity-70">Triggered by</dt><dd>{{ run.triggered_by or "" }}</dd>
-      <dt class="opacity-70">Created</dt><dd>{{ when(run.created_at) }} UTC</dd>
-      <dt class="opacity-70">Started</dt><dd>{{ (when(run.started_at) ~ " UTC") if run.started_at else "not yet" }}</dd>
-      <dt class="opacity-70">Finished</dt><dd>{{ (when(run.finished_at) ~ " UTC") if run.finished_at else "not yet" }}</dd>
+      <dt class="opacity-70">Created</dt><dd>{{ when(run.created_at) }}</dd>
+      <dt class="opacity-70">Started</dt><dd>{{ when(run.started_at) if run.started_at else "not yet" }}</dd>
+      <dt class="opacity-70">Finished</dt><dd>{{ when(run.finished_at) if run.finished_at else "not yet" }}</dd>
       {% if run.archive_name %}
       <dt class="opacity-70">Archive</dt><dd class="font-mono text-xs break-all">{{ run.archive_name }}</dd>
       <dt class="opacity-70">Size</dt><dd>{{ run.size|filesize }}</dd>

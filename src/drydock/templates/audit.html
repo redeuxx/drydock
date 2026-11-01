@@ -6,12 +6,12 @@
 <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
   <table class="table table-zebra table-sm">
     <thead>
-      <tr><th scope="col">Time (UTC)</th><th scope="col">Actor</th><th scope="col">IP</th><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Outcome</th><th scope="col">Details</th></tr>
+      <tr><th scope="col">Time</th><th scope="col">Actor</th><th scope="col">IP</th><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Outcome</th><th scope="col">Details</th></tr>
     </thead>
     <tbody>
       {% for event, details in rows %}
       <tr>
-        <td class="whitespace-nowrap">{{ event.ts.strftime("%Y-%m-%d %H:%M:%S") }}</td>
+        <td class="whitespace-nowrap">{{ event.ts|stamp }}</td>
         <td>{{ event.actor or "" }}</td>
         <td>{{ event.ip or "" }}</td>
         <td><code>{{ event.action }}</code></td>

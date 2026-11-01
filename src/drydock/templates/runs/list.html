@@ -5,7 +5,7 @@
 <h1 class="mb-4 text-3xl font-bold">Runs</h1>
 <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
   <table class="table table-zebra">
-    <thead><tr><th scope="col">Run</th><th scope="col">Job</th><th scope="col">Status</th><th scope="col">Triggered by</th><th scope="col">Created (UTC)</th><th scope="col">Finished (UTC)</th><th scope="col">Size</th></tr></thead>
+    <thead><tr><th scope="col">Run</th><th scope="col">Job</th><th scope="col">Status</th><th scope="col">Triggered by</th><th scope="col">Created</th><th scope="col">Finished</th><th scope="col">Size</th></tr></thead>
     <tbody>
       {% for run in runs %}
       <tr>
@@ -16,6 +16,7 @@
           {%- else %} <span class="font-mono text-xs break-all">{{ run.archive_name }}</span>{% endif %}
           {%- elif run.job_id in jobs %}<a class="link" href="/jobs/{{ run.job_id }}">{{ jobs[run.job_id] }}</a>
           {%- else %}<span class="opacity-70">deleted job</span>{% endif -%}
+          {%- if run.kind == "backup" and run.target_label %}<br><span class="text-xs opacity-70">{{ run.target_label }}</span>{% endif %}
         </td>
         <td>{{ run_status_badge(run.status) }}</td>
         <td>{{ run.triggered_by or "" }}</td>

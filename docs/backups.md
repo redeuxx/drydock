@@ -59,7 +59,7 @@ Passwords, private keys and tokens are stored encrypted and never shown again. L
 
 ## Jobs and runs
 
-A job backs up one container (by name or ID) or one Compose project on one host into one storage target. Admins create and edit jobs; operators can **Run now** and cancel runs; every role can view jobs, runs, logs and the backup catalog.
+A job backs up containers (by name or ID) and Compose projects on one host into one storage target. Admins create and edit jobs; operators can **Run now** and cancel runs; every role can view jobs, runs, logs and the backup catalog.
 
 | Scope | What the archive holds |
 |---|---|
@@ -67,6 +67,8 @@ A job backs up one container (by name or ID) or one Compose project on one host 
 | Data | Every named volume and bind mount, as tar streams read by the daemon, with ownership and modes kept. tmpfs mounts are never backed up; the manifest lists them. Nor is the data of a bind mount of `/`, `/proc`, `/sys`, `/dev` or Docker's storage (`/var/lib/docker`, `/var/lib/containerd`); the manifest says it was skipped. |
 | Images | `docker save` of the container's image, for the host's platform. |
 | Everything | All of the above. |
+
+**Several targets.** **Add another container or stack** on the job form adds a row; empty a row and save to remove it (its archives stay). A job with several targets backs them up one after another, each into an archive of its own with its own run: the next target's run starts only once the one before has ended, so its containers run again (after a pause, stop, failure or cancel) before the next target is touched. Each later target has an ID of its own, so its archives have their own names, passphrase and retention; the first target keeps the job's ID. Hooks run for the target they are bound to, and skipped mounts apply to whichever target has them. Run now and the schedule start the whole sequence; the job stays busy until its last target is done.
 
 **Skipped mounts.** A job can leave out the data of chosen volumes and bind mounts, such as a cache that rebuilds itself. On the job form, **List the mounts** (or choosing the target) shows the target's volumes and bind mounts from the host; tick the ones to skip. The containers still mount them: the archive keeps the mount in each container's settings and the manifest records "the job skips it", the run log names every skipped mount, and the job page lists them. A restore recreates a skipped mount without writing into it: an existing volume or host directory keeps its contents and owner, a missing volume is created empty, and a missing directory is created with the owner and mode the backup recorded (one level only: its parent must exist; the restore's **Host path** puts it elsewhere). The confirm page lists each directory it would create, a directory on another path or host is a flagged field, and the same host-path rules as for restored data apply. A skipped file bind, or one from an archive made before drydock recorded owners, is not created: the plan says to create it first. Skip only what can be rebuilt.
 
@@ -140,9 +142,9 @@ A skippable zstd frame at the end holds the SHA-256 of the compressed stream, so
 
 **Archives contain secrets.** The configuration scope stores the container's full inspect output, environment variables included, and Compose `.env` files usually hold database and API passwords. Jobs encrypt by default. Turn encryption off only if the storage itself is encrypted and private.
 
-Encrypted archives (`.tar.zst.age`) use [age](https://age-encryption.org/) with a passphrase. Drydock never stores the passphrase: it derives it from the secret key and the job's random ID, which is in every archive name. As long as you keep the secret key, encrypted archives stay readable even after losing drydock's database.
+Encrypted archives (`.tar.zst.age`) use [age](https://age-encryption.org/) with a passphrase. Drydock never stores the passphrase: it derives it from the secret key and the job's random ID (each further target of a job has an ID of its own), which is in every archive name. As long as you keep the secret key, encrypted archives stay readable even after losing drydock's database.
 
-To decrypt outside drydock, a superadmin opens the job and clicks **Reveal passphrase**. This needs the password from the last 10 minutes and is recorded in the audit log; no GET request ever returns a passphrase. After a key rotation the page also lists the passphrases under older keys, for older archives. Then:
+To decrypt outside drydock, a superadmin opens the job and clicks **Reveal passphrase**. This needs the password from the last 10 minutes and is recorded in the audit log; no GET request ever returns a passphrase. A job with several targets shows one passphrase per target. After a key rotation the page also lists the passphrases under older keys, for older archives. Then:
 
 ```sh
 age -d -o backup.tar.zst drydock-web-....tar.zst.age   # prompts for the passphrase

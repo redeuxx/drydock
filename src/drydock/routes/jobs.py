@@ -33,7 +33,8 @@ from drydock.db import get_db
 from drydock.engine import stacks
 from drydock.hosts import inventory
 from drydock.jobs import mounts, retention, scheduler
-from drydock.jobs.dispatcher import Dispatcher, DispatchError
+from drydock.jobs import targets as job_targets
+from drydock.jobs.dispatcher import Dispatcher, DispatchError, binds
 from drydock.jobs.hooks import MAX_HOOKS_PER_PHASE, HookError, check_binding
 from drydock.models import (
     CONSISTENCY_MODES,
@@ -43,6 +44,7 @@ from drydock.models import (
     Host,
     Job,
     JobNotification,
+    JobTarget,
     NotificationTarget,
     Run,
     StorageTarget,
@@ -174,6 +176,10 @@ class JobForm:
     # client that predates them, keep the stored list.
     skip_mounts: list[str] = dataclass_field(default_factory=list)
     skip_mounts_sent: bool = True
+    # The second and later targets (type, target), backed up after the first in this order;
+    # False: a client that predates them, keep the stored ones.
+    extra: list[tuple[str, str]] = dataclass_field(default_factory=list)
+    extra_sent: bool = True
 
     @classmethod
     def from_job(cls, job: Job, db: Session) -> JobForm:
@@ -203,6 +209,7 @@ class JobForm:
             notify_success=[str(n.target_id) for n in attachments(db, job.id) if n.on_success],
             notify_failure=[str(n.target_id) for n in attachments(db, job.id) if n.on_failure],
             skip_mounts=sorted(mounts.stored(job.skip_mounts)),
+            extra=[(s.target_type, s.target) for s in job_targets.of(db, job)[1:]],
         )
 
 
@@ -211,6 +218,8 @@ def submitted(
     notify_failure: list[str] | None = None,
     cron_preset: str | None = None,
     skip_mounts: list[str] | None = None,
+    extra_target_type: list[str] | None = None,
+    extra_target: list[str] | None = None,
     **values: str,
 ) -> JobForm:
     cron = scheduled(values["cron"], cron_preset)
@@ -248,6 +257,13 @@ def submitted(
         notifications_sent=values["notifications"] == "1",
         skip_mounts=[v.strip() for v in skip_mounts or []],
         skip_mounts_sent=values["skip_mounts_sent"] == "1",
+        # A row left empty is dropped, which is how a target is removed.
+        extra=[
+            (kind.strip() or "container", name.strip())
+            for kind, name in zip(extra_target_type or [], extra_target or [], strict=False)
+            if name.strip()
+        ],
+        extra_sent=values["extra_targets_sent"] == "1",
     )
 
 
@@ -344,15 +360,14 @@ def attached(db: Session, job: Job) -> list[tuple[str, Hook]]:
 
 
 def available(db: Session, job: Job) -> list[Hook]:
-    """The hooks bound to this job's host and target, which it can attach as it is."""
-    usable = []
-    for row in db.scalars(select(Hook).where(Hook.host_id == job.host_id).order_by(Hook.name)):
-        try:
-            check_binding(row, host_id=job.host_id, target_type=job.target_type, target=job.target)
-        except HookError:
-            continue
-        usable.append(row)
-    return usable
+    """The hooks bound to this job's host and one of its targets, which it can attach as
+    it is."""
+    specs = job_targets.of(db, job) if job.id is not None else []
+    return [
+        row
+        for row in db.scalars(select(Hook).where(Hook.host_id == job.host_id).order_by(Hook.name))
+        if any(binds(row, job.host_id, s.target_type, s.target) for s in specs)
+    ]
 
 
 def lookup_hooks(db: Session, text: str) -> tuple[list[str], list[Hook]]:
@@ -393,11 +408,15 @@ def form_policy(form: JobForm) -> retention.Policy:
 
 
 def check_target(form: JobForm) -> str | None:
-    if form.target_type not in TARGET_TYPES:
+    return check_one(form.target_type, form.target)
+
+
+def check_one(target_type: str, target: str) -> str | None:
+    if target_type not in TARGET_TYPES:
         return "Choose what to back up."
-    if form.target_type == "stack":
-        return None if stacks.PROJECT_RE.fullmatch(form.target) else PROJECT_ERROR
-    if not CONTAINER_RE.fullmatch(form.target):
+    if target_type == "stack":
+        return None if stacks.PROJECT_RE.fullmatch(target) else PROJECT_ERROR
+    if not CONTAINER_RE.fullmatch(target):
         return "Enter a container name or ID, for example web or 3f2a9c1b7d0e."
     return None
 
@@ -435,6 +454,18 @@ def validate(
     target_error = check_target(form)
     if target_error:
         errors.append(target_error)
+    all_targets = [(form.target_type, form.target), *(form.extra if form.extra_sent else [])]
+    if form.extra_sent:
+        for kind, name in form.extra:
+            if (error := check_one(kind, name)) is not None:
+                errors.append(f"{name}: {error}")
+                target_error = target_error or error
+        if len(all_targets) > job_targets.MAX_TARGETS:
+            errors.append(
+                f"A job backs up at most {job_targets.MAX_TARGETS} containers and stacks."
+            )
+        if len(set(all_targets)) != len(all_targets):
+            errors.append("Each container or stack can be in a job once.")
     storage_id = as_id(form.storage_target_id)
     storage = db.get(StorageTarget, storage_id) if storage_id is not None else None
     if storage is None:
@@ -463,14 +494,23 @@ def validate(
     errors += pre_errors + post_errors
     if host_ok and target_error is None:
         # On every save, whatever changed: a hook is never silently re-aimed or dropped.
+        # With several targets, a hook runs for the one it is bound to.
+        if not form.extra_sent and job_id is not None:
+            job_row = db.get(Job, job_id)
+            if job_row is not None:
+                all_targets += [(s.target_type, s.target) for s in job_targets.of(db, job_row)[1:]]
         for row in pre + post:
-            try:
-                check_binding(
-                    row, host_id=host_id, target_type=form.target_type, target=form.target
-                )
-            except HookError as exc:
-                if str(exc) not in errors:
-                    errors.append(str(exc))
+            failures = []
+            for kind, name in all_targets:
+                try:
+                    check_binding(row, host_id=host_id, target_type=kind, target=name)
+                except HookError as exc:
+                    failures.append(str(exc))
+                else:
+                    break
+            else:
+                if failures and failures[0] not in errors:
+                    errors.append(failures[0])
     return errors, [h.id for h in pre], [h.id for h in post]
 
 
@@ -516,6 +556,9 @@ def summary(job: Job, db: Session) -> dict[str, Any]:
         "cron": job.cron,
         "timezone": job.timezone,
         "skip_mounts": sorted(mounts.stored(job.skip_mounts)),
+        "more_targets": [s.label for s in job_targets.of(db, job)[1:]]
+        if job.id is not None
+        else [],
         "notifications": notification_names(db, job.id) if job.id is not None else [],
     }
 
@@ -628,6 +671,8 @@ def job_page(
     context.setdefault("skip_mounts", sorted(mounts.stored(job.skip_mounts)))
     context.setdefault("errors", [])
     context.setdefault("error", None)
+    context.setdefault("blank_rows", 0)
+    context.setdefault("specs", job_targets.of(db, job))
     context.setdefault("passphrases", None)
     runs = db.scalars(
         select(Run).where(Run.job_id == job.id).order_by(Run.id.desc()).limit(RECENT_RUNS)
@@ -657,17 +702,34 @@ def job_page(
 
 # LIST AND CREATE
 
+# The order a sequence's runs are shown in the job list: the first found wins.
+WORST = ("failed", "interrupted", "running", "queued", "cancelled", "done")
+
 
 @router.get("")
 def list_jobs(request: Request, auth: Viewer, db: Session = Depends(get_db)) -> Response:
     jobs = db.scalars(select(Job).order_by(Job.name)).all()
     hosts = {h.id: h.name for h in db.scalars(select(Host))}
     targets = {t.id: t.name for t in db.scalars(select(StorageTarget))}
-    latest = dict(db.execute(select(Run.job_id, func.max(Run.id)).group_by(Run.job_id)).all())
-    last_runs = {
-        run.job_id: run
-        for run in db.scalars(select(Run).where(Run.id.in_([i for i in latest.values() if i])))
-    }
+    # A job's newest sequence starts at its newest run of the job's own target; its row
+    # shows the worst run of that sequence, so a failed first target is not hidden.
+    starts = dict(
+        db.execute(
+            select(Run.job_id, func.max(Run.id))
+            .where(Run.target_uuid.is_(None))
+            .group_by(Run.job_id)
+        ).all()
+    )
+    last_runs: dict[int, Run] = {}
+    for job_id, start in starts.items():
+        if job_id is None or start is None:
+            continue
+        latest = db.scalars(
+            select(Run).where(Run.job_id == job_id, Run.id >= start).order_by(Run.id)
+        ).all()
+        last_runs[job_id] = min(
+            latest, key=lambda r: WORST.index(r.status) if r.status in WORST else 99
+        )
     rows = [
         (j, hosts.get(j.host_id), targets.get(j.storage_target_id), last_runs.get(j.id))
         for j in jobs
@@ -680,6 +742,9 @@ def list_jobs(request: Request, auth: Viewer, db: Session = Depends(get_db)) -> 
         scope_labels=SCOPE_LABELS,
         schedule_label=schedule_label,
         retention_short=retention.short,
+        extra_counts=dict(
+            db.execute(select(JobTarget.job_id, func.count()).group_by(JobTarget.job_id)).all()
+        ),
     )
 
 
@@ -719,18 +784,19 @@ def target_options(
     request: Request,
     auth: Admin,
     host_id: str = Query("", max_length=20),
-    target_type: str = Query("container", max_length=16),
     db: Session = Depends(get_db),
 ) -> Response:
-    """The containers or Compose projects on a host (#target-options), suggested in the
-    job form's target field as the host and type change. Also a page of its own. Reads
-    the host like its inventory does and writes nothing."""
-    names: list[str] = []
-    host, groups, error = host_inventory(request, db, host_id, target_type in TARGET_TYPES)
-    if groups is not None and target_type == "stack":
-        names = sorted({g.project for g in groups if g.project})
-    elif groups is not None:
-        names = sorted(c.name for g in groups for c in g.containers)
+    """The Compose projects and containers on a host (#target-options), suggested in the
+    job form's target fields as the host changes. Also a page of its own. Reads the host
+    like its inventory does and writes nothing."""
+    names: list[tuple[str, str]] = []
+    host, groups, error = host_inventory(request, db, host_id, True)
+    if groups is not None:
+        # Both kinds, labelled: every target row of the form shares this one list.
+        projects = sorted({g.project for g in groups if g.project})
+        names = [(p, "Compose project") for p in projects] + [
+            (n, "container") for n in sorted(c.name for g in groups for c in g.containers)
+        ]
     return render(
         request, "jobs/target_options.html", auth=auth, host=host, names=names, error=error
     )
@@ -743,6 +809,8 @@ def mount_options(
     host_id: str = Query("", max_length=20),
     target_type: str = Query("container", max_length=16),
     target: str = Query("", max_length=255),
+    extra_target_type: Annotated[list[str], Query()] = [],  # noqa: B006
+    extra_target: Annotated[list[str], Query()] = [],  # noqa: B006
     skip_mounts: Annotated[list[str], Query()] = [],  # noqa: B006 (sliced and checked below)
     db: Session = Depends(get_db),
 ) -> Response:
@@ -751,10 +819,20 @@ def mount_options(
     drops them silently. Reads the host like its inventory does and writes nothing."""
     skipped = sorted({k for k in skip_mounts[: mounts.MAX_SKIPS] if mounts.key_error(k) is None})
     found: list[mounts.Choice] | None = None
-    wanted = target_type in TARGET_TYPES and bool(target.strip())
-    host, groups, error = host_inventory(request, db, host_id, wanted)
+    extra = [
+        (kind, name.strip())
+        for kind, name in zip(extra_target_type, extra_target, strict=False)
+        if name.strip()
+    ]
+    pairs = [(target_type, target.strip()), *extra[: job_targets.MAX_TARGETS]]
+    pairs = [(kind, name) for kind, name in pairs if kind in TARGET_TYPES and name]
+    host, groups, error = host_inventory(request, db, host_id, bool(pairs))
     if groups is not None:
-        found = mounts.choices(groups, target_type, target.strip())
+        merged: dict[str, mounts.Choice] = {}
+        for kind, name in pairs:
+            for choice in mounts.choices(groups, kind, name) or []:
+                merged.setdefault(choice.key, choice)
+        found = sorted(merged.values(), key=lambda c: c.key) if merged else None
     known = {c.key for c in found or []}
     return render(
         request,
@@ -823,6 +901,10 @@ def create_job(
     notifications: FormStr = "",
     skip_mounts: Annotated[list[str] | None, Form()] = None,
     skip_mounts_sent: FormStr = "",
+    extra_target_type: Annotated[list[str] | None, Form()] = None,
+    extra_target: Annotated[list[str] | None, Form()] = None,
+    extra_targets_sent: FormStr = "",
+    add_target: FormStr = "",
     db: Session = Depends(get_db),
 ) -> Response:
     form = submitted(
@@ -854,9 +936,24 @@ def create_job(
         notifications=notifications,
         skip_mounts=skip_mounts,
         skip_mounts_sent=skip_mounts_sent,
+        extra_target_type=extra_target_type,
+        extra_target=extra_target,
+        extra_targets_sent=extra_targets_sent,
     )
     if not form.retention_mode:
         form.retention_mode, form.keep_last = "last", str(retention.DEFAULT_KEEP_LAST)
+    if add_target:
+        db.rollback()
+        return render(
+            request,
+            "jobs/new.html",
+            auth=auth,
+            form=form,
+            errors=[],
+            available_hooks=[],
+            blank_rows=1,
+            **choices(request, db),
+        )
     errors, pre_ids, post_ids = validate(db, form, request.app.state.settings.tz)
     if errors:
         db.rollback()
@@ -874,6 +971,9 @@ def create_job(
     apply(job, form, pre_ids, post_ids)
     db.add(job)
     db.flush()
+    if form.extra_sent:
+        job_targets.replace_extra(db, job, form.extra)
+        db.flush()
     if form.notifications_sent:
         set_notifications(db, job.id, notification_ids(db, form)[1])
         db.flush()
@@ -938,6 +1038,10 @@ def update_job(
     notifications: FormStr = "",
     skip_mounts: Annotated[list[str] | None, Form()] = None,
     skip_mounts_sent: FormStr = "",
+    extra_target_type: Annotated[list[str] | None, Form()] = None,
+    extra_target: Annotated[list[str] | None, Form()] = None,
+    extra_targets_sent: FormStr = "",
+    add_target: FormStr = "",
     db: Session = Depends(get_db),
 ) -> Response:
     job = get_job(db, job_id)
@@ -970,13 +1074,22 @@ def update_job(
         notifications=notifications,
         skip_mounts=skip_mounts,
         skip_mounts_sent=skip_mounts_sent,
+        extra_target_type=extra_target_type,
+        extra_target=extra_target,
+        extra_targets_sent=extra_targets_sent,
     )
+    if add_target:
+        db.rollback()
+        return job_page(request, db, auth, job, 200, EDIT, form=form, blank_rows=1)
     errors, pre_ids, post_ids = validate(db, form, request.app.state.settings.tz, job.id)
     if errors:
         db.rollback()
         return job_page(request, db, auth, job, 422, EDIT, form=form, errors=errors)
     before = summary(job, db)
     apply(job, form, pre_ids, post_ids)
+    if form.extra_sent:
+        job_targets.replace_extra(db, job, form.extra)
+        db.flush()
     if form.notifications_sent:
         set_notifications(db, job.id, notification_ids(db, form)[1])
         db.flush()
@@ -1068,14 +1181,21 @@ def reveal_passphrase(
     """Shows the passphrases for this job's archives, newest secret key first."""
     require_recent_auth(auth)
     job = get_job(db, job_id)
-    passphrases = request.app.state.crypto.job_passphrases(uuid.UUID(job.uuid))
+    # Each target's archives carry its own UUID, so each has its own passphrase.
+    crypto = request.app.state.crypto
+    specs = job_targets.of(db, job)
+    passphrases = [(s.label, crypto.job_passphrases(uuid.UUID(s.uuid))) for s in specs]
     audit.record(
         db,
         actor=auth.user.username,
         action="job.passphrase_reveal",
         target=f"job:{job.id}",
         ip=client_ip(request),
-        details={"name": job.name, "uuid": job.uuid, "candidates": len(passphrases)},
+        details={
+            "name": job.name,
+            "uuids": [s.uuid for s in specs],
+            "candidates": len(passphrases[0][1]),
+        },
     )
     db.commit()
     return job_page(request, db, auth, job, template=EDIT, passphrases=passphrases)

@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_macros.html" import alerts, submit %}
-{% from "jobs/_fields.html" import job_fields %}
+{% from "jobs/_fields.html" import job_fields with context %}
 {% block title %}Edit job {{ job.name }}{% endblock %}
 {% block content %}
 <div class="mb-4 flex flex-wrap items-center gap-3">
@@ -32,18 +32,21 @@
   <section class="card bg-base-100 shadow-sm" aria-labelledby="passphrase-heading">
     <div class="card-body">
       <h2 id="passphrase-heading" class="card-title">Archive passphrase</h2>
-      <p class="text-sm">Encrypted archives of this job decrypt outside drydock with <code>age -d</code> and this passphrase. It is derived from the secret key and the job ID, so it is never stored. Revealing it needs your password from the last 10 minutes and is recorded in the audit log.</p>
+      <p class="text-sm">Encrypted archives of this job decrypt outside drydock with <code>age -d</code> and this passphrase. It is derived from the secret key and the job ID (each further container or stack has an ID and passphrase of its own), so it is never stored. Revealing it needs your password from the last 10 minutes and is recorded in the audit log.</p>
       {% if passphrases %}
       <div role="status" class="alert alert-warning alert-soft" data-focus-result>
         <div class="w-full">
           <p>Treat this like the secret key. Anyone with it can read this job's archives.</p>
+          {% for label, candidates in passphrases %}
+          {% if passphrases|length > 1 %}<p class="mt-2 font-semibold">{{ label }}</p>{% endif %}
           <dl class="mt-2 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1">
-            {% for passphrase in passphrases %}
+            {% for passphrase in candidates %}
             <dt>{{ "Current key" if loop.first else "Older key " ~ loop.index0 }}</dt>
             <dd><code class="break-all select-all">{{ passphrase }}</code></dd>
             {% endfor %}
           </dl>
-          {% if passphrases|length > 1 %}<p class="mt-2 text-sm">Archives made before a key rotation use an older key's passphrase.</p>{% endif %}
+          {% endfor %}
+          {% if passphrases[0][1]|length > 1 %}<p class="mt-2 text-sm">Archives made before a key rotation use an older key's passphrase.</p>{% endif %}
         </div>
       </div>
       {% else %}

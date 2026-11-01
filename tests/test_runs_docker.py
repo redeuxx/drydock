@@ -8,6 +8,7 @@ drydock.test label and is removed afterwards.
 """
 
 import base64
+import dataclasses
 import hashlib
 import json
 import os
@@ -464,14 +465,17 @@ async def test_container_and_stack_jobs_never_overlap(
         digest = hashlib.sha256(b"archive").hexdigest()
         return None, ArchiveResult(out_path, 7, digest, False, ())
 
-    real_targets = dispatcher_module.job_targets
+    real_load = dispatcher_module.Dispatcher._load_plan
 
-    def stack_targets(job) -> list[str]:
+    def load_plan(self, run_id: int, job_id: int):
         # Phase 4 stack jobs resolve to several containers; this one covers both.
-        return [first.name, second.name] if job.name == "stack" else real_targets(job)
+        plan = real_load(self, run_id, job_id)
+        if plan.job.name != "stack":
+            return plan
+        return dataclasses.replace(plan, targets=(first.name, second.name))
 
     monkeypatch.setattr(capture, "capture", slow_capture)
-    monkeypatch.setattr(dispatcher_module, "job_targets", stack_targets)
+    monkeypatch.setattr(dispatcher_module.Dispatcher, "_load_plan", load_plan)
     async with running(settings) as browser:
         app = await setup_app(browser)
         stack_job = await app.add_job(first.name, "config", name="stack")
@@ -510,6 +514,47 @@ async def test_containers_run_again_before_the_images_are_saved(
     assert log.index(again) < log.index("Saving image") < log.index("Archive written")
     assert log.index("Saving volume") < log.index(again)
     assert targets.running(box)
+
+
+# SEVERAL TARGETS, ONE AFTER ANOTHER
+
+
+@pytest.mark.parametrize("mode", ["pause", "stop"])
+async def test_each_target_runs_again_before_the_next_is_touched(
+    settings: Settings, targets: Targets, mode: str
+) -> None:
+    first = targets.container(volume=targets.volume())
+    second = targets.container(volume=targets.volume())
+    async with running(settings) as browser:
+        app = await setup_app(browser)
+        job_id = await app.add_job(
+            first.name,
+            "data",
+            consistency_mode=mode,
+            extra_targets_sent="1",
+            extra_target_type="container",
+            extra_target=second.name,
+        )
+        first_run = await app.start(job_id)
+        second_run = first_run + 1
+        for run_id in (first_run, second_run):
+            await browser.app.state.dispatcher.wait(run_id)
+            assert app.status(run_id) == "done", app.log(run_id)
+        one, two = app.run_row(first_run), app.run_row(second_run)
+        first_log, second_log = app.log(first_run), app.log(second_run)
+        job_uuid = browser.sql("SELECT uuid FROM jobs WHERE id = ?", (job_id,))[0][0]
+        target_uuid = browser.sql("SELECT uuid FROM job_targets WHERE job_id = ?", (job_id,))
+    again = "Unpaused container" if mode == "pause" else "Started container"
+    # The first target's run ended with its container running again; only then did the
+    # second start.
+    assert again in first_log
+    assert f"Waiting for run {first_run}" in second_log
+    assert again in second_log
+    assert one["finished_at"] <= two["started_at"]
+    # One archive each, named for the target's own UUID.
+    assert job_uuid in one["archive_name"] and target_uuid[0][0] in two["archive_name"]
+    assert two["target_label"] == f"container {second.name}"
+    assert targets.running(first) and targets.running(second)
 
 
 # A REAL DRYDOCK PROCESS, KILLED OR STOPPED MID-BACKUP

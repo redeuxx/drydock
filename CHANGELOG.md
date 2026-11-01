@@ -9,6 +9,7 @@ The first release.
 ### Backups
 - Back up a single container or a whole Compose project on the local host (through a filtering socket proxy) or on remote hosts over SSH with pinned host keys. Drydock installs its own SSH key with the user's password, used once and never stored.
 - Scopes: configuration (inspect output, compose files and `.env` files), data (volumes and bind mounts), images, or everything. Images still served by their registry can be stored by reference.
+- A job can back up several containers and Compose projects one after another, each into its own archive; each target runs again before the next is touched.
 - Skip chosen volumes and bind mounts, such as caches; the containers still mount them, and a restore creates a missing one empty, with its recorded owner and mode.
 - Stop, pause or live consistency modes. Stacks stop and start in dependency order and wait for `service_healthy` dependencies.
 - Pre- and post-hooks run with `docker exec`, from a library only a superadmin edits.
@@ -30,6 +31,7 @@ The first release.
 - A notification bell with unread markers for finished runs and, for admins, missed schedules, host key mismatches and storage that needs reconnecting.
 - An About page with the version and the stack's components, each linked to its release.
 - Job pages show the summary and recent runs; editing has a page of its own.
+- Times show in drydock's time zone (`TZ`), with UTC beside them.
 
 ### Security
 - Roles (viewer, operator, admin, superadmin), Argon2id passwords, sessions with idle and absolute limits, re-authentication for sensitive actions, CSRF protection, a strict CSP and an audit log.

@@ -6,12 +6,12 @@
    kind of target change; the datalist feeds the target field's suggestions. #}
 <div id="target-options">
   <datalist id="target-choices">
-    {% for name in names %}<option value="{{ name }}"></option>{% endfor %}
+    {% for name, kind in names %}<option value="{{ name }}" label="{{ kind }}"></option>{% endfor %}
   </datalist>
   {% if error %}
   <p class="label whitespace-normal text-warning">Could not list the host ({{ error }}). Type the name instead.</p>
   {% elif host and not names %}
-  <p class="label whitespace-normal">Nothing of this kind runs on {{ host.name }}.</p>
+  <p class="label whitespace-normal">No containers run on {{ host.name }}.</p>
   {% elif names %}
   <p class="label whitespace-normal">Type to filter the {{ names|length }} on {{ host.name }}, or enter a name or ID.</p>
   {% endif %}

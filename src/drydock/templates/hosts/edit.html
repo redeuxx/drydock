@@ -37,7 +37,7 @@
       </form>
       <dl class="mt-2 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
         <dt class="opacity-70">API version</dt><dd>{{ host.api_version or "not seen yet" }}</dd>
-        <dt class="opacity-70">Last seen</dt><dd>{{ host.last_seen.strftime("%Y-%m-%d %H:%M UTC") if host.last_seen else "never" }}</dd>
+        <dt class="opacity-70">Last seen</dt><dd>{{ host.last_seen|stamp(False) if host.last_seen else "never" }}</dd>
       </dl>
     </div>
   </section>

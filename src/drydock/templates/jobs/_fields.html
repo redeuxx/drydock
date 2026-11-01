@@ -20,20 +20,35 @@
     {% endfor %}
   </select>
 </div>
-<div class="fieldset">
-  <label class="fieldset-legend" for="{{ prefix }}-target-type">Back up</label>
-  <select id="{{ prefix }}-target-type" class="select w-full" name="target_type">
-    {% for value, label in target_labels.items() %}
-    <option value="{{ value }}"{% if form.target_type == value %} selected{% endif %}>{{ label }}</option>
-    {% endfor %}
-  </select>
-</div>
-<div class="fieldset">
-  <label class="fieldset-legend" for="{{ prefix }}-target">Container or Compose project</label>
-  <input id="{{ prefix }}-target" class="input w-full font-mono" name="target" value="{{ form.target }}" list="target-choices" autocomplete="off" required maxlength="128" aria-describedby="{{ prefix }}-target-hint {{ prefix }}-target-list">
-  <p id="{{ prefix }}-target-hint" class="label whitespace-normal">Pick from the list for the chosen host, or type a container's name or ID, or for a stack the project name docker compose ls shows.</p>
-  <div id="{{ prefix }}-target-list" aria-live="polite" hx-get="/jobs/target-options" hx-trigger="focusin once from:#{{ prefix }}-target, change from:#{{ prefix }}-host, change from:#{{ prefix }}-target-type" hx-include="#{{ prefix }}-host, #{{ prefix }}-target-type" hx-target="this" hx-select="#target-options" hx-swap="innerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}"></div>
-</div>
+{# Enter in a field submits with the first submit button: this one saves, not "Add another". #}
+<button type="submit" class="sr-only" tabindex="-1" aria-hidden="true">Save</button>
+<fieldset id="{{ prefix }}-targets" class="fieldset">
+  <legend class="fieldset-legend">What to back up</legend>
+  <p id="{{ prefix }}-target-hint" class="label whitespace-normal">Pick from the list for the chosen host, or type a container's name or ID, or a Compose project as docker compose ls shows it. Several are backed up one after another, each into an archive of its own: the next one starts only once the one before runs again.</p>
+  <div class="flex flex-wrap gap-2">
+    <select id="{{ prefix }}-target-type" class="select w-48" name="target_type" aria-label="Kind of the first target">
+      {% for value, label in target_labels.items() %}
+      <option value="{{ value }}"{% if form.target_type == value %} selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <input id="{{ prefix }}-target" class="input min-w-0 flex-1 font-mono" name="target" value="{{ form.target }}" list="target-choices" autocomplete="off" required maxlength="128" aria-label="First container or Compose project" aria-describedby="{{ prefix }}-target-hint {{ prefix }}-target-list">
+  </div>
+  <input type="hidden" name="extra_targets_sent" value="1">
+  {% set rows = form.extra + [("container", "")] * (blank_rows if blank_rows is defined else 0) %}
+  {% for kind, name in rows %}
+  <div class="flex flex-wrap gap-2">
+    <select class="select w-48" name="extra_target_type" aria-label="Kind of target {{ loop.index + 1 }}">
+      {% for value, label in target_labels.items() %}
+      <option value="{{ value }}"{% if kind == value %} selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <input class="input min-w-0 flex-1 font-mono" name="extra_target" value="{{ name }}" list="target-choices" autocomplete="off" maxlength="128" aria-label="Container or Compose project {{ loop.index + 1 }}">
+  </div>
+  {% endfor %}
+  {% if form.extra %}<p class="label whitespace-normal">Empty a row and save to remove that target; its archives stay.</p>{% endif %}
+  <div><button type="submit" name="add_target" value="1" formnovalidate class="btn btn-outline btn-sm">Add another container or stack</button></div>
+  <div id="{{ prefix }}-target-list" aria-live="polite" hx-get="/jobs/target-options" hx-trigger="focusin once from:#{{ prefix }}-targets, change from:#{{ prefix }}-host" hx-include="#{{ prefix }}-host" hx-target="this" hx-select="#target-options" hx-swap="innerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}"></div>
+</fieldset>
 <div class="fieldset">
   <label class="fieldset-legend" for="{{ prefix }}-storage">Storage</label>
   <select id="{{ prefix }}-storage" class="select w-full" name="storage_target_id" required>
@@ -55,7 +70,7 @@
   <span class="fieldset-legend">Skip mounts</span>
   <input type="hidden" name="skip_mounts_sent" value="1">
   <p class="label whitespace-normal">Tick a volume or bind mount whose data can be rebuilt, such as a cache, to leave it out of every backup. The container still mounts it, and a restore creates it empty, with its recorded owner, if it is missing.</p>
-  <div id="{{ prefix }}-mount-list" aria-live="polite" hx-get="/jobs/mount-options" hx-trigger="change from:#{{ prefix }}-target" hx-include="#{{ prefix }}-host, #{{ prefix }}-target-type, #{{ prefix }}-target, #{{ prefix }}-mount-list" hx-target="this" hx-select="#mount-options" hx-swap="innerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}">
+  <div id="{{ prefix }}-mount-list" aria-live="polite" hx-get="/jobs/mount-options" hx-trigger="change from:#{{ prefix }}-targets" hx-include="#{{ prefix }}-host, #{{ prefix }}-targets, #{{ prefix }}-mount-list" hx-target="this" hx-select="#mount-options" hx-swap="innerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}">
     {% for key in form.skip_mounts %}
     <label class="label gap-2 whitespace-normal">
       <input type="checkbox" class="checkbox checkbox-sm" name="skip_mounts" value="{{ key }}" checked>
@@ -63,7 +78,7 @@
     </label>
     {% endfor %}
   </div>
-  <div><button type="button" class="btn btn-outline btn-sm mt-1" hx-get="/jobs/mount-options" hx-include="#{{ prefix }}-host, #{{ prefix }}-target-type, #{{ prefix }}-target, #{{ prefix }}-mount-list" hx-target="#{{ prefix }}-mount-list" hx-select="#mount-options" hx-swap="innerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}">List the mounts</button></div>
+  <div><button type="button" class="btn btn-outline btn-sm mt-1" hx-get="/jobs/mount-options" hx-include="#{{ prefix }}-host, #{{ prefix }}-targets, #{{ prefix }}-mount-list" hx-target="#{{ prefix }}-mount-list" hx-select="#mount-options" hx-swap="innerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}">List the mounts</button></div>
 </div>
 <div class="fieldset">
   <label class="fieldset-legend" for="{{ prefix }}-mode">Consistency</label>

@@ -71,7 +71,7 @@
 {%- endmacro %}
 
 {% macro when(value) -%}
-{{ value.strftime("%Y-%m-%d %H:%M:%S") if value else "" }}
+{{ value|stamp if value else "" }}
 {%- endmacro %}
 
 {# Polls for the next log lines. The answer's #log-chunk replaces this element: its text

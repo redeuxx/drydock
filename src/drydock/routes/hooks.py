@@ -23,6 +23,8 @@ from sqlalchemy.orm import Session
 from drydock import audit
 from drydock.db import get_db
 from drydock.jobs import hooks
+from drydock.jobs import targets as job_targets
+from drydock.jobs.dispatcher import binds
 from drydock.models import Hook, Host, Job, utcnow
 from drydock.routes.auth import FormStr, client_ip
 from drydock.routes.jobs import PHASES, as_id, hook_ids
@@ -305,11 +307,11 @@ def update_hook(
         )
         refused = set()
         for job, _phase in used_by(db, row.id):
-            try:
-                hooks.check_binding(
-                    bound, host_id=job.host_id, target_type=job.target_type, target=job.target
-                )
-            except hooks.HookError:
+            # A job with several targets accepts a hook bound to any of them.
+            if not any(
+                binds(bound, job.host_id, spec.target_type, spec.target)
+                for spec in job_targets.of(db, job)
+            ):
                 refused.add(job.name)
         if refused:
             names = ", ".join(sorted(refused))

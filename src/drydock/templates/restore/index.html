@@ -47,7 +47,7 @@
     <div class="overflow-x-auto">
       <table class="table table-sm">
         <caption class="text-left text-sm opacity-70">Uploaded archives</caption>
-        <thead><tr><th scope="col">Archive</th><th scope="col">Size</th><th scope="col">Deleted at (UTC)</th><th scope="col"><span class="sr-only">Action</span></th></tr></thead>
+        <thead><tr><th scope="col">Archive</th><th scope="col">Size</th><th scope="col">Deleted at</th><th scope="col"><span class="sr-only">Action</span></th></tr></thead>
         <tbody>
           {% for upload in uploads %}
           <tr>
@@ -94,7 +94,7 @@
     {% if runs %}
     <div class="overflow-x-auto">
       <table class="table table-sm">
-        <thead><tr><th scope="col">Run</th><th scope="col">Archive</th><th scope="col">Status</th><th scope="col">Started by</th><th scope="col">Created (UTC)</th></tr></thead>
+        <thead><tr><th scope="col">Run</th><th scope="col">Archive</th><th scope="col">Status</th><th scope="col">Started by</th><th scope="col">Created</th></tr></thead>
         <tbody>
           {% for run in runs %}
           <tr>

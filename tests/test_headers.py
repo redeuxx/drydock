@@ -182,3 +182,21 @@ async def test_error_pages_keep_the_logged_in_header(admin: Browser) -> None:
     response = await admin.get("/nope")
     assert response.status_code == 404
     assert "Log out" not in response.text
+
+
+def test_times_show_in_drydocks_zone_with_utc_beside_them() -> None:
+    from datetime import UTC, datetime
+
+    from drydock import templating
+
+    moment = datetime(2026, 11, 1, 16, 30, 18, tzinfo=UTC)
+    try:
+        templating.set_zone("America/Chicago")
+        assert templating.stamp(moment) == "2026-11-01 10:30:18 CST (16:30 UTC)"
+        assert templating.stamp(moment.replace(tzinfo=None), seconds=False) == (
+            "2026-11-01 10:30 CST (16:30 UTC)"
+        )
+        templating.set_zone("UTC")
+        assert templating.stamp(moment) == "2026-11-01 16:30:18 UTC"
+    finally:
+        templating.set_zone("UTC")

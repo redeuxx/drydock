@@ -1,8 +1,9 @@
 """Jinja2 rendering and redirects. Autoescape is always on; StrictUndefined catches typos."""
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime, tzinfo
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import Request
 from fastapi.templating import Jinja2Templates
@@ -39,6 +40,28 @@ def filesize(value: int | None) -> str:
     return f"{size:.1f} GiB"
 
 
+DISPLAY_ZONE: tzinfo = UTC  # drydock's TZ, set by create_app (set_zone)
+
+
+def set_zone(name: str) -> None:
+    """Pages show times in this zone (the TZ setting), with UTC beside them."""
+    global DISPLAY_ZONE
+    DISPLAY_ZONE = ZoneInfo(name)
+
+
+def stamp(value: datetime | None, seconds: bool = True) -> str:
+    """A time in drydock's zone, with UTC in parentheses unless that is the zone:
+    "2026-11-01 10:30:18 CST (16:30 UTC)"."""
+    if value is None:
+        return ""
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    local = aware.astimezone(DISPLAY_ZONE)
+    shown = local.strftime("%Y-%m-%d %H:%M:%S %Z" if seconds else "%Y-%m-%d %H:%M %Z")
+    if not local.utcoffset():
+        return shown
+    return f"{shown} ({aware.astimezone(UTC):%H:%M} UTC)"
+
+
 def ago(value: datetime | None) -> str:
     """A past time in words: "just now", "5 minutes ago", "3 days ago"."""
     if value is None:
@@ -56,6 +79,7 @@ def ago(value: datetime | None) -> str:
 env.globals.update(Role=Role, htmx_config=HTMX_CONFIG)
 env.filters["filesize"] = filesize
 env.filters["ago"] = ago
+env.filters["stamp"] = stamp
 templates = Jinja2Templates(env=env)
 
 

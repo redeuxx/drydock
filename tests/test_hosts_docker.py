@@ -545,17 +545,12 @@ async def test_the_job_form_suggests_the_hosts_containers_and_projects(admin: Br
             labels={TEST_LABEL: "1", "com.docker.compose.project": project},
         )
         try:
-            containers = await admin.get(
-                "/jobs/target-options", params={"host_id": host_id, "target_type": "container"}
-            )
-            stacks = await admin.get(
-                "/jobs/target-options", params={"host_id": host_id, "target_type": "stack"}
-            )
+            listed = await admin.get("/jobs/target-options", params={"host_id": host_id})
         finally:
             box.remove(force=True)
-    assert f'<option value="{project}-web-1">' in containers.text
-    assert f'<option value="{project}">' in stacks.text
-    assert f'<option value="{project}-web-1">' not in stacks.text
+    # One list for every target row: both kinds, each labelled.
+    assert f'<option value="{project}-web-1" label="container">' in listed.text
+    assert f'<option value="{project}" label="Compose project">' in listed.text
 
 
 @needs_docker

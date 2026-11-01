@@ -138,6 +138,7 @@ from drydock.hosts.inventory import (
 )
 from drydock.hosts.manager import HostManager, HostUnavailable
 from drydock.jobs import hooks, mounts, retention
+from drydock.jobs import targets as job_targets
 from drydock.jobs.runlog import RunLog, env_values, log_dir, log_path
 from drydock.models import Backup, Host, Job, Run, StorageTarget, Upload, utcnow
 from drydock.models import Hook as HookRow
@@ -243,7 +244,8 @@ class RunPlan:
     storage_root: str
     targets: tuple[str, ...]  # the container refs of a container job; () for a stack
     target_type: str = "container"
-    target: str = ""  # job.target as stored: the container ref or the Compose project
+    target: str = ""  # this run's target as stored: the container ref or the Compose project
+    siblings: tuple[tuple[str, str], ...] = ()  # the job's other targets (type, target)
     project: str | None = None  # stacks only
     pre_hook_ids: tuple[int, ...] = ()
     post_hook_ids: tuple[int, ...] = ()
@@ -293,10 +295,30 @@ class ActiveRun:
     abandoned: bool = False  # shutdown gave up waiting for it (see _abandon)
 
 
-def job_targets(job: Job) -> list[str]:
-    """The containers a container job backs up. Stack jobs are discovered at run time
-    (Dispatcher._targets)."""
-    return [job.target]
+def binds(hook: hooks.Hook, host_id: int, target_type: str, target: str) -> bool:
+    try:
+        hooks.check_binding(hook, host_id=host_id, target_type=target_type, target=target)
+    except hooks.HookError:
+        return False
+    return True
+
+
+def for_target(
+    found: tuple[hooks.Hook, ...],
+    host_id: int,
+    target_type: str,
+    target: str,
+    siblings: tuple[tuple[str, str], ...],
+) -> tuple[hooks.Hook, ...]:
+    """The job's hooks for one of its targets: a hook bound to another of the job's
+    targets is that target's. One bound to none stays, so check_binding refuses the run
+    as it always has."""
+    return tuple(
+        hook
+        for hook in found
+        if binds(hook, host_id, target_type, target)
+        or not any(binds(hook, host_id, t, x) for t, x in siblings)
+    )
 
 
 def stopped_entry(host_id: int, target: Target) -> dict[str, Any]:
@@ -553,6 +575,7 @@ class Dispatcher:
         self._owners: dict[str, str] = {}  # lock key: who holds it, for the log
         self._active: dict[int, ActiveRun] = {}
         self._jobs: set[int] = set()  # jobs with a queued or running run
+        self._chains: dict[int, int] = {}  # job: its runs not finished yet (one per target)
         self._last_stamp: dict[str, datetime] = {}
         self._stamp_lock = threading.Lock()
         # (storage target ID, archive): remote archives retention is deleting. Added and read
@@ -585,14 +608,23 @@ class Dispatcher:
             raise DispatchError("This job already has a run in progress.")
         self._jobs.add(job_id)
         try:
-            run_id = await run_blocking(self._create_run, job_id, triggered_by, fired)
+            run_ids = await run_blocking(self._create_runs, job_id, triggered_by, fired)
         except BaseException:
             self._jobs.discard(job_id)
             raise
-        active = ActiveRun(run_id, job_id)
-        self._active[run_id] = active
-        active.task = asyncio.create_task(self._execute(active, job_id), name=f"run-{run_id}")
-        return run_id
+        # One run per target, each waiting for the one before: a target's containers run
+        # again (its run ends that way, whatever happened) before the next is touched.
+        self._chains[job_id] = len(run_ids)
+        # Every earlier one, not just the one before: a cancelled queued run ends at once.
+        earlier: list[tuple[int, asyncio.Task[None]]] = []
+        for run_id in run_ids:
+            active = ActiveRun(run_id, job_id)
+            self._active[run_id] = active
+            active.task = asyncio.create_task(
+                self._execute(active, job_id, tuple(earlier)), name=f"run-{run_id}"
+            )
+            earlier.append((run_id, active.task))
+        return run_ids[0]
 
     async def submit_restore(
         self, storage_target_id: int, archive: str, triggered_by: str | None
@@ -952,11 +984,20 @@ class Dispatcher:
 
     # EXECUTION
 
-    async def _execute(self, active: ActiveRun, job_id: int) -> None:
+    async def _execute(
+        self,
+        active: ActiveRun,
+        job_id: int,
+        after: tuple[tuple[int, asyncio.Task[None]], ...] = (),
+    ) -> None:
         run_id = active.run_id
         run_log = RunLog(log_path(self.settings.data_dir, run_id))
         held: list[str] = []
         try:
+            waiting = [(other, task) for other, task in after if not task.done()]
+            if waiting:
+                run_log(f"Waiting for run {waiting[-1][0]}, the job's previous target, to finish.")
+                await asyncio.wait({task for _, task in waiting})
             plan = await run_blocking(self._load_plan, run_id, job_id)
             if plan.job.encrypted:
                 run_log.add_secrets(self._crypto.job_passphrases(uuid.UUID(plan.job.uuid)))
@@ -1002,7 +1043,18 @@ class Dispatcher:
                 raise
         finally:
             self._active.pop(run_id, None)
-            self._jobs.discard(active.job_id)
+            self._chain_done(active.job_id)
+
+    def _chain_done(self, job_id: int | None) -> None:
+        """One run of the job's chain ended; the job is free once all of them have."""
+        if job_id is None:
+            return
+        left = self._chains.get(job_id, 1) - 1
+        if left > 0:
+            self._chains[job_id] = left
+            return
+        self._chains.pop(job_id, None)
+        self._jobs.discard(job_id)
 
     async def _ended(self, active: ActiveRun, run_log: RunLog, exc: BaseException) -> None:
         """Records the end of a run that raised exc. Messages of unexpected errors stay in
@@ -1528,6 +1580,8 @@ class Dispatcher:
             if not plan.pre_hook_ids and not plan.post_hook_ids:
                 return (), ()
             _, _, pre_hooks, post_hooks = self._hook_rows(db, job)
+        bound = (plan.host.id, plan.target_type, plan.target, plan.siblings)
+        pre_hooks, post_hooks = for_target(pre_hooks, *bound), for_target(post_hooks, *bound)
         if (pre_hooks, post_hooks) != (plan.pre_hooks, plan.post_hooks):
             raise hooks.HookError(HOOKS_CHANGED)
         for hook in (*pre_hooks, *post_hooks):
@@ -2117,25 +2171,45 @@ class Dispatcher:
 
     # DATABASE
 
-    def _create_run(self, job_id: int, triggered_by: str | None, fired: bool = False) -> int:
+    def _create_runs(self, job_id: int, triggered_by: str | None, fired: bool = False) -> list[int]:
+        """A queued run for each of the job's targets, in order, in one transaction."""
         with self._sessions() as db, db.begin():
             job = db.get(Job, job_id)
             if job is None:
                 raise DispatchError("The job does not exist.")
             if not job.enabled:
                 raise DispatchError("The job is disabled.")
-            run = Run(job_id=job.id, kind="backup", status="queued", triggered_by=triggered_by)
             if fired:
                 job.last_fired_at = utcnow()
-            db.add(run)
+            specs = job_targets.of(db, job)
+            runs = [
+                Run(
+                    job_id=job.id,
+                    kind="backup",
+                    status="queued",
+                    triggered_by=triggered_by,
+                    target_uuid=None if spec.primary else spec.uuid,
+                    # Named only when the job has several, so their runs can be told apart.
+                    target_label=spec.label if len(specs) > 1 else None,
+                )
+                for spec in specs
+            ]
+            db.add_all(runs)
             db.flush()
-            return run.id
+            return [run.id for run in runs]
 
     def _load_plan(self, run_id: int, job_id: int) -> RunPlan:
         with self._sessions() as db:
             job = db.get(Job, job_id)
             if job is None:
                 raise DispatchError("The job no longer exists.")
+            run = db.get(Run, run_id)
+            spec = job_targets.find(db, job, run.target_uuid if run is not None else None)
+            if spec is None:
+                raise DispatchError("The target this run was for was removed from the job.")
+            siblings = tuple(
+                (s.target_type, s.target) for s in job_targets.of(db, job) if s.uuid != spec.uuid
+            )
             host = db.get(Host, job.host_id)
             target = db.get(StorageTarget, job.storage_target_id)
             if host is None or target is None:
@@ -2150,29 +2224,33 @@ class Dispatcher:
             else:
                 raise StorageError(f"Transfers to {target.kind} storage arrive in a later release.")
             pre_ids, post_ids, pre_hooks, post_hooks = self._hook_rows(db, job)
-            stack = job.target_type == "stack"
-            project = job.target if stack else None
+            pre_hooks = for_target(pre_hooks, host.id, spec.target_type, spec.target, siblings)
+            post_hooks = for_target(post_hooks, host.id, spec.target_type, spec.target, siblings)
+            stack = spec.target_type == "stack"
+            project = spec.target if stack else None
             db.expunge(host)
             return RunPlan(
                 run_id=run_id,
                 job_id=job.id,
                 job=capture.CaptureJob(
-                    uuid=job.uuid,
-                    name=job.name,
+                    # A later target's archives carry its own UUID and name.
+                    uuid=spec.uuid,
+                    name=job.name if spec.primary else f"{job.name} {spec.target}",
                     scope=job.scope,  # type: ignore[arg-type]
                     consistency_mode=job.consistency_mode,
                     images_reference_only_if_pullable=job.images_reference_only_if_pullable,
                     encrypted=job.encrypted,
-                    target_type=job.target_type,
+                    target_type=spec.target_type,
                     project=project,
                     skip_mounts=mounts.stored(job.skip_mounts),
                 ),
                 host=host,
                 storage_target_id=target.id,
                 storage_root=root,
-                targets=() if stack else tuple(job_targets(job)),
-                target_type=job.target_type,
-                target=job.target,
+                targets=() if stack else (spec.target,),
+                target_type=spec.target_type,
+                target=spec.target,
+                siblings=siblings,
                 project=project,
                 pre_hook_ids=pre_ids,
                 post_hook_ids=post_ids,

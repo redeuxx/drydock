@@ -21,7 +21,7 @@
         <dt class="opacity-70">Working directory</dt><dd class="font-mono break-all">{{ hook.workdir or "the container's" }}</dd>
         <dt class="opacity-70">Timeout</dt><dd>{{ hook.timeout_s }} s</dd>
         <dt class="opacity-70">Output</dt><dd>{{ "logged, up to 64 KiB" if hook.log_output else "not logged (byte counts, and the end of standard error on failure)" }}</dd>
-        <dt class="opacity-70">Changed (UTC)</dt><dd>{{ when(hook.updated_at) }}</dd>
+        <dt class="opacity-70">Changed</dt><dd>{{ when(hook.updated_at) }}</dd>
       </dl>
       <h3 class="mt-2 font-semibold">Command</h3>
       <pre class="overflow-x-auto rounded-box bg-base-200 p-2 text-sm whitespace-pre-wrap break-all">{{ argv }}</pre>

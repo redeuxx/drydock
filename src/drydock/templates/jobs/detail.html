@@ -36,7 +36,7 @@
       <dl class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
         <dt class="opacity-70">Status</dt><dd>{% if job.enabled %}<span class="badge badge-success">enabled</span> Runs on its schedule and with Run now.{% else %}<span class="badge badge-error">disabled</span> No scheduled runs, and Run now is refused.{% endif %}</dd>
         <dt class="opacity-70">Host</dt><dd>{{ host.name if host else "?" }}</dd>
-        <dt class="opacity-70">Backs up</dt><dd class="break-all">{{ "Compose project" if job.target_type == "stack" else "Container" }} <span class="font-mono">{{ job.target }}</span></dd>
+        <dt class="opacity-70">Backs up</dt><dd class="break-all">{% for spec in specs %}<span class="block">{{ loop.index }}. {{ "Compose project" if spec.target_type == "stack" else "Container" }} <span class="font-mono">{{ spec.target }}</span></span>{% endfor %}{% if specs|length > 1 %}<span class="block text-xs opacity-70">One after another, each into its own archive.</span>{% endif %}</dd>
         <dt class="opacity-70">Skipped mounts</dt><dd class="break-all">{% if skip_mounts %}{% for key in skip_mounts %}<span class="font-mono">{{ mount_label(key) }}</span>{% if not loop.last %}, {% endif %}{% endfor %}{% else %}none: every mount is backed up{% endif %}</dd>
         <dt class="opacity-70">Scope</dt><dd>{{ scope_labels.get(job.scope, job.scope) }}</dd>
         <dt class="opacity-70">Consistency</dt><dd>{{ mode_labels.get(job.consistency_mode, job.consistency_mode) }}</dd>
@@ -62,11 +62,12 @@
       {% if runs %}
       <div class="overflow-x-auto">
         <table class="table table-sm">
-          <thead><tr><th scope="col">Run</th><th scope="col">Status</th><th scope="col">Created (UTC)</th><th scope="col">Size</th></tr></thead>
+          <thead><tr><th scope="col">Run</th>{% if specs|length > 1 %}<th scope="col">Target</th>{% endif %}<th scope="col">Status</th><th scope="col">Created</th><th scope="col">Size</th></tr></thead>
           <tbody>
             {% for run in runs %}
             <tr>
               <td><a class="link" href="/runs/{{ run.id }}">#{{ run.id }}</a></td>
+              {% if specs|length > 1 %}<td class="text-sm">{{ run.target_label or "" }}</td>{% endif %}
               <td>{{ run_status_badge(run.status) }}</td>
               <td class="whitespace-nowrap">{{ when(run.created_at) }}</td>
               <td class="whitespace-nowrap">{{ run.size|filesize }}</td>

@@ -13,7 +13,7 @@
 | `DRYDOCK_LOCAL_DOCKER_URL` | | Docker URL suggested when an admin adds the local host. `compose.yaml` sets it to the socket proxy. Drydock never registers a host by itself. |
 | `DRYDOCK_HELPER_IMAGE` | `busybox:1.37.0` pinned by digest | Image for helper containers. Must be pinned by digest (`name@sha256:...`); use the multi-arch index digest. Point it at a mirror on air-gapped hosts. |
 | `DRYDOCK_RUN_DIR` | `/run/drydock` | Private tmpfs for the SSH forward sockets. |
-| `TZ` | `UTC` | Time zone for schedules without one of their own. Must be a listed zone name such as `Europe/Berlin`. |
+| `TZ` | `UTC` | Time zone for schedules without one of their own. Must be a listed zone name such as `America/Chicago`. A container does not inherit the host's zone: set it in `.env`, then run `docker compose up -d`. |
 | `DRYDOCK_RUN_HISTORY_DAYS` | `90` | Finished runs older than this many days (1 to 36500) are deleted with their log files, hourly from 5 minutes after start. It cannot be turned off; 36500 keeps history for good. |
 
 ## Changing the address

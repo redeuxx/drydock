@@ -9,7 +9,7 @@
 {% if rows and (page > 1 or more) %}<p class="mb-4 text-sm">Showing archives {{ first + 1 }} to {{ first + rows|length }} of {{ total }}, newest first.</p>{% endif %}
 <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
   <table class="table table-zebra table-sm">
-    <thead><tr><th scope="col">Created (UTC)</th><th scope="col">Archive</th><th scope="col">Contents (unverified preview)</th><th scope="col"><span class="sr-only">Action</span></th></tr></thead>
+    <thead><tr><th scope="col">Created</th><th scope="col">Archive</th><th scope="col">Contents (unverified preview)</th><th scope="col"><span class="sr-only">Action</span></th></tr></thead>
     <tbody>
       {% for obj, created, preview in rows %}
       <tr>
