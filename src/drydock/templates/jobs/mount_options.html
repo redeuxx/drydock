@@ -15,7 +15,7 @@
   {% for choice in found or [] %}
   <label class="label gap-2 whitespace-normal">
     <input type="checkbox" class="checkbox checkbox-sm" name="skip_mounts" value="{{ choice.key }}"{% if choice.key in skipped %} checked{% endif %}>
-    <span><span class="font-mono">{{ choice.source }}</span> <span class="opacity-70">({{ choice.kind }}, used by {{ choice.used_by|join(", ") }})</span></span>
+    <span><span class="font-mono">{{ choice.source }}</span> <span class="opacity-70">({% if choice.anonymous %}anonymous volume: recreating the container renames it, and a skip then stops applying; {% else %}{{ choice.kind }}, {% endif %}used by {{ choice.used_by|join(", ") }})</span></span>
   </label>
   {% endfor %}
   {% for key in others %}

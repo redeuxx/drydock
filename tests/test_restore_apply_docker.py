@@ -515,3 +515,54 @@ def test_compose_dir_swapped_for_a_link_is_never_written_through(dind, monkeypat
     assert journal[-1]["committed"] is True
     assert "was moved or replaced while drydock created it" in journal[-1]["compose_problem"]
     assert sh(box, 'cat "$1/other/compose.yaml"; ls -A "$1/moved"', parent) == "keep"
+
+
+# DIRECTORIES OF SKIPPED BINDS
+
+
+def mkdir_plan(path: str, mode: int = 0o2750) -> p.RestorePlan:
+    return make_plan(
+        mkdirs=(p.MakeDir(path, "101:102", mode, f"bind mount {path}"),), write_targets=(path,)
+    )
+
+
+@needs_dind
+def test_a_skipped_bind_directory_is_created_once_with_its_owner(dind) -> None:
+    handle, box, root = dind
+    owner = instance()
+    path = f"{root}/cache"
+    _, lines = run_apply(handle, owner, mkdir_plan(path))
+    assert sh(box, 'stat -c %u:%g:%a "$1"', path).strip() == "101:102:2750"
+    assert any(f"Creating {path} (owner 101:102, mode 2750)." in line for line in lines)
+    # It exists now: a second restore leaves it, its contents and its owner alone.
+    sh(box, 'echo kept > "$1/f" && chmod 0700 "$1"', path)
+    _, lines = run_apply(handle, owner, mkdir_plan(path, 0o755))
+    assert sh(box, 'stat -c %u:%g:%a "$1" && cat "$1/f"', path).split() == ["101:102:700", "kept"]
+    assert any("the directory exists, so it is left as it is" in line for line in lines)
+    assert helpers_left(handle.client, owner) == []
+
+
+@needs_dind
+def test_a_skipped_bind_directory_needs_its_parent_and_no_file_in_the_way(dind) -> None:
+    handle, box, root = dind
+    owner = instance()
+    with pytest.raises(apply.ApplyError, match="creates one level only"):
+        run_apply(handle, owner, mkdir_plan(f"{root}/missing/cache"))
+    sh(box, 'echo x > "$1/file"', root)
+    with pytest.raises(apply.ApplyError, match="is not a directory"):
+        run_apply(handle, owner, mkdir_plan(f"{root}/file"))
+    sh(box, 'ln -s /etc "$1/link"', root)
+    with pytest.raises(apply.ApplyError):
+        run_apply(handle, owner, mkdir_plan(f"{root}/link/cache"))
+    assert sh(box, "test ! -e /etc/cache && echo absent").strip() == "absent"
+    assert helpers_left(handle.client, owner) == []
+
+
+@needs_dind
+def test_a_skipped_directory_reached_through_a_link_is_left_alone(dind) -> None:
+    handle, box, root = dind
+    owner = instance()
+    sh(box, 'mkdir -p "$1/real" && chown 7:7 "$1/real" && ln -s real "$1/cache"', root)
+    _, lines = run_apply(handle, owner, mkdir_plan(f"{root}/cache"))
+    assert sh(box, 'stat -c %u:%g "$1/real"', root).strip() == "7:7"
+    assert any("the directory exists, so it is left as it is" in line for line in lines)

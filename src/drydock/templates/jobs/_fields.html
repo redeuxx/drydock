@@ -54,7 +54,7 @@
 <div class="fieldset">
   <span class="fieldset-legend">Skip mounts</span>
   <input type="hidden" name="skip_mounts_sent" value="1">
-  <p class="label whitespace-normal">Tick a volume or bind mount whose data can be rebuilt, such as a cache, to leave it out of every backup. The container still mounts it. A restore creates a missing volume empty; a missing host directory has to be created first.</p>
+  <p class="label whitespace-normal">Tick a volume or bind mount whose data can be rebuilt, such as a cache, to leave it out of every backup. The container still mounts it, and a restore creates it empty, with its recorded owner, if it is missing.</p>
   <div id="{{ prefix }}-mount-list" aria-live="polite" hx-get="/jobs/mount-options" hx-trigger="change from:#{{ prefix }}-target" hx-include="#{{ prefix }}-host, #{{ prefix }}-target-type, #{{ prefix }}-target, #{{ prefix }}-mount-list" hx-target="this" hx-select="#mount-options" hx-swap="innerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}">
     {% for key in form.skip_mounts %}
     <label class="label gap-2 whitespace-normal">

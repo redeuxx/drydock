@@ -115,6 +115,7 @@ from drydock.restore.plan import (
     DataStep,
     ImageStep,
     Lookup,
+    MakeDir,
     RestorePlan,
     TargetInfo,
     compose_live_notes,
@@ -185,6 +186,22 @@ COMPOSE_SCRIPT = (
 )
 COMPOSE_EXISTS = 2
 COMPOSE_MOVED = 3
+# For a skipped bind's directory (plan.mkdirs): mkdir in a parent another uid may own,
+# then the archived owner and mode, including a setgid bit root's group does not hold.
+MKDIR_OWNED_CAPS = ["CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID"]
+# Run with the name, "uid:gid" and the octal mode ("sh -c SCRIPT sh cache 101:101 755").
+# Like COMPOSE_SCRIPT: mkdir without -p, then the working directory must be the new,
+# empty, root-owned directory right below the parent before it is given its owner.
+MKDIR_SCRIPT = (
+    f"cd {TARGET} || exit 4; "
+    'mkdir -m 0700 -- "$1" || { if [ -e "$1" ] || [ -L "$1" ]; then exit 2; fi; exit 4; }; '
+    'cd -P -- "$1" && case "$(stat -c %u:%a .)" in 0:700|0:2700) ;; *) false ;; esac'
+    f' && [ "$(stat -c %d:%i .)" = "$(stat -c %d:%i "{TARGET}/$1")" ]'
+    f' && [ "$(stat -c %d:%i ..)" = "$(stat -c %d:%i {TARGET})" ]'
+    ' && [ -z "$(ls -A)" ] || exit 3; '
+    'chown "$2" . && chmod "$3" . && [ "$(stat -c %u:%g:%a .)" = "$2:$3" ] || exit 3'
+)
+MKDIR_FAILED = 4
 
 Lstat = tuple[str, str | None] | None
 
@@ -518,12 +535,31 @@ def check_paths(
         for step in plan.data:
             if step.kind == "bind-file":
                 check_file_target(host, step.target, resolved)
+        for made in plan.mkdirs:
+            check_mkdir(host, made.path, resolved)
         if plan.compose:
             check_compose_dir(host, plan.compose.dir, resolved)
     if log is not None:
         for line in compose_live_notes(plan, resolved):
             log(line)
     return resolved
+
+
+def check_mkdir(host: Probe, directory: str, resolved: Mapping[str, str]) -> None:
+    """A skipped bind's directory is there already (then it is left alone) or can be
+    made: its resolved parent is a directory."""
+    stat = host.lstat(resolved.get(directory) or host.resolve(directory))
+    if stat is not None:
+        if stat[0] != "dir":
+            raise ApplyError(f"{directory} is on the host but is not a directory.")
+        return
+    parent = posixpath.dirname(directory)
+    parent_stat = host.lstat(resolved.get(parent) or host.resolve(parent))
+    if parent_stat is None or parent_stat[0] != "dir":
+        raise ApplyError(
+            f"{parent} does not exist on the host, so drydock cannot create {directory} "
+            "(it creates one level only)."
+        )
 
 
 def check_compose_dir(host: Probe, directory: str, resolved: Mapping[str, str]) -> None:
@@ -851,6 +887,8 @@ class Applier:
             self.check_cancel()
             self.write_data(reader)
         self.check_cancel()
+        self.make_dirs()
+        self.check_cancel()
         self.create_containers()
         self.commit()
 
@@ -1118,6 +1156,61 @@ class Applier:
             raise ApplyError(
                 f"The top directory of {step.label} did not get the owner and mode of the "
                 f"archive (exit {code})."
+            )
+
+    # STEP 6B: DIRECTORIES OF SKIPPED BINDS
+
+    def make_dirs(self) -> None:
+        """Creates each skipped bind's directory that is missing, with its archived owner
+        and mode, so the container can bind it. One that exists, through a symbolic link
+        too (checked as resolved in step 0), is left as it is. A created directory stays
+        after a rollback: it is empty."""
+        if not self.plan.mkdirs:
+            return
+        parents = {posixpath.dirname(made.path) for made in self.plan.mkdirs}
+        paths = [made.path for made in self.plan.mkdirs]
+        real = reresolve(self.env, [*parents, *paths], self.expected)
+        with probe(self.env) as host:
+            present = {path: host.lstat(real[path]) for path in paths}
+        for made in self.plan.mkdirs:
+            self.check_cancel()
+            there = present[made.path]
+            if there is not None:
+                if there[0] != "dir":
+                    raise ApplyError(f"{made.path} is on the host but is not a directory.")
+                self.log(f"{made.label}: the directory exists, so it is left as it is.")
+                continue
+            self.create_dir(made, real[posixpath.dirname(made.path)])
+
+    def create_dir(self, made: MakeDir, real_parent: str) -> None:
+        name = posixpath.basename(made.path)
+        self.log(f"Creating {made.path} (owner {made.owner}, mode {made.mode:04o}).")
+        mounts = [non_recursive(Mount(TARGET, real_parent, type="bind", read_only=False))]
+        with helper.helper(
+            self.env.handle.client,
+            self.env.helper_image,
+            self.env.instance_id,
+            command=["sh", "-c", MKDIR_SCRIPT, "sh", name, made.owner, f"{made.mode:o}"],
+            mounts=mounts,
+            cap_add=MKDIR_OWNED_CAPS,
+        ) as box:
+            self.api.start(box.id)
+            code = wait_for_exit(self.api, box.id, self.cancel)
+        if code == COMPOSE_EXISTS:
+            with probe(self.env) as host:
+                there = host.lstat(posixpath.join(real_parent, name))
+            if there is None or there[0] != "dir":
+                raise ApplyError(f"{made.path} appeared during the restore and is not a directory.")
+            self.log(f"{made.label}: the directory appeared meanwhile; it is left as it is.")
+        elif code == MKDIR_FAILED:
+            raise ApplyError(
+                f"{made.path} could not be created: the parent refused it (read-only, full or "
+                "not writable)."
+            )
+        elif code != 0:
+            raise ApplyError(
+                f"{made.path} was moved or replaced while drydock created it, or did not get "
+                f"its owner and mode (exit {code})."
             )
 
     # STEP 7: CONTAINERS

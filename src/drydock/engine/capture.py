@@ -35,8 +35,10 @@ Blocking (docker-py). Run on a worker thread.
 import contextlib
 import hashlib
 import importlib.metadata
+import io
 import json
 import re
+import tarfile
 import threading
 import uuid
 from collections.abc import Callable, Iterator
@@ -403,6 +405,7 @@ def build_manifest(
     images: list[m.ImageEntry],
     bind_kinds: dict[str, str],
     created_at: datetime,
+    bind_owners: dict[str, tuple[int, int, int]] | None = None,
 ) -> m.Manifest:
     parts = SCOPE_PARTS[job.scope]
     config = "config" in parts
@@ -451,6 +454,7 @@ def build_manifest(
             mounts=refs,
             data_member=f"binds/{n}.tar" if data and source not in plan.refused_binds else None,
             skipped=plan.refused_binds.get(source) if data else None,
+            **owner_fields((bind_owners or {}).get(source)),
         )
         for n, (source, refs) in enumerate(plan.binds.items())
     ]
@@ -536,6 +540,59 @@ def data_mounts(plan: Plan) -> list[Mount]:
         if source not in plan.refused_binds
     ]
     return mounts
+
+
+def owner_fields(owner: tuple[int, int, int] | None) -> dict[str, int]:
+    if owner is None:
+        return {}
+    uid, gid, mode = owner
+    return {"uid": uid, "gid": gid, "mode": mode}
+
+
+OWNER_HEAD = 64 * 1024  # enough for a PAX header and the directory's own entry
+
+
+def skipped_bind_owners(env: CaptureEnv, plan: Plan, log: Log) -> dict[str, tuple[int, int, int]]:
+    """The owner and mode of each directory bind the job skips, read in a helper of its
+    own: a skipped bind that is missing or unreadable must not fail the backup, so it
+    only loses its owner (a restore then asks to create it by hand)."""
+    owners: dict[str, tuple[int, int, int]] = {}
+    client = env.handle.client
+    for source, reason in plan.refused_binds.items():
+        if reason != SKIPPED_BY_JOB:
+            continue
+        mount = Mount("/b0", source, type="bind", read_only=True)
+        try:
+            with helper.helper(client, env.helper_image, env.instance_id, mounts=[mount]) as box:
+                owner = bind_owner(box, 0)
+        except (CaptureError, docker.errors.DockerException, requests.RequestException) as exc:
+            log(f"Could not read the owner of skipped bind mount {source}: {exc}")
+            continue
+        if owner is not None:
+            owners[source] = owner
+    return owners
+
+
+def bind_owner(box, n: int) -> tuple[int, int, int] | None:
+    """A bind's owner and mode when it is a directory (None for a file), from the first
+    entry of its archive (the directory itself); the stream is closed after OWNER_HEAD
+    bytes, so nothing below it is read. The setuid bit is dropped."""
+    head = b""
+    with helper.open_archive(box, f"/b{n}", DATA_CHUNK) as (chunks, _stat):
+        for chunk in chunks:
+            head += chunk
+            if len(head) >= OWNER_HEAD:
+                break
+    try:
+        with tarfile.open(fileobj=io.BytesIO(head[:OWNER_HEAD]), mode="r|") as tar:
+            first = tar.next()
+    except tarfile.TarError:
+        first = None
+    if first is None:
+        raise CaptureError(f"Bind mount {n}: the daemon reported nothing.")
+    if not first.isdir():
+        return None
+    return first.uid, first.gid, first.mode & 0o3777
 
 
 def bind_kind(box, n: int) -> str:
@@ -629,6 +686,7 @@ def capture(
     needs_helper = "data" in parts and bool(
         set(plan.volumes) - set(plan.skipped_volumes) or set(plan.binds) - set(plan.refused_binds)
     )
+    bind_owners = skipped_bind_owners(env, plan, log) if "data" in parts else {}
     with contextlib.ExitStack() as stack:
         box = None
         if needs_helper:
@@ -645,8 +703,15 @@ def capture(
                 if box
                 else {}
             )
+            bind_kinds |= {source: "dir" for source in bind_owners}
             manifest = build_manifest(
-                env, job, plan, [entry for entry, _ in images], bind_kinds, created_at
+                env,
+                job,
+                plan,
+                [entry for entry, _ in images],
+                bind_kinds,
+                created_at,
+                bind_owners,
             )
             passphrase = env.crypto.job_passphrase(uuid.UUID(job.uuid)) if job.encrypted else None
             with ArchiveWriter(

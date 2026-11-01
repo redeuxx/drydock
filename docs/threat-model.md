@@ -290,6 +290,7 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 **Threat:** an archive or a restore choice maps a bind mount or compose folder onto `/etc`, `/`, Docker's state, other runtimes' sockets, system binaries or drydock's own files.
 **Defence:** host paths are resolved and checked against a denylist before any change, and again when they are used. Writes outside the usual data trees are flagged for a superadmin.
 **Tests:**
+- `tests/test_restore_plan.py::test_a_skipped_bind_is_never_created_in_a_protected_place`
 - `tests/test_restore_plan.py::test_bind_remap_onto_etc_or_root_is_rejected`
 - `tests/test_restore_plan.py::test_denylisted_create_binds_are_rejected`
 - `tests/test_restore_plan.py::test_other_runtimes_state_and_sockets_are_refused`
@@ -308,6 +309,7 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 **Threat:** a path is swapped for a symlink, or restored data plants one, so a write lands somewhere else. A mount inside a target makes a wipe reach another filesystem.
 **Defence:** paths are resolved in the helper container and checked again before writing, symlinked bind sources and compose folders are refused, and a wipe refuses a target with a mount inside it.
 **Tests:**
+- `tests/test_restore_apply_docker.py::test_a_skipped_bind_directory_needs_its_parent_and_no_file_in_the_way`
 - `tests/test_restore_apply.py::test_symlinked_bind_source_is_refused_before_any_mutation`
 - `tests/test_restore_apply.py::test_file_bind_onto_a_symbolic_link_is_refused`
 - `tests/test_restore_apply.py::test_a_path_that_changed_before_any_write_leaves_the_originals_running`

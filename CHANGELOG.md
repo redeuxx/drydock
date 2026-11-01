@@ -9,7 +9,7 @@ The first release.
 ### Backups
 - Back up a single container or a whole Compose project on the local host (through a filtering socket proxy) or on remote hosts over SSH with pinned host keys. Drydock installs its own SSH key with the user's password, used once and never stored.
 - Scopes: configuration (inspect output, compose files and `.env` files), data (volumes and bind mounts), images, or everything. Images still served by their registry can be stored by reference.
-- Skip chosen volumes and bind mounts, such as caches; the containers still mount them on restore.
+- Skip chosen volumes and bind mounts, such as caches; the containers still mount them, and a restore creates a missing one empty, with its recorded owner and mode.
 - Stop, pause or live consistency modes. Stacks stop and start in dependency order and wait for `service_healthy` dependencies.
 - Pre- and post-hooks run with `docker exec`, from a library only a superadmin edits.
 - Archives are tar in zstd, with per-member SHA-256 checksums and an HMAC signature, and are encrypted with age by default. The passphrase is derived from the secret key, so archives survive losing the database.

@@ -184,6 +184,9 @@
       {% for item in summary.get("data", []) %}
       <dt class="opacity-70">Writes</dt><dd class="break-all">{{ item.get("label") }}</dd>
       {% endfor %}
+      {% for item in summary.get("mkdirs", []) %}
+      <dt class="opacity-70">Creates if missing</dt><dd class="break-all"><span class="font-mono">{{ item.get("target") }}</span> (owner {{ item.get("owner") }}, mode {{ item.get("mode") }}; a skipped bind mount)</dd>
+      {% endfor %}
     </dl>
     {% if summary.get("warnings") %}
     <div role="status" class="alert alert-warning alert-soft mt-2">

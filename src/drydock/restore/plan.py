@@ -396,6 +396,17 @@ class ComposeWrite:
 
 
 @dataclass(frozen=True)
+class MakeDir:
+    """A directory the archive's job skipped, created where it is missing so the
+    container can bind it: one level (its parent must exist), with the archived owner."""
+
+    path: str  # normalized and checked as a write target
+    owner: str  # "uid:gid"
+    mode: int  # permission bits, setgid and sticky only
+    label: str
+
+
+@dataclass(frozen=True)
 class RestorePlan:
     mode: Mode
     host_id: int
@@ -422,6 +433,7 @@ class RestorePlan:
     # Every Compose project whose lock key the plan holds, sorted.
     projects: tuple[str, ...] = ()
     compose: ComposeWrite | None = None
+    mkdirs: tuple[MakeDir, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1211,6 +1223,7 @@ class Draft:
     project: str | None = None
     projects: set[str] = field(default_factory=set)
     compose: ComposeWrite | None = None
+    mkdirs: list[MakeDir] = field(default_factory=list)
     ordered: list[m.ContainerEntry] = field(default_factory=list)  # in start order
 
     @property
@@ -1884,10 +1897,7 @@ def plan_binds(draft: Draft) -> dict[str, str]:
             else:
                 draft.warnings.append(f"Bind mount {source} is shared with the original container.")
         if entry.data_member is None and entry.skipped and entry.skipped != "a system path":
-            draft.warnings.append(
-                f"Bind mount {source} is not in the archive ({entry.skipped}). The container "
-                "still binds it: create the directory on the target first if it is missing."
-            )
+            plan_skipped_bind(draft, entry, source, remapped)
         has_data = (
             entry.data_member is not None and n not in choice.skip_binds and (overwrite or remapped)
         )
@@ -1906,6 +1916,41 @@ def plan_binds(draft: Draft) -> dict[str, str]:
     for source in sorted(set(mounted) - described):
         draft.errors.append(f"The archive does not describe bind mount {source}.")
     return bind_map
+
+
+def plan_skipped_bind(draft: Draft, entry: m.BindEntry, source: str, remapped: bool) -> None:
+    """A bind the archive's job skipped: the container still binds it, so a directory
+    whose owner the archive records is created where it is missing (one level, below a
+    path restored data may go to). Anything else only gets a warning to create it by
+    hand, which is what an existing directory needs anyway: nothing."""
+    owner = (entry.uid, entry.gid, entry.mode)
+    creatable = entry.kind == "dir" and None not in owner and posixpath.dirname(source) != "/"
+    try:
+        checked = hostpaths.check_write_target(source) if creatable else None
+    except HostPathError:
+        checked = None
+    if checked is None:
+        draft.warnings.append(
+            f"Bind mount {source} is not in the archive ({entry.skipped}). The container "
+            "still binds it: create it on the target first if it is missing."
+        )
+        return
+    uid, gid, mode = owner
+    draft.mkdirs.append(
+        MakeDir(checked, f"{uid}:{gid}", int(mode) & 0o3777, f"bind mount {checked}")
+    )
+    draft.write_targets.add(checked)
+    if (
+        remapped
+        or draft.target.host_name != draft.manifest.source.host_name
+        or risk.sensitive(checked)
+    ):
+        where = f"host {draft.target.host_name}"
+        draft.risk.append(
+            RiskFlag(
+                f"bind-mkdir:{checked}", checked, "bind-write", f"creates a directory on {where}"
+            )
+        )
 
 
 def plan_bind_data(
@@ -2279,6 +2324,7 @@ def resolution_paths(plan: RestorePlan) -> list[str]:
     paths = {*plan.bind_sources, *plan.write_targets, *plan.written}
     if plan.compose:
         paths.add(posixpath.dirname(plan.compose.dir))
+    paths |= {posixpath.dirname(d.path) for d in plan.mkdirs}
     if not paths:
         return []
     paths |= {clean for own in plan.own_paths if (clean := normalized_or_none(own))}
@@ -2630,6 +2676,7 @@ def finish(draft: Draft) -> RestorePlan:
         project=draft.project,
         projects=tuple(sorted(draft.projects)),
         compose=draft.compose,
+        mkdirs=tuple(draft.mkdirs),
     )
 
 
@@ -2661,6 +2708,10 @@ def summary(plan: RestorePlan, host_name: str) -> dict[str, Any]:
     }
     if plan.project:
         document["project"] = plan.project
+    if plan.mkdirs:
+        document["mkdirs"] = [
+            {"target": d.path, "owner": d.owner, "mode": f"{d.mode:04o}"} for d in plan.mkdirs
+        ]
     if plan.compose:
         document["compose"] = {
             "dir": plan.compose.dir,

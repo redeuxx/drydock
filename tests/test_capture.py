@@ -717,3 +717,56 @@ services:
         "'quoted'",
         "quoted",
     ]
+
+
+@needs_dind
+def test_a_skipped_bind_records_its_owner_and_mode_but_no_data(dind, tmp_path: Path) -> None:
+    handle, box, root = dind
+    cache = f"{root}/cache"
+    sh(
+        box,
+        'mkdir -p "$1/sub" && echo x > "$1/sub/f" && chown -R 101:102 "$1" && chmod 2750 "$1"',
+        cache,
+    )
+    container = handle.client.containers.create(
+        IMAGE, ["true"], labels={TEST_LABEL: "1"}, volumes=[f"{cache}:/cache"]
+    )
+    try:
+        env = make_env(handle, tmp_path, Crypto((os.urandom(32),)), "sshhost")
+        out = tmp_path / "skip.tar.zst"
+        skips = frozenset({f"bind:{cache}"})
+        manifest, _, lines = run(env, job("data", skip_mounts=skips), [container.id], out)
+    finally:
+        container.remove(force=True)
+    (entry,) = manifest.binds
+    assert entry.source == cache and entry.data_member is None
+    assert entry.skipped == capture.SKIPPED_BY_JOB and entry.kind == "dir"
+    assert (entry.uid, entry.gid, entry.mode) == (101, 102, 0o2750)
+    assert not [name for name in members_of(out) if name.startswith("binds/")]
+    assert f"Skipped the data of bind mount {cache}: the job skips it." in lines
+    assert helpers_left(handle.client, TEST_INSTANCE) == []
+
+
+@needs_dind
+def test_a_missing_skipped_bind_only_loses_its_owner(dind, tmp_path: Path) -> None:
+    """A skipped cache that is gone on the host never fails the backup."""
+    handle, box, root = dind
+    kept, gone = f"{root}/kept", f"{root}/gone"
+    sh(box, 'mkdir -p "$1" "$2" && echo x > "$1/f"', kept, gone)
+    container = handle.client.containers.create(
+        IMAGE, ["true"], labels={TEST_LABEL: "1"}, volumes=[f"{kept}:/kept", f"{gone}:/gone"]
+    )
+    sh(box, 'rm -rf "$1"', gone)
+    try:
+        env = make_env(handle, tmp_path, Crypto((os.urandom(32),)), "sshhost")
+        out = tmp_path / "gone.tar.zst"
+        manifest, _, lines = run(
+            env, job("data", skip_mounts=frozenset({f"bind:{gone}"})), [container.id], out
+        )
+    finally:
+        container.remove(force=True)
+    by_source = {b.source: b for b in manifest.binds}
+    assert by_source[kept].data_member is not None
+    assert by_source[gone].data_member is None and by_source[gone].uid is None
+    assert any(f"Could not read the owner of skipped bind mount {gone}" in line for line in lines)
+    assert helpers_left(handle.client, TEST_INSTANCE) == []

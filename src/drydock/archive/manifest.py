@@ -108,6 +108,11 @@ class BindEntry(Strict):
     # binds/<n>.tar. A dir bind's members are "./..."; a file bind holds one member "b<n>".
     data_member: str | None = None
     skipped: str | None = None  # why the data was not captured (a system path, or the job)
+    # A directory the job skips: its owner and mode (no setuid bit), so a restore can
+    # create it where it is missing.
+    uid: int | None = Field(default=None, ge=0, le=0xFFFFFFFE)
+    gid: int | None = Field(default=None, ge=0, le=0xFFFFFFFE)
+    mode: int | None = Field(default=None, ge=0, le=0o3777)
 
 
 class ImageEntry(Strict):

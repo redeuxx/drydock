@@ -14,6 +14,7 @@ from drydock.hosts.inventory import ProjectGroup
 
 MAX_SKIPS = 64
 MAX_KEY = 1024
+ANONYMOUS_RE = re.compile(r"[0-9a-f]{64}")  # the name Docker gives an unnamed volume
 # Docker's own rule for volume names.
 VOLUME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}")
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
@@ -75,6 +76,9 @@ class Choice:
     kind: str  # bind or volume
     source: str  # host path or volume name
     used_by: tuple[str, ...]  # "container:destination"
+    # An unnamed volume: recreating the container gives it a new name, so a skip of this
+    # name stops applying then.
+    anonymous: bool = False
 
 
 def choices(groups: list[ProjectGroup], target_type: str, target: str) -> list[Choice] | None:
@@ -106,7 +110,13 @@ def choices(groups: list[ProjectGroup], target_type: str, target: str) -> list[C
                 f"{container.name}:{mount.destination}"
             )
     return [
-        Choice(key, kind, source, tuple(users))
+        Choice(
+            key,
+            kind,
+            source,
+            tuple(users),
+            kind == "volume" and bool(ANONYMOUS_RE.fullmatch(source)),
+        )
         for key, (kind, source, users) in sorted(found.items())
         if key_error(key) is None
     ]

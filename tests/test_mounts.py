@@ -96,4 +96,23 @@ def test_capture_marks_what_the_job_skips() -> None:
         "/opt/imgcache": capture.SKIPPED_BY_JOB,
     }
     assert plan.skipped_volumes == {"cache": capture.SKIPPED_BY_JOB}
+    # Skipped binds are read in helpers of their own (skipped_bind_owners), never here.
     assert [x["Source"] for x in capture.data_mounts(plan)] == ["keep", "/srv/data"]
+
+
+def test_anonymous_volumes_are_marked() -> None:
+    anonymous = "babb430a7e945628e1f105c6db0cbe1dcc586753d616d761e66e2211bbcf3515"
+    groups = [
+        ProjectGroup(
+            "app",
+            (
+                container(
+                    "redis",
+                    MountInfo("volume", anonymous, None, "/data", False),
+                    MountInfo("volume", "app_db", None, "/db", False),
+                ),
+            ),
+        )
+    ]
+    marks = {c.source: c.anonymous for c in mounts.choices(groups, "stack", "app") or []}
+    assert marks == {anonymous: True, "app_db": False}

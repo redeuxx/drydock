@@ -2167,6 +2167,87 @@ def test_mounts_the_job_skipped_get_no_wipe_and_no_data() -> None:
     assert ("volume", "shop_content") not in {(w.kind, w.target) for w in plan.wipes}
     assert not [d for d in plan.data if d.target in ("shop_content", "/srv/cache")]
     assert any(v.name == "shop_content" for v in plan.volumes)  # still created or reused
+    # The archive records no owner for the bind: the plan can only warn.
     assert any(
         "Bind mount /srv/cache is not in the archive (the job skips it)" in w for w in plan.warnings
     )
+    assert plan.mkdirs == ()
+
+
+def skipped_bind_archive(source: str = "/srv/cache") -> tuple[m.Manifest, dict[str, Any]]:
+    manifest, configs = make_archive([with_binds(web_info(), [(source, "/cache", True)])])
+    binds = [
+        b.model_copy(
+            update={
+                "data_member": None,
+                "skipped": "the job skips it",
+                "uid": 101,
+                "gid": 102,
+                "mode": 0o2750,
+            }
+        )
+        for b in manifest.binds
+    ]
+    members = [x for x in manifest.members if x not in {b.data_member for b in manifest.binds}]
+    return manifest.model_copy(update={"binds": binds, "members": members}), configs
+
+
+def test_a_skipped_bind_directory_is_created_with_its_owner_if_missing() -> None:
+    plan = build(skipped_bind_archive(), target(), choice("overwrite"))
+    assert plan.mkdirs == (p.MakeDir("/srv/cache", "101:102", 0o2750, "bind mount /srv/cache"),)
+    assert "/srv/cache" in plan.write_targets
+    assert "/srv" in p.resolution_paths(plan)  # apply checks the parent exists
+    assert p.summary(plan, "local")["mkdirs"] == [
+        {"target": "/srv/cache", "owner": "101:102", "mode": "2750"}
+    ]
+    assert not [f for f in plan.risk if f.field == "bind-write"]  # same host, same path
+    assert not [w for w in plan.warnings if "/srv/cache" in w]
+
+
+def test_a_skipped_bind_can_be_created_elsewhere_with_a_flag() -> None:
+    chosen = choice("overwrite", bind_remaps={0: "/data/cache"})
+    plan = build(skipped_bind_archive(), target(), chosen)
+    assert [d.path for d in plan.mkdirs] == ["/data/cache"]
+    assert [f.subject for f in plan.risk if f.field == "bind-write"] == ["/data/cache"]
+
+
+@pytest.mark.parametrize(("remap", "message"), [("/etc/cache", "/etc"), ("/usr/lib/x", "/usr")])
+def test_a_skipped_bind_is_never_created_in_a_protected_place(remap: str, message: str) -> None:
+    chosen = choice("overwrite", bind_remaps={0: remap})
+    assert message in refused(skipped_bind_archive(), target(), chosen)
+
+
+@pytest.mark.parametrize("source", ["/data", "/usr/share/app"])
+def test_a_skipped_bind_drydock_would_not_create_only_warns(source: str) -> None:
+    """Right below / or where restored data never goes: the directory most likely exists
+    (it did on the source), so the restore goes ahead and only says to create it."""
+    plan = build(skipped_bind_archive(source), target(), choice("overwrite"))
+    assert plan.mkdirs == ()
+    assert any(f"Bind mount {source} is not in the archive" in w for w in plan.warnings)
+
+
+def test_creating_a_skipped_directory_does_not_block_binds_inside_it() -> None:
+    manifest, configs = make_archive(
+        [with_binds(web_info(), [("/srv/app", "/app", True), ("/srv/app/config", "/conf", True)])]
+    )
+    skipped = manifest.binds[0].model_copy(
+        update={
+            "data_member": None,
+            "skipped": "the job skips it",
+            "uid": 0,
+            "gid": 0,
+            "mode": 0o755,
+        }
+    )
+    members = [x for x in manifest.members if x != manifest.binds[0].data_member]
+    manifest = manifest.model_copy(
+        update={"binds": [skipped, manifest.binds[1]], "members": members}
+    )
+    plan = build((manifest, configs), target(), choice("overwrite"))
+    assert [d.path for d in plan.mkdirs] == ["/srv/app"]
+    assert [d.target for d in plan.data if d.kind == "bind-dir"] == ["/srv/app/config"]
+
+
+def test_plans_without_skipped_binds_summarize_as_before() -> None:
+    plan = build(web_archive(), target(), choice("overwrite"))
+    assert "mkdirs" not in p.summary(plan, "local")
