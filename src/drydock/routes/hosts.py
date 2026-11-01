@@ -585,9 +585,13 @@ def trust_hostkey(
     host_id: int,
     auth: Admin,
     fingerprint: FormStr = "",
+    password: FormStr = "",
     db: Session = Depends(get_db),
 ) -> Response:
-    """Pins the key the server presents now, but only if it is the one the admin confirmed."""
+    """Pins the key the server presents now, but only if it is the one the admin confirmed.
+
+    With a password, drydock then logs in once against that pinned key and adds its own
+    public key to the user's authorized_keys. The password is never stored or logged."""
     require_recent_auth(auth)
     host = get_ssh_host(db, host_id)
     confirmed = fingerprint.strip()
@@ -607,6 +611,10 @@ def trust_hostkey(
     if not FINGERPRINT_RE.fullmatch(confirmed):
         error = "Enter the SHA256 fingerprint to trust."
         record(host, "failure", error=error, submitted=confirmed[:100])
+        return edit_page(request, auth, host, 422, error=error)
+    if len(password) > ssh.MAX_PASSWORD or (password and not host.ssh_public_key):
+        error = "The password is too long." if host.ssh_public_key else "The host has no key."
+        record(host, "failure", error=error, confirmed_fingerprint=confirmed)
         return edit_page(request, auth, host, 422, error=error)
     address, port = release(db, host).address, host.port
     try:
@@ -634,6 +642,30 @@ def trust_hostkey(
             "Nothing was trusted. Check the host, then scan again."
         )
         return edit_page(request, auth, host, 409, error=message)
+    if password:
+        args = (address, port, host.username, line, password)
+        key_line = f"{ssh.AUTHORIZED_KEY_OPTIONS} {host.ssh_public_key}"
+        release(db, host)
+        try:
+            anyio.from_thread.run(ssh.install_key, *args, key_line)
+        except ssh.SSHKeyError as exc:
+            error = str(exc)
+        else:
+            error = None
+        host = get_ssh_host(db, host_id)
+        audit.record(
+            db,
+            actor=auth.user.username,
+            action="host.key_install",
+            target=f"host:{host.id}",
+            outcome="success" if error is None else "failure",
+            ip=client_ip(request),
+            details={"username": args[2]} | ({"error": error} if error else {}),
+        )
+        db.commit()
+        if error is not None:
+            reload(request, host_id)  # the host key is trusted either way
+            return edit_page(request, auth, host, 422, error=error)
     reload(request, host_id)
     return see_other(request, f"/hosts/{host_id}")
 

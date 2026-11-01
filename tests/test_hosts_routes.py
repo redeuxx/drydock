@@ -386,6 +386,70 @@ async def test_trust_refuses_a_key_that_changed_after_the_scan(
     assert details["presented_fingerprint"] == ssh.fingerprint(fake_server["key"])
 
 
+SSH_PASSWORD = "sentinel ssh password 9b3e"
+
+
+def leaked_password(browser: Browser) -> bool:
+    with browser.db() as conn:
+        dump = "\n".join(conn.iterdump())
+    return SSH_PASSWORD in dump
+
+
+async def test_trust_with_a_password_installs_drydocks_key(
+    admin: Browser, fake_server: dict, monkeypatch
+) -> None:
+    calls = []
+
+    async def install(*args: str) -> None:
+        calls.append(args)
+
+    monkeypatch.setattr(ssh, "install_key", install)
+    host_id = host_id_from(await admin.post("/hosts", SSH_FORM))
+    fingerprint = ssh.fingerprint(fake_server["key"])
+    response = await admin.post(
+        f"/hosts/{host_id}/trust-hostkey", {"fingerprint": fingerprint, "password": SSH_PASSWORD}
+    )
+    assert response.status_code == 303
+    row = host_row(admin, host_id)
+    known = ssh.known_host_line("203.0.113.9", 22, fake_server["key"])
+    assert row["known_host_line"] == known
+    line = f"{ssh.AUTHORIZED_KEY_OPTIONS} {row['ssh_public_key']}"
+    # The password goes only against the host key just pinned.
+    assert calls == [("203.0.113.9", 22, "backup", known, SSH_PASSWORD, line)]
+    assert audit_rows(admin, "host.key_install") == [("success", {"username": "backup"})]
+    assert not leaked_password(admin)
+
+
+async def test_a_refused_password_still_trusts_the_host_key(
+    admin: Browser, fake_server: dict, monkeypatch
+) -> None:
+    async def refuse(*args: str) -> None:
+        raise ssh.SSHKeyError("203.0.113.9 refused the password for backup.")
+
+    monkeypatch.setattr(ssh, "install_key", refuse)
+    host_id = host_id_from(await admin.post("/hosts", SSH_FORM))
+    fingerprint = ssh.fingerprint(fake_server["key"])
+    response = await admin.post(
+        f"/hosts/{host_id}/trust-hostkey", {"fingerprint": fingerprint, "password": SSH_PASSWORD}
+    )
+    assert response.status_code == 422
+    assert "refused the password for backup" in response.text
+    assert SSH_PASSWORD not in response.text
+    assert host_row(admin, host_id)["host_key_fingerprint"] == fingerprint
+    outcome, details = audit_rows(admin, "host.key_install")[-1]
+    assert outcome == "failure" and "refused the password" in details["error"]
+    assert not leaked_password(admin)
+
+
+async def test_a_trusted_host_offers_to_install_the_key(admin: Browser, fake_server: dict) -> None:
+    host_id = host_id_from(await admin.post("/hosts", SSH_FORM))
+    fingerprint = ssh.fingerprint(fake_server["key"])
+    await admin.post(f"/hosts/{host_id}/trust-hostkey", {"fingerprint": fingerprint})
+    page = (await admin.post(f"/hosts/{host_id}/scan-hostkey")).text
+    assert "Install drydock&#39;s key" in page or "Install drydock's key" in page
+    assert 'name="password"' in page and "Trust this key" not in page
+
+
 @pytest.mark.parametrize("value", ["", "MD5:aa:bb", "SHA256:short", "SHA256:" + "A" * 43 + "x"])
 async def test_trust_needs_a_sha256_fingerprint(
     admin: Browser, fake_server: dict, value: str

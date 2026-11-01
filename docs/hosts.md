@@ -14,12 +14,26 @@ To add it, open **Hosts > Add local host**. The Docker URL is prefilled from `DR
 
 ## Remote hosts over SSH
 
-Drydock keeps one SSH connection per host and forwards a private unix socket (`/run/drydock/hosts/<id>.sock`, mode 0600 in a 0700 directory) to the remote Docker socket. The private key is stored encrypted with the secret key and only ever exists in memory; drydock can generate an ed25519 key pair or accept a pasted key. A pasted key's passphrase is used once to decrypt it and then discarded: the key is kept decrypted inside the encrypted token, so no passphrase is stored and no passphrase KDF runs when tunnels start. Encrypted OpenSSH keys with more than 1024 KDF rounds and encrypted PKCS#8 keys are refused (`ssh-keygen -p -f <file>` converts them). Pages show only the public key and fingerprints, and a pasted key or passphrase is never sent back to the browser. Only public key authentication is offered, and only AEAD ciphers (AES-GCM first, then chacha20-poly1305).
+Any user on the host who can use Docker will do: root, or a user in the `docker` group. Stock sshd settings are enough.
 
-On the remote host:
+1. **Hosts > Add SSH host**: a name, the host's address (host name, domain or IP) and the user. Port 22, the Docker socket path and "Generate a new ed25519 key" are filled in.
+2. On the host page, click **Scan host key** and compare the fingerprint with the host's own (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on it). This is what makes sure drydock talks to that host and not to something in between.
+3. Enter the user's SSH password and click **Trust this key**. Drydock scans again and pins the key only if it still matches, then logs in once with the password, against that pinned key, and adds its own public key to the user's `~/.ssh/authorized_keys`, as `ssh-copy-id` does. The password is never stored or logged.
 
-- The SSH user needs access to the Docker socket, which is root-equivalent on that host. Use a dedicated user, for example one in the `docker` group, for nothing else.
-- sshd must allow local forwarding (sshd only allows unix socket forwards together with TCP forwards). A `Match` block keeps everything else off for that user:
+The tunnel connects within seconds; **Test connection** confirms it. Trusting needs your drydock password from the last 10 minutes, and both the trust and the key install are in the audit log.
+
+If the host refuses password logins (root usually does), leave the password empty: paste the line shown under **SSH key** into that user's `~/.ssh/authorized_keys` yourself, then trust the host key. A trusted host shows the password field again after a scan, for example after you replace drydock's key.
+
+### How the connection works
+
+Drydock keeps one SSH connection per host and forwards a private unix socket (`/run/drydock/hosts/<id>.sock`, mode 0600 in a 0700 directory) to the remote Docker socket. The private key is stored encrypted with the secret key and only ever exists in memory; drydock can generate an ed25519 key pair or accept a pasted key. A pasted key's passphrase is used once to decrypt it and then discarded: the key is kept decrypted inside the encrypted token, so no passphrase is stored and no passphrase KDF runs when tunnels start. Encrypted OpenSSH keys with more than 1024 KDF rounds and encrypted PKCS#8 keys are refused (`ssh-keygen -p -f <file>` converts them). Pages show only the public key and fingerprints, and a pasted key or passphrase is never sent back to the browser. The tunnel offers only public key authentication (the password above is used once, for the key install), and only AEAD ciphers (AES-GCM first, then chacha20-poly1305).
+
+### Optional hardening
+
+The user drydock logs in as can reach the Docker socket, which is root-equivalent on that host. To narrow everything else down:
+
+- Use a dedicated user in the `docker` group, for nothing else.
+- Keep everything but the forward off for that user in `sshd_config` (sshd only allows unix socket forwards together with TCP forwards):
 
   ```
   Match User drydock
@@ -31,16 +45,9 @@ On the remote host:
     ForceCommand /bin/false
   ```
 
-- Restrict the key in `authorized_keys`. The host page shows the line to paste: `restrict,port-forwarding,command="/bin/false" ssh-ed25519 AAAA... drydock`. The forced command refuses shells, commands and subsystems such as sftp; the forward still works. OpenSSH cannot allow the socket forward while refusing TCP forwards (`permitopen` and `PermitOpen` block unix socket forwards too), so the key can still open TCP connections from the host. That adds nothing to the Docker access it already grants, which is root on the host.
+  With `ForceCommand` set, the password install cannot run; paste the key line instead.
+- The key line drydock installs is already restricted: `restrict,port-forwarding,command="/bin/false" ssh-ed25519 AAAA... drydock`. The forced command refuses shells, commands and subsystems such as sftp; the forward still works. OpenSSH cannot allow the socket forward while refusing TCP forwards (`permitopen` and `PermitOpen` block unix socket forwards too), so the key can still open TCP connections from the host. That adds nothing to the Docker access it already grants, which is root on the host.
 - For rootless Docker, set the host's socket path (for example `/run/user/1000/docker.sock`).
-
-To add a host:
-
-1. Open **Hosts > Add SSH host** and enter the name, address, port, user and socket path. Leave "Generate a new ed25519 key" selected, or paste an existing private key.
-2. Copy the `restrict,port-forwarding,...` line from the host page into the user's `~/.ssh/authorized_keys` on the host.
-3. Click **Scan host key**. Drydock shows the SHA256 fingerprint the server presents and trusts nothing yet.
-4. Compare it with the host itself, out of band (for example `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on its console). Only then click **Trust this key**. Drydock scans again and pins the key only if the fingerprint still matches the one you confirmed, so a key swapped in between is never trusted. Trusting needs your password from the last 10 minutes and is audited.
-5. The tunnel connects within seconds. **Test connection** confirms it.
 
 The host key is pinned to that address and port. Changing either clears the trusted key, and the new endpoint has to be scanned and trusted again. If a host later presents a different key, including a key of another type (which fails key exchange, because drydock offers only the pinned key's algorithm), drydock refuses the connection, makes no Docker call, shows a host key mismatch on the host pages and writes a `host.hostkey_mismatch` audit event with the presented fingerprint. It does not retry until an admin trusts a key again. A changed host key after a reinstall is expected; treat one you cannot explain as an attack until proven otherwise.
 

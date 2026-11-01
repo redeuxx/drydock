@@ -83,17 +83,30 @@
           {% if scan.trusted %}<p class="text-sm">It matches the trusted key.</p>{% endif %}
         </div>
       </div>
-      {% if not scan.trusted %}
       <form method="post" action="/hosts/{{ host.id }}/trust-hostkey" hx-post="/hosts/{{ host.id }}/trust-hostkey" hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-1">
         <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        {% if scan.trusted %}
+        <input type="hidden" name="fingerprint" value="{{ scan.fingerprint }}">
+        {% else %}
         <div class="fieldset">
           <label class="fieldset-legend" for="trust-fingerprint">Fingerprint to trust</label>
           <input id="trust-fingerprint" class="input w-full font-mono text-sm" name="fingerprint" value="{{ scan.fingerprint }}" autocomplete="off" required maxlength="80" aria-describedby="trust-fingerprint-hint">
           <p id="trust-fingerprint-hint" class="label whitespace-normal">Compare it with the output of <code>ssh-keygen -lf /etc/ssh/ssh_host_{{ scan.algorithm.removeprefix("ssh-").split("-")[0] }}_key.pub</code> on the host. Drydock scans again and trusts the key only if it still matches.</p>
         </div>
+        {% endif %}
+        {% if host.ssh_public_key %}
+        <div class="fieldset">
+          <label class="fieldset-legend" for="trust-password">Password for {{ host.username }}{% if not scan.trusted %} (optional){% endif %}</label>
+          <input id="trust-password" type="password" class="input w-full" name="password" autocomplete="off" maxlength="1024" {% if scan.trusted %}required {% endif %}aria-describedby="trust-password-hint">
+          <p id="trust-password-hint" class="label whitespace-normal">Drydock logs in with it once, after checking the host key, and adds its own key to <code>~/.ssh/authorized_keys</code>. It is never stored.{% if not scan.trusted %} Leave it empty if you added the key yourself.{% endif %}</p>
+        </div>
+        {% endif %}
+        {% if scan.trusted %}
+        {% if host.ssh_public_key %}{{ submit("Install drydock's key", "btn-outline") }}{% endif %}
+        {% else %}
         {{ submit("Trust this key", "btn-warning") }}
+        {% endif %}
       </form>
-      {% endif %}
       {% endif %}
       <form method="post" action="/hosts/{{ host.id }}/scan-hostkey" hx-post="/hosts/{{ host.id }}/scan-hostkey" hx-nonce="{{ csp_nonce }}" class="card-actions">
         <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
@@ -106,7 +119,7 @@
     <div class="card-body">
       <h2 id="key-heading" class="card-title">SSH key</h2>
       {% if host.ssh_public_key %}
-      <p class="text-sm">Add this public key to the SSH user's <code>~/.ssh/authorized_keys</code> on the host:</p>
+      <p class="text-sm">Drydock adds this key to the SSH user's <code>~/.ssh/authorized_keys</code> when you enter their password under Host key. Or add it there yourself:</p>
       <pre class="rounded-box bg-base-200 p-3 text-xs whitespace-pre-wrap break-all" tabindex="0">{{ authorized_key_options }} {{ host.ssh_public_key }}</pre>
       <p class="text-xs opacity-70">The options allow only forwarding and refuse shells and commands.</p>
       {% else %}

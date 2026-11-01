@@ -205,13 +205,18 @@ def test_no_code_path_skips_host_key_verification() -> None:
                     if isinstance(owner, ast.Name) and owner.id == "asyncssh":
                         connect_calls += 1
                         keywords = {k.arg: k.value for k in node.keywords}
-                        # Every connection uses client_options(), which pins the host key.
+                        # Every connection passes options that pin the host key (below).
                         assert "options" in keywords, f"{path}:{node.lineno}"
                         assert "known_hosts" not in keywords, f"{path}:{node.lineno}"
                 if name == "SSHClientConnectionOptions":
                     keywords = {k.arg: k.value for k in node.keywords}
-                    assert "known_hosts" in keywords, f"{path}:{node.lineno}"
-    assert connect_calls == 1
+                    pinned = keywords.get("known_hosts")
+                    assert isinstance(pinned, ast.Call), f"{path}:{node.lineno}"
+                    assert getattr(pinned.func, "id", "") == "pinned_known_hosts", (
+                        f"{path}:{node.lineno}"
+                    )
+    # The tunnel and the one-time key install (ssh.install_key).
+    assert connect_calls == 2
 
 
 def test_client_options_pin_the_host_key_and_ignore_the_environment() -> None:

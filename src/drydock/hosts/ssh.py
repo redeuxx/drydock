@@ -10,7 +10,8 @@ Security rules, all enforced here:
 - The host key is pinned. Connections use the stored known_hosts line and nothing else:
   no ~/.ssh/known_hosts, no ~/.ssh/config, no agent, no X.509 CAs and never
   known_hosts=None. A changed host key ends the tunnel until an admin trusts a new key.
-- Only public key authentication is offered.
+- Only public key authentication is offered, except by install_key: once, against the
+  pinned host key, with a password the admin types and drydock never keeps.
 """
 
 import asyncio
@@ -18,6 +19,7 @@ import base64
 import contextlib
 import logging
 import os
+import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,6 +35,8 @@ DEFAULT_PORT = 22
 DEFAULT_REMOTE_SOCKET = "/var/run/docker.sock"
 CONNECT_TIMEOUT = 15
 SCAN_TIMEOUT = 15
+INSTALL_TIMEOUT = 30
+MAX_PASSWORD = 1024
 KEEPALIVE_INTERVAL = 15
 KEEPALIVE_COUNT_MAX = 3
 BACKOFF_INITIAL = 1.0
@@ -205,6 +209,75 @@ async def scan_host_key(address: str, port: int) -> tuple[str, str]:
     if key is None:
         raise SSHKeyError("The server did not present a host key.")
     return known_host_line(address, port, key), fingerprint(key)
+
+
+# KEY INSTALL WITH A PASSWORD
+
+# What ssh-copy-id does: append the line read from stdin to ~/.ssh/authorized_keys unless
+# it is there already, after a newline if the file lacks a final one. The script is fixed;
+# the line never becomes part of a command.
+INSTALL_SCRIPT = (
+    'umask 077; mkdir -p "$HOME/.ssh" || exit 1; f="$HOME/.ssh/authorized_keys"; '
+    'IFS= read -r line || exit 1; touch "$f" || exit 1; '
+    'grep -qxF -- "$line" "$f" && exit 0; '
+    'if [ -s "$f" ] && [ -n "$(tail -c1 "$f")" ]; then echo >> "$f" || exit 1; fi; '
+    'echo "$line" >> "$f"'
+)
+INSTALL_COMMAND = "sh -c " + shlex.quote(INSTALL_SCRIPT)
+
+
+async def install_key(
+    address: str, port: int, username: str, known_host_line: str, password: str, line: str
+) -> None:
+    """Logs in once with the password and adds line to the user's authorized_keys.
+
+    The host key must match known_host_line before any password is sent. Raises SSHKeyError
+    with a message that is safe to show; it never contains the password.
+    """
+    options = asyncssh.SSHClientConnectionOptions(
+        username=username,
+        password=password,
+        client_keys=[],
+        known_hosts=pinned_known_hosts(address, port, known_host_line),
+        config=[],
+        agent_path=None,
+        agent_forwarding=False,
+        pkcs11_provider=None,
+        x509_trusted_certs=None,
+        x509_trusted_cert_paths=[],
+        preferred_auth="keyboard-interactive,password",
+        public_key_auth=False,
+        host_based_auth=False,
+        gss_auth=False,
+        gss_kex=False,
+        gss_host=None,
+        x11_forwarding=False,
+        encryption_algs=list(ENCRYPTION_ALGS),
+        connect_timeout=CONNECT_TIMEOUT,
+    )
+    try:
+        async with asyncio.timeout(INSTALL_TIMEOUT):
+            async with asyncssh.connect(address, port, options=options) as conn:
+                result = await conn.run(INSTALL_COMMAND, input=line + "\n", check=False)
+    except asyncssh.PermissionDenied:
+        raise SSHKeyError(
+            f"{address} refused the password for {username}. The host may not allow password "
+            "logins (root usually does not): add the key below to authorized_keys instead."
+        ) from None
+    except asyncssh.HostKeyNotVerifiable:
+        raise SSHKeyError(
+            f"{address} no longer presents the trusted host key. No password was sent."
+        ) from None
+    except TimeoutError:
+        raise SSHKeyError(f"{address} port {port} did not answer in time.") from None
+    except (OSError, asyncssh.Error) as exc:
+        raise SSHKeyError(f"Could not log in to {address}: {exc}") from None
+    if result.exit_status != 0:
+        detail = str(result.stderr or "").strip()[:200]
+        raise SSHKeyError(
+            f"The host could not add the key to {username}'s authorized_keys"
+            + (f": {detail}" if detail else ".")
+        )
 
 
 # CONNECTIONS

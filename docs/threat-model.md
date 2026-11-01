@@ -192,6 +192,7 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 **Threat:** a stored secret, an entered passphrase, a hook's output or an error from rclone or Docker shows a secret to a user or writes it to a log.
 **Defence:** secrets are never rendered back, refused forms do not echo them, the audit log redacts secret-like keys, run logs and hook output are redacted, rclone gets secrets only obscured through its private API, and upstream error bodies are not quoted.
 **Tests:**
+- `tests/test_hosts_routes.py::test_a_refused_password_still_trusts_the_host_key`
 - `tests/test_audit.py::test_redaction`
 - `tests/test_config.py::test_error_message_never_echoes_the_key`
 - `tests/test_hosts_routes.py::test_pasted_key_with_passphrase_is_never_echoed`
@@ -382,8 +383,10 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 ### T26. A machine in the middle of an SSH connection
 
 **Threat:** an attacker on the path to an SSH host intercepts the Docker forward.
-**Defence:** host keys are pinned per host. A host is never contacted before a key is trusted, a scanned key must still match when trusted, and changing the address or port clears the trusted key.
+**Defence:** host keys are pinned per host. A host is never contacted before a key is trusted, a scanned key must still match when trusted, and changing the address or port clears the trusted key. A password typed to install drydock's key is sent only to the host key just pinned, used once and never stored.
 **Tests:**
+- `tests/test_ssh_install.py::test_a_different_host_key_never_gets_the_password`
+- `tests/test_hosts_routes.py::test_trust_with_a_password_installs_drydocks_key`
 - `tests/test_hosts.py::test_no_code_path_skips_host_key_verification`
 - `tests/test_hosts.py::test_client_options_pin_the_host_key_and_ignore_the_environment`
 - `tests/test_hosts.py::test_pinned_host_key_must_name_exactly_this_host`
@@ -396,8 +399,9 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 ### T27. Misusing drydock's SSH key or Docker URLs
 
 **Threat:** drydock's SSH key is used for a shell on the remote host, or a Docker URL points drydock at its own sockets, at a proxy from the environment or at another protocol.
-**Defence:** the suggested `authorized_keys` options allow only the forward, keys with costly passphrase KDFs are refused, Docker URLs must be unix sockets or http, drydock's own run directory is refused, and proxy environment variables are ignored.
+**Defence:** the `authorized_keys` options drydock suggests or installs allow only the forward, the install script takes the key line as data on stdin, keys with costly passphrase KDFs are refused, Docker URLs must be unix sockets or http, drydock's own run directory is refused, and proxy environment variables are ignored.
 **Tests:**
+- `tests/test_ssh_install.py::test_the_line_is_data_not_a_command`
 - `tests/test_hosts_docker.py::test_authorized_key_options_refuse_commands`
 - `tests/test_hosts.py::test_keys_with_costly_passphrase_kdfs_are_refused`
 - `tests/test_hosts.py::test_only_socket_and_http_urls_are_accepted`

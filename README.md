@@ -24,7 +24,7 @@ Backups run on a schedule or by hand, in stop, pause or live mode, with pre- and
 
 On the Docker host, over SSH. You need Docker Engine 25 or later with the Compose plugin.
 
-1. Get drydock:
+1. Get drydock. Any folder works, `/opt/drydock` for example; keep it, since it holds `compose.yaml`, `.env` and the secret key file. Drydock's database lives in the `drydock-data` volume, not here.
 
    ```sh
    git clone https://github.com/redeuxx/drydock.git
@@ -40,7 +40,7 @@ On the Docker host, over SSH. You need Docker Engine 25 or later with the Compos
    sudo chmod 0400 secrets/drydock_secret_key
    ```
 
-3. Set the address you will browse to, exactly as you will type it (here the host's IP):
+3. Set the address you will browse to, exactly as you will type it: a domain if you have one, otherwise the host's IP. You can [change it later](docs/configuration.md#changing-the-address).
 
    ```sh
    echo "DRYDOCK_BASE_URL=http://192.168.1.50:8000" > .env
@@ -60,7 +60,7 @@ Port 8000 is open to every network that can reach the host; Docker's published p
 
 ## First backup
 
-1. **Hosts > Add local host** (the Docker URL is prefilled), or **Add SSH host** for a remote one ([hosts](docs/hosts.md)).
+1. **Hosts > Add local host** (the Docker URL is prefilled), or **Add SSH host** for a remote one: its address and a user that can use Docker, then scan its host key and enter that user's password once so drydock can install its own key ([hosts](docs/hosts.md)).
 2. **Storage > Add storage**: a directory mounted into the container, or a remote target ([backups](docs/backups.md#storage)).
 3. **Jobs > Add job**: pick the container or Compose project, the scope, the mode and optionally a schedule, retention and notifications ([backups](docs/backups.md#jobs-and-runs)).
 4. **Run now**, then **Restore** to bring an archive back ([restore](docs/restore.md)).

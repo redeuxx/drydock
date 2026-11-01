@@ -16,6 +16,20 @@
 | `TZ` | `UTC` | Time zone for schedules without one of their own. Must be a listed zone name such as `Europe/Berlin`. |
 | `DRYDOCK_RUN_HISTORY_DAYS` | `90` | Finished runs older than this many days (1 to 36500) are deleted with their log files, hourly from 5 minutes after start. It cannot be turned off; 36500 keeps history for good. |
 
+## Changing the address
+
+`DRYDOCK_BASE_URL` is the one address drydock answers on, for example when you move from the host's IP to a domain, or put HTTPS in front later. It is set only in `.env`, never in the UI, because it drives the Host and origin checks that stop cross-site requests.
+
+1. Edit `.env` in the drydock folder, for example `DRYDOCK_BASE_URL=https://drydock.example.com`.
+2. Run `docker compose up -d` there. Compose recreates the container with the new value; the database, jobs and archives are untouched.
+3. Browse to the new address. The old one now answers `Invalid host header`.
+
+Also check:
+
+- **HTTP to HTTPS (or back)** renames the session cookie, so everyone signs in again once.
+- **A reverse proxy** needs `FORWARDED_ALLOW_IPS` and, usually, the port published on loopback only; see [Behind a reverse proxy](#behind-a-reverse-proxy).
+- **Google Drive storage with a web application client** uses `<DRYDOCK_BASE_URL>/storage/oauth/callback` as its redirect URI. Add the new one to the client in the Google Cloud console, then click **Connect to Google** on the storage page again. A desktop app client is not affected.
+
 ## Who can reach drydock
 
 `compose.yaml` publishes port 8000 on every interface. Docker adds its own firewall rules for published ports, ahead of ufw and firewalld, so a host firewall does not limit who reaches it; a firewall in front of the host does. To keep drydock off the network, publish `"127.0.0.1:8000:8000"` instead and reach it through an SSH tunnel (`ssh -L 8000:127.0.0.1:8000 you@host`, then <http://localhost:8000>, with `DRYDOCK_BASE_URL=http://localhost:8000`) or a reverse proxy on the host.
