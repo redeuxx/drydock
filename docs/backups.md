@@ -1,0 +1,146 @@
+# Backups
+
+## Storage
+
+Archives go to a storage target: a directory mounted into the drydock container, or [remote storage](#remote-storage). For a directory, mount it, list it in `DRYDOCK_LOCAL_STORAGE_ROOTS`, and make it writable by uid 10001:
+
+```yaml
+services:
+  drydock:
+    environment:
+      DRYDOCK_LOCAL_STORAGE_ROOTS: /backups
+    volumes:
+      - drydock-data:/data
+      - /srv/drydock-backups:/backups
+```
+
+```sh
+sudo install -d -o 10001 -g 10001 -m 0700 /srv/drydock-backups
+```
+
+Then add it under **Storage > Add storage** (admins). A storage directory must resolve inside one of the allowed roots, symlinks included, and must not overlap `/data`, `/run`, the staging directory or the application. **Test storage** writes and removes a probe file. The directory is stored encrypted with the secret key, like every backend's settings. Archive names are built from a slug of the job name, the job's random ID and the UTC time (`drydock-<slug>-<job uuid>-<YYYYMMDDTHHMMSSZ>.tar.zst[.age]`), never from raw user input. Each archive is written straight into the storage directory under a temporary name (`.partial-<random>`) and published under its real name when complete, without ever replacing an existing file, so a reader never sees a partial archive. Startup recovery removes temporary files left by a crash.
+
+### Remote storage
+
+A superadmin can also set up SFTP, SMB, WebDAV and Google Drive targets under **Storage > Add storage**. Jobs can back up to all of them, and **Restore** lists a target's archives with their previews and restores them.
+
+A Google Drive target uses your own Google OAuth client. The storage page links to the same steps (**Storage > Add storage > Google Drive**, then "how to create the OAuth client"):
+
+1. In the Google Cloud console, create or pick a project and enable the Google Drive API.
+2. Under Google Auth Platform, set up the consent screen with the scope `https://www.googleapis.com/auth/drive.file` (or `.../auth/drive` for full drive access), and publish it (Audience: In production). An unverified app in production shows Google's warning once; that is expected for your own client.
+3. Create the OAuth client, of the type described below, and copy its ID and secret into the storage form.
+
+Save, then click **Connect to Google** on the storage page. Use a *web application* client when you reach drydock over the SSH tunnel at `localhost` or on an https host name, with the redirect URI `<DRYDOCK_BASE_URL>/storage/oauth/callback`. Use a *desktop app* client when you reach it on a LAN address over plain http: Google then sends the browser to `http://127.0.0.1:<port>/`, where nothing answers, and you paste that address back into drydock. A connection attempt works once, for 10 minutes, and only for the superadmin who started it. Publish the client's consent screen: Google drops a testing-mode app's access after 7 days. If Google refuses drydock's access later (revoked, or a testing-mode client), the next transfer fails, the storage shows "reconnect required", and the failure notification targets of its jobs get one message. With the default `drive.file` access drydock sees only the files its client created, so deleting and recreating the client hides older backups. Changing the client ID or the access scope forgets the connection.
+
+A restore from remote storage first downloads the whole archive into the staging directory (`restore-<run id>/download/`), after checking that the disk there has the archive's size free plus a 64 MiB reserve; with less, it fails before downloading anything. Both verification passes then read that copy, and it is removed with the rest of the run's staged data when the run ends, is discarded or expires (startup recovery removes what a crash left). While retention deletes a remote archive, a restore of it is refused, and an archive an open restore names is kept.
+
+An SFTP target needs the server's public host key. **Fetch from server**, next to the field, fills it with the key the server presents and shows its SHA256 fingerprint. Compare that with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the server before saving, because saving trusts the key, and on the first connection anyone between drydock and the server could present their own. You can also paste the contents of that `.pub` file (or the ecdsa or rsa one) yourself, and separate several keys with commas. Drydock never trusts a key on its own and never connects without one. A changed key fails the run and **Test connection** with "The server's host key does not match the host key in the settings". The host must be a host name or an IPv4 address, and neither the user nor the folder may contain `]`. Admins can run **Test connection**, which logs in, writes a small file, reads it back and removes it.
+
+A WebDAV target needs an `https://` URL. Over plain http, the server, or anyone on the way to it, could redirect rclone's requests (deletes included) to the Docker socket proxy, which drydock's container can reach. If no public certificate authority signed the server's certificate, as with a NAS's self-signed one, click **Fetch from server** next to **Server certificate**. Drydock shows the certificate the server presents, with its names, dates and SHA-256 fingerprint. Compare the fingerprint with the server's own (`openssl x509 -noout -fingerprint -sha256 -in` its certificate file, or the NAS's certificate page) before saving, because saving trusts the certificate. You can also paste the certificate in PEM format yourself. A pinned certificate is that target's only trust anchor; rclone still checks the validity dates and that the certificate lists the host in the URL (as a DNS name or IP address, not only as the common name), so drydock refuses one that does not. A certificate a public authority already vouches for is shown but not filled in: pinning it would break at its next renewal. The URL's host must be a host name or an IPv4 address.
+
+An SMB target names the share, then optionally a folder in it, under **Share and folder**. The host must be a host name or an IPv4 address, and the user may not contain `]`.
+
+A backup to remote storage is first written to the staging directory (`DRYDOCK_STAGING_DIR`), which therefore needs room for a whole archive, and uploaded once the containers run again. It is uploaded under a temporary name (`<archive>.<8 hex>.partial`) and renamed when complete, so the archive name never shows a partial upload. Cancelling stops the upload and removes the partial file; any that could not be removed is named in the run log.
+
+A remote target makes drydock connect, through rclone, to whatever host its settings name, from a container that can also reach the Docker socket proxy. So, like notification targets, only a superadmin who has re-entered their password in the last 10 minutes can create, change or remove one. Admins see remote targets (without credentials) and local storage stays an admin task. This is a deliberate change from the role matrix in PLAN.md.
+
+Each form offers a short list of rclone's options, checked on the server; anything else in a submitted form, including a hand-crafted one, refuses the whole form. Left out on purpose:
+
+- **sftp:** external `ssh`, every `*_command`, key and known_hosts *files* (paste the key instead), agents, proxies, cipher lists and insecure ciphers, `pin_host_key`. Drydock pins the host key itself (above) and tells rclone never to run commands on the server (`shell_type none`), so SFTP integrity is checked by size only until a restore verifies the archive.
+- **smb:** Kerberos, which needs local credential files. NTLM user, password and domain work.
+- **webdav:** plain `http://`, `bearer_token_command`, `unix_socket`, custom headers, `auth_redirect`, and the `sharepoint` and `infinitescale` vendors.
+- **drive:** service accounts, `env_auth`, impersonation, custom auth and token URLs, and a pasted token. You use your own OAuth client (above).
+
+Passwords, private keys and tokens are stored encrypted and never shown again. Leave a field empty to keep the stored value, or tick its **Clear** box. Changing where a target points (host, port, user, URL, domain, server type, host key or pinned certificate, OAuth client or Google Drive access, and for WebDAV the folder) requires entering its stored secrets again.
+
+## Jobs and runs
+
+A job backs up one container (by name or ID) or one Compose project on one host into one storage target. Admins create and edit jobs; operators can **Run now** and cancel runs; every role can view jobs, runs, logs and the backup catalog.
+
+| Scope | What the archive holds |
+|---|---|
+| Configuration | `docker inspect` output for the container, its image, its non-default networks and its named volumes. For a Compose container, also the files its Compose labels name (`config_files`, `environment_file` and `<working_dir>/.env`) and the service's `env_file` entries in those compose files, each only if it is a regular file of at most 1 MiB (64 files and 8 MiB in all). Compose labels that the container inherits from its image are ignored, and files under `/etc`, `/boot`, `/proc`, `/sys`, `/dev`, Docker's storage or any `.ssh` or `.gnupg` directory are never read. |
+| Data | Every named volume and bind mount, as tar streams read by the daemon, with ownership and modes kept. tmpfs mounts are never backed up; the manifest lists them. Nor is the data of a bind mount of `/`, `/proc`, `/sys`, `/dev` or Docker's storage (`/var/lib/docker`, `/var/lib/containerd`); the manifest says it was skipped. |
+| Images | `docker save` of the container's image, for the host's platform. |
+| Everything | All of the above. |
+
+**Consistency modes.** Before touching anything drydock inspects the containers, reads their compose files and checks their images with the registry. Then:
+
+- **Stop** stops the containers (waiting as long as each one's own stop timeout, Compose's `stop_grace_period`, up to 10 minutes), reads their data and starts them again. A stack stops in reverse dependency order and starts in dependency order; before starting a container whose `depends_on` entry says `service_healthy`, drydock waits for that dependency's healthcheck to pass (at most 2 minutes per pass, then it starts anyway and the run log says so). Stop mode refuses running containers started with `--rm`. It also refuses a container in the network, IPC or PID namespace of another one that is not running (`network_mode: service:x` or `container:x`), which Docker would not start again, and stopping a container whose namespaces a running container shares when the run does not stop that one too, which would be left with only loopback until it is restarted. Back such containers up together in one stack job, or use pause mode.
+- **Pause** freezes the containers (`docker pause`) while their data is read and unpauses them afterwards, so they keep running and their uptime is unchanged. Clients see a stall instead of a restart.
+- **Live** reads the data while the containers run. The backup is crash-consistent at best: files are read while they are being written, so a database may not restore cleanly. The job form and the job page warn about this; prefer stop or pause, or a pre-hook that dumps the database to a file.
+
+Before it stops or pauses anything drydock writes the list of containers it is about to stop or pause into the run, so a crash never leaves them down or frozen, and a stop or pause call that fails or times out still counts. The containers are started and unpaused again once the data is read, also when the run fails or is cancelled. Lifespan shutdown (`docker compose stop`, within the 90 second grace period) cancels runs and starts and unpauses their containers again. Startup recovery marks unfinished runs `interrupted`, unpauses and starts what they paused or stopped (a run on one of those containers waits until that is done), removes leftover helpers before any run can use the host and removes drydock's scratch files from the staging directory. What a run or startup recovery cannot unpause or start again is tried again with a new connection while the host is unreachable (an SSH tunnel that dropped), for as long as drydock runs, and drydock holds those containers until then; if drydock stops first, the next start carries on. What Docker itself refuses is named in the run's error, to be put right by hand. Containers that were already stopped or paused when the run started stay that way: drydock never stops a paused container and never starts one it did not stop. Drydock never stops, pauses or backs up live a running container of its own deployment (stopping or pausing the socket proxy would leave drydock unable to start anything again, and a live archive would hold drydock's own secret key).
+
+**Stacks.** A job can back up a Compose project by its name, as `docker compose ls` shows it (1 to 63 lowercase letters, digits, `_` or `-`, Compose's own rule). Drydock finds the project's containers at run time by their `com.docker.compose.project` label, skipping one-off containers (`docker compose run`), drydock's own helper containers and originals a restore has set aside (`<name>-drydock-old`); a project with no containers fails the run. Compose files that several services share are stored once. The dependency order comes from the `com.docker.compose.depends_on` label, plus links, `volumes_from` and container network, IPC and PID modes; the containers of Compose v1 or an early v2, which carry no such label, stop and start in name order, and the run log says so. Stack jobs, and restores that stop, rename or recreate any container of a project, never overlap on that project.
+
+**Hooks.** A hook is a command drydock runs with `docker exec` in a container before (pre-hook) or after (post-hook) a backup reads its data, such as a database dump. Hooks live in a library under **Hooks** in the menu: only a superadmin can add, change or delete one, with the password from the last 10 minutes, and every change is recorded in the audit log with its old and new values. Admins attach existing hooks to jobs by name. Each hook is bound by the superadmin to one host entry and either to one container (it attaches only to container jobs on that host whose target is exactly that container, so a job that names its container by ID needs a hook that names the same ID) or to one Compose project (it attaches only to that project's stack job on that host, and runs in one of its services or containers). Drydock checks the binding on every job save, on every hook edit and again when the run starts, so an admin cannot point a hook at another container or host. One known limit: an admin who changes a host entry's URL moves its hooks (and its jobs) with it. A host with hooks cannot be deleted, and a hook attached to a job cannot be deleted until it is detached.
+
+- The command is a JSON array, the program and its arguments, passed to Docker as it is: no shell and no templating, so `["echo", "$(id)"]` prints `$(id)`. It runs as the container's user unless the hook sets one, without a TTY, stdin, extra privileges or environment variables of its own.
+- The timeout is 1 to 3600 seconds (default 300). Docker cannot kill an exec, so a command that outlives its timeout keeps running in the container: wrap long commands in `timeout`, for example `["timeout", "250", "pg_dump", "-U", "postgres", "-f", "/var/lib/postgresql/data/dump.sql", "app"]`. The socket proxy closes a hook's connection after 10 minutes without output; drydock then keeps waiting for the exit code until the timeout.
+- Pre-hooks run in order right before the first container is stopped or paused (in live mode, right before the data is read). A failing or timed-out pre-hook stops the run before anything is stopped or paused.
+- Post-hooks run in order after every container is running again (after a bounded wait for the healthchecks of the containers drydock restarted). They run whenever the pre-hooks started, even after a failed pre-hook or a failed backup, so they must be safe to run when the pre-hooks did not all finish. Every post-hook is attempted, all of them together within one hour, and a failing one fails the run after the archive is stored. A cancel stops drydock waiting for post-hooks, but it still starts each remaining one.
+- Output is not logged by default: the run log gets the number of bytes the hook wrote and, when it fails, the last 4 KiB of its standard error. A superadmin can turn on **Log the hook's output** for up to 64 KiB. Logged output is redacted like the rest of the log, but run logs are visible to every role that can see runs, viewers included, so write dumps to a file (`pg_dump -f`), not to standard output, and never print secrets. Drydock never logs a hook's command, but a shell's own messages may echo it (`sh -x`).
+- A hook that is edited or deleted while a run waits for its turn fails that run; start it again.
+
+**Schedules.** A job runs on a schedule when it has a cron expression and is enabled; without one it runs only when started by hand. The expression is standard five-field crontab (minute, hour, day of month, month, day of week), evaluated in the job's time zone, or in drydock's `TZ` when the job has none. The job form previews the next five runs as you type, computed exactly as the scheduler computes them.
+
+- Day of week follows cron: `0` and `7` are Sunday, `1-5` is Monday to Friday, and `sun` to `sat` work too. (The scheduler library underneath numbers Monday as 0; drydock converts the field to day names first, so `0 3 * * 0` runs on Sundays at 03:00.)
+- Restrict the day of the month or the day of the week, not both. Cron runs such an expression on either day, the scheduler only on days that match both, so drydock refuses it. Drydock also refuses a schedule that never runs (`0 0 31 2 *`), `N/step` in the day of week, and `@daily`-style names. The other fields also take the scheduler's extensions, such as `last` for the last day of the month and `5/10` for every 10 minutes from minute 5; the preview shows what they mean.
+- Across a daylight-saving change a job keeps its local time. A local time that the clocks skip runs an hour later that day, and one they repeat runs twice (once in each offset; the preview shows both). Schedule outside the changeover hour, or use UTC, for a job that must run exactly once a day.
+- Edits take effect at once, with no restart. A scheduled run is like **Run now**: it waits for other runs on its containers and never starts a second run of the same job while one is queued or running (it is skipped, and the server log says so). Runs started by the schedule show "the schedule" as who triggered them.
+- If drydock is busy or stopped at a fire time, the run starts once when drydock gets to it, as long as that is within an hour of the fire time; several missed fires of the same job still run at most once. A fire missed by more than an hour does not run. When drydock starts, it writes the first such miss of each job (if no fire within the hour ran) to the server log and to the audit log (`job.schedule_missed`); a fire that a running drydock was too busy for is only in the server log. A scheduled run that drydock's own restart interrupted is not run again; startup recovery marks it interrupted and the next fire runs as usual.
+- Only the process that holds the data directory lock runs the scheduler.
+
+**Retention.** After each backup is stored, drydock deletes the job's older archives that its retention policy does not keep. A job has one policy:
+
+- **Keep the newest backups** (the default, 7; at least 1).
+- **Keep backups for a number of days.**
+- **Daily, weekly, monthly and yearly**: the newest backup of each of that many recent days, ISO weeks (Monday to Sunday), months and years that have a backup, in the job's time zone. One backup can count for several, so daily 7 and weekly 4 usually keeps about 10.
+
+The newest backup always stays, whatever the policy. Retention only touches archives whose name carries the job's ID, so a renamed job still prunes its old archives and never another job's, and it skips any archive an open restore uses. It is skipped when a post-hook failed. An archive it cannot delete does not stop it deleting the others, but the run then fails with the backup stored; a cancel stops it before the next deletion. A job edit that sends no retention fields (an API client older than retention) keeps the stored policy. Each deletion removes the catalog entry, is written to the run log and is recorded in the audit log, and policy changes are audited like every job edit. Deleting a job deletes no archives.
+
+Runs that touch the same container or Compose project never overlap: the second one waits as `queued`, with a line in its log naming the run it waits for. A job has at most one queued or running run; **Run now** refuses another. **Cancel** takes effect within seconds and starts and unpauses the containers again (while a container is still stopping, drydock waits for the stop to finish first).
+
+Each run has a log (`/data/logs/<run id>.log`) that the run page follows live. Once an hour drydock deletes finished runs older than `DRYDOCK_RUN_HISTORY_DAYS` (90 by default) with their logs, and any log left without its run. It keeps runs that startup recovery may still act on and runs whose page lists something to put right by hand (containers it could not start again, objects a restore left behind). Each pass deletes at most 10,000 runs, so the first pass after an upgrade may take a few hours to catch up, and each pass with deletions is recorded in the audit log (`runs.prune`). The backup catalog and the audit log are not pruned. The values of the container's environment variables, of the env files read with its compose files and the job passphrase are redacted before anything is written to it, and the UI never shows environment values.
+
+## Notifications
+
+Superadmins manage notification targets under **Notifications** (with the password from the last 10 minutes, like hooks); admins see them and attach them to jobs on the job page, for successful runs, failed ones or both (failed includes runs that were cancelled or interrupted by a restart of drydock). A target is one of:
+
+- **Webhook**: drydock POSTs JSON (`title`, `message`, `type`) to an `http://` or `https://` URL. The URL's own query parameters are sent as they are; nothing in it can change the method, the headers or the payload.
+- **Email** over SMTP, with STARTTLS (port 587 by default), TLS (465) or no encryption (25), and optional login.
+- **ntfy** (ntfy.sh or your own server, with an optional access token) or **Gotify** (server and application token).
+- **Other**: the [Apprise](https://github.com/caronc/apprise/wiki) URL of a chat or push service: `discord://`, `slack://`, `msteams://`, `tgram://`, `pover://`, `pbul://`, `gchat://`, `matrix(s)://`, `mmost(s)://`, `rocket(s)://` or `signal(s)://`. Anything else is refused, including local services such as `syslog://`, Apprise relays (`apprise://`) and a URL that holds more than one service.
+
+The message names the job, the host, the run and its outcome, with the start of the run's error as the run page shows it (redacted like the run log) and a link to the run. It never contains log lines or archive contents, but the error and the job and host names do leave the system, to whatever service the target names. Each target is tried once, on its own, with a 10 second deadline (an SMTP server may take up to 15 seconds to refuse a connection); a failed notification is written to the server log and never changes the run. **Send a test message** on a target's page sends one now and shows whether the service accepted it.
+
+A target's URL holds its credentials, so drydock stores it encrypted with the secret key and never shows it again: not on its page, in the form (even after a mistake), in the audit log or in the server log. To change it, enter the destination again. Notifications are sent from the drydock container to whatever host the URL names, internal addresses included, which is why only superadmins create targets: drydock's container can reach the Docker socket proxy, and a request there acts on Docker.
+
+## Archives
+
+An archive is a tar stream inside zstd:
+
+1. `manifest.json`: what was captured, from which host, and how.
+2. `config/` and `compose/`.
+3. `volumes/`, `binds/` and `images/`.
+4. `checksums.json`: the size and SHA-256 of every member, and an HMAC-SHA256 over that list made with the secret key.
+
+A skippable zstd frame at the end holds the SHA-256 of the compressed stream, so any flipped byte is caught. Standard tools ignore that frame: `tar --zstd -xf drydock-....tar.zst` extracts an unencrypted archive. Archives signed with an older key still verify after a key rotation.
+
+## Encryption and the passphrase
+
+**Archives contain secrets.** The configuration scope stores the container's full inspect output, environment variables included, and Compose `.env` files usually hold database and API passwords. Jobs encrypt by default. Turn encryption off only if the storage itself is encrypted and private.
+
+Encrypted archives (`.tar.zst.age`) use [age](https://age-encryption.org/) with a passphrase. Drydock never stores the passphrase: it derives it from the secret key and the job's random ID, which is in every archive name. As long as you keep the secret key, encrypted archives stay readable even after losing drydock's database.
+
+To decrypt outside drydock, a superadmin opens the job and clicks **Reveal passphrase**. This needs the password from the last 10 minutes and is recorded in the audit log; no GET request ever returns a passphrase. After a key rotation the page also lists the passphrases under older keys, for older archives. Then:
+
+```sh
+age -d -o backup.tar.zst drydock-web-....tar.zst.age   # prompts for the passphrase
+tar --zstd -xf backup.tar.zst
+```
+
+## Images stored by reference
+
+The **Everything** scope saves every image by default. A job can instead store images "by reference only" when their registry still serves them. Drydock then asks the daemon to look up each of the image's registry digests (`GET /distribution/<repo>@<digest>/json`) and stores the image by reference only if the registry confirms that exact digest. Docker 29's default image store gives locally built and committed images a registry digest too, so a digest alone proves nothing. The image is saved in full whenever the lookup does not confirm it: a locally built image, a private registry the daemon cannot read without credentials, a digest the registry no longer has, or any error or timeout (10 seconds). The run log says which path each image took. A restore has to pull referenced images, so the registry must still serve them then.

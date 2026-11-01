@@ -1,6 +1,6 @@
 name: CI
 
-# Runs on git.wenberg.net's runner only; the repo has no GitHub Actions workflow.
+# Runs on a self-hosted Forgejo runner only; the repo has no GitHub Actions workflow.
 #
 # Every job drives the runner host's Docker daemon (the runner mounts its socket), which
 # also runs Forgejo. So each job has its own Compose project, and runs never overlap: the

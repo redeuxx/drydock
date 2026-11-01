@@ -50,7 +50,7 @@ OPENSSH_MAGIC = b"openssh-key-v1\x00"
 # permitopen cannot narrow it further: OpenSSH 10 applies it to socket forwards as well.
 AUTHORIZED_KEY_OPTIONS = 'restrict,port-forwarding,command="/bin/false"'
 # Only AEAD ciphers. AES-GCM comes first: in the Phase 1 spike OpenSSL's AES-GCM moved
-# volume data about 30% faster than asyncssh's chacha20-poly1305 (see README.md).
+# volume data about 30% faster than asyncssh's chacha20-poly1305 (see docs/measurements.md).
 ENCRYPTION_ALGS = (
     "aes256-gcm@openssh.com",
     "aes128-gcm@openssh.com",

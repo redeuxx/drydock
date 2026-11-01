@@ -584,7 +584,7 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 
 ## Accepted risks
 
-These are known limits of v1. The README explains each one to operators; no test can remove them.
+These are known limits of v1. The README and docs/ explain each one to operators; no test can remove them.
 
 - **Drydock is root-equivalent on every host it manages.** Anyone with a superadmin account, the secret key or code execution in the drydock container controls those hosts.
 - **The socket proxy is not a security boundary.** It narrows the Docker API, but the endpoints drydock needs (create, start, put archive) are enough to take over the host.

@@ -18,13 +18,13 @@ services:
       # Suggested when an admin adds the local host. Drydock never registers it on its own.
       DRYDOCK_LOCAL_DOCKER_URL: tcp://socket-proxy:2375
       TZ: UTC
-      # Backup storage: list each directory mounted below (see README.md, Backups).
+      # Backup storage: list each directory mounted below (see docs/backups.md, Storage).
       # DRYDOCK_LOCAL_STORAGE_ROOTS: /backups
       # Restores from a file on this server: archives put in ./restore-inbox (readable by
       # uid 10001), mounted read-only below.
       DRYDOCK_RESTORE_PATHS: /restore-inbox
       # Behind a reverse proxy, published ports deliver the proxy's connections from this
-      # project's network gateway, not 127.0.0.1. Trust that address (see README.md), or
+      # project's network gateway, not 127.0.0.1. Trust that address (see docs/configuration.md), or
       # every client shares one IP for the login limiter and the audit log.
       # FORWARDED_ALLOW_IPS: 172.18.0.1
     secrets:

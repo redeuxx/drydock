@@ -106,7 +106,7 @@ def test_sunday_at_three_across_a_dst_change() -> None:
 
 
 def test_skipped_and_repeated_local_times() -> None:
-    """As the README says: a skipped time runs an hour later, a repeated one twice."""
+    """As docs/backups.md says: a skipped time runs an hour later, a repeated one twice."""
     cron = trigger("30 2 * * *", "Europe/Berlin")
     spring = scheduler.next_fires(cron, datetime(2026, 3, 29, tzinfo=UTC), 1)
     assert [f.astimezone(UTC).strftime("%m-%d %H:%M") for f in spring] == ["03-29 01:30"]

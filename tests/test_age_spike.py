@@ -1,7 +1,7 @@
-"""Phase 1 encryption spike. The measurements and the decision are in README.md.
+"""Phase 1 encryption spike. The measurements and the decision are in docs/measurements.md.
 
 Each mode runs in its own process (tests/age_spike.py) so the RSS it reports is its own.
-DRYDOCK_AGE_SPIKE_GIB sets the streamed size (default 1; the README numbers are for 10).
+DRYDOCK_AGE_SPIKE_GIB sets the streamed size (default 1; the documented numbers are for 10).
 The age CLI mode needs DRYDOCK_TEST_AGE_DIR, an age 1.3+ release directory (age and
 age-plugin-batchpass); the tests image in compose.test.yaml provides a checksummed one.
 """

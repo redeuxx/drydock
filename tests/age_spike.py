@@ -11,7 +11,7 @@ Modes, in the decision order of PLAN.md:
   these only as bytes in, bytes out, so the whole archive must sit in memory.
 - pyrage-stream: pyrage.encrypt_io/decrypt_io, which stream between file objects but
   accept only recipients and identities, not passphrases. A random X25519 identity
-  stands in for the per-job key the README's alternative would derive.
+  stands in for the per-job key the alternative in docs/measurements.md would derive.
 - age-binary: the age CLI through pipes, with the batchpass plugin (age 1.3+) reading the
   passphrase from an inherited file descriptor, never argv or the environment.
 

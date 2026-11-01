@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Report vulnerabilities privately to the maintainer, `redeuxx` on [git.wenberg.net](https://git.wenberg.net/redeuxx), and not in a public issue. Include the drydock version (or commit), how you deploy it, and the steps to reproduce. You should get an answer within a week. A fix is released as a patch version and noted in [CHANGELOG.md](CHANGELOG.md), with credit if you want it.
+Report vulnerabilities privately through GitHub's [private vulnerability reporting](https://github.com/redeuxx/drydock/security/advisories/new) (the repository's Security tab, "Report a vulnerability"), not in a public issue. Include the drydock version (or commit), how you deploy it, and the steps to reproduce. You should get an answer within a week. A fix is released as a patch version and noted in [CHANGELOG.md](CHANGELOG.md), with credit if you want it.
 
 ## Supported versions
 
@@ -22,7 +22,7 @@ A way around any defence the threat model claims (for example, a viewer changing
 
 ## Deploying safely
 
-The README's [Read this first](README.md#read-this-first) section covers the setup wizard risk, the loopback binding and SSH tunnel, the secret key file's ownership and backup, and reverse proxy settings. In short: complete `/setup` right after the first start over an SSH tunnel, keep port 8000 on 127.0.0.1, keep the secret key apart from `/data`, and keep jobs encrypted.
+The README's [Read this first](README.md#read-this-first) and [Install](README.md#install) sections cover the setup wizard risk, the loopback binding and SSH tunnel, and the secret key file's ownership and backup; [docs/configuration.md](docs/configuration.md) covers reverse proxies. In short: complete `/setup` right after the first start over an SSH tunnel, keep port 8000 on 127.0.0.1, keep the secret key apart from `/data`, and keep jobs encrypted.
 
 ## Supply chain
 
