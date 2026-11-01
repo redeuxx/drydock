@@ -406,6 +406,10 @@ def test_new_name_bodies_hold_no_original_name_or_id() -> None:
     assert any("traefik.http.routers.web.rule" in w for w in plan.warnings)
     assert any("published ports" in w for w in plan.warnings)
     assert any("static IP" in w for w in plan.warnings)
+    # On another host nothing holds the original's ports: the copy publishes them.
+    elsewhere = build(web_archive(), replace(target(), host_name="other"), choice("new-name"))
+    assert elsewhere.containers[0].body["HostConfig"]["PortBindings"]
+    assert not any("published ports" in w for w in elsewhere.warnings)
 
 
 def test_compose_anonymous_volume_gets_its_source() -> None:
@@ -1769,6 +1773,10 @@ def test_new_name_requires_remap_skip_or_share_for_rw_binds() -> None:
     # Bind data written on another host than the one it came from is flagged too.
     plan = build(make_archive([info], host_name="nas"), target(), choice("overwrite"))
     assert "bind-write:/srv/shop/data" in {f.key for f in plan.risk}
+    # On another host a new name shares nothing with the original: the path is just flagged.
+    plan = build(make_archive([info], host_name="nas"), target(), choice("new-name"))
+    assert "bind-write:/srv/shop/data" in {f.key for f in plan.risk}
+    assert not [w for w in plan.warnings if "shared with the original" in w]
     facts = p.ArchiveFacts(setid_members=frozenset({"binds/0.tar"}))
     plan = build(make_archive([info]), target(), choice("overwrite"), facts)
     assert "bind-data:0:setid" in {f.key for f in plan.risk}

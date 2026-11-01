@@ -8,9 +8,10 @@ Modes:
 - new-name: one container restored beside the original under a new name. Its volumes and
   networks are renamed '<new>-<name>', and everything that would tie the copy to the
   original or its routing is dropped with a warning: Compose and reverse-proxy labels,
-  published host ports, static IPs, MAC addresses and explicit subnets. A host-backed
-  volume is refused where the original is (its copy would bind the same directory), and a
-  network share or a non-local driver everywhere (its copy would mount the same storage).
+  published host ports (kept on another host than the original's), static IPs, MAC
+  addresses and explicit subnets. A host-backed volume is refused where the original is
+  (its copy would bind the same directory), and a network share or a non-local driver
+  everywhere (its copy would mount the same storage).
   For a stack archive (manifest.job.target_type "stack") the new name is a new Compose
   project: containers become '<new>-<service>-<number>', Compose volumes and networks
   '<new>_<short name>', the project label is rewritten and peer names in links and aliases
@@ -909,13 +910,16 @@ def container_body(
     bind_map: Mapping[str, str],
     warnings: list[str] | None = None,
     project: str | None = None,
+    keep_ports: bool = False,
 ) -> dict[str, Any]:
     """The /containers/create body for one archived container inspect.
 
     bind_map maps each normalized archive bind source to its final host path. Warnings for
     everything dropped are appended to warnings. project is the new Compose project of a
     new-name stack restore: its Compose labels are rewritten for it, and links and aliases
-    name archive members only by their new names. Raises PlanError.
+    name archive members only by their new names. keep_ports: a new name keeps the
+    published ports (on another host than the original's, which holds them). Raises
+    PlanError.
     """
     notes = warnings if warnings is not None else []
     new_name = mode == "new-name"
@@ -1044,7 +1048,7 @@ def container_body(
     network_mode = host.get("NetworkMode") or ""
     if network_mode in names.networks:
         network_mode = host["NetworkMode"] = names.networks[network_mode]
-    if new_name and host.get("PortBindings"):
+    if new_name and not keep_ports and host.get("PortBindings"):
         host.pop("PortBindings")
         notes.append(
             f"Dropped the published ports of {name}: the original holds them. "
@@ -1354,6 +1358,7 @@ def plan_containers(draft: Draft) -> None:
                 bind_map=bind_map,
                 warnings=draft.warnings,
                 project=draft.project,
+                keep_ports=target.host_name != manifest.source.host_name,
             )
         except PlanError as exc:
             draft.errors += exc.errors
@@ -1887,7 +1892,9 @@ def plan_binds(draft: Draft) -> dict[str, str]:
         remapped = source != original
         bind_map[original] = source
         label = f"bind mount {source}"
-        if choice.mode == "new-name" and not remapped:
+        # Only the original's own host has the original's directory to share.
+        same_host = draft.target.host_name == draft.manifest.source.host_name
+        if choice.mode == "new-name" and not remapped and same_host:
             writable = mounted[original] or any(not ref.read_only for ref in entry.mounts)
             if writable and n not in choice.skip_binds | choice.share_binds:
                 draft.errors.append(
@@ -1899,7 +1906,9 @@ def plan_binds(draft: Draft) -> dict[str, str]:
         if entry.data_member is None and entry.skipped and entry.skipped != "a system path":
             plan_skipped_bind(draft, entry, source, remapped)
         has_data = (
-            entry.data_member is not None and n not in choice.skip_binds and (overwrite or remapped)
+            entry.data_member is not None
+            and n not in choice.skip_binds
+            and (overwrite or remapped or not same_host)
         )
         if has_data:
             plan_bind_data(draft, entry, source, label, remapped)

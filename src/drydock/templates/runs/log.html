@@ -4,6 +4,6 @@
 {% block content %}
 {# The run page selects #log-chunk and swaps in its contents (strip:true). #}
 <h1 class="mb-4 text-3xl font-bold">Run #{{ run.id }} log</h1>
-<pre class="rounded-box bg-base-100 p-3 text-xs whitespace-pre-wrap break-all"><span id="log-chunk">{{ log_text }}{% if active %}{{ log_poller(run.id, offset, csp_nonce) }}{% endif %}</span></pre>
+<pre class="rounded-box bg-base-100 p-3 text-xs whitespace-pre-wrap break-all"><span id="log-chunk">{{ log_text|logtimes }}{% if active %}{{ log_poller(run.id, offset, csp_nonce) }}{% endif %}</span></pre>
 <p class="mt-4"><a class="link" href="/runs/{{ run.id }}">Back to the run</a></p>
 {% endblock %}

@@ -1,6 +1,7 @@
 """Jinja2 rendering and redirects. Autoescape is always on; StrictUndefined catches typos."""
 
 import logging
+import re
 from datetime import UTC, datetime, tzinfo
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -62,6 +63,20 @@ def stamp(value: datetime | None, seconds: bool = True) -> str:
     return f"{shown} ({aware.astimezone(UTC):%H:%M} UTC)"
 
 
+LOG_STAMP_RE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) ", re.M)
+
+
+def logtimes(text: str) -> str:
+    """A run log with each line's UTC stamp (runlog.RunLog) in drydock's zone. Only the
+    zone is named, not UTC as well: that would be on every line."""
+
+    def local(found: re.Match[str]) -> str:
+        when = datetime.strptime(found.group(1), "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+        return when.astimezone(DISPLAY_ZONE).strftime("%Y-%m-%d %H:%M:%S %Z ")
+
+    return LOG_STAMP_RE.sub(local, text)
+
+
 def ago(value: datetime | None) -> str:
     """A past time in words: "just now", "5 minutes ago", "3 days ago"."""
     if value is None:
@@ -80,6 +95,7 @@ env.globals.update(Role=Role, htmx_config=HTMX_CONFIG)
 env.filters["filesize"] = filesize
 env.filters["ago"] = ago
 env.filters["stamp"] = stamp
+env.filters["logtimes"] = logtimes
 templates = Jinja2Templates(env=env)
 
 

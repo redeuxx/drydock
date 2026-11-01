@@ -847,6 +847,21 @@ def secret_values(staged: Staged) -> list[str]:
     return values
 
 
+def public_values(staged: Staged) -> list[str]:
+    """Names the restore shows anyway (see RunLog.add_public): the job, its project, the
+    source host and each container's name, image, project and service."""
+    manifest = staged.manifest
+    values = [manifest.job.name, manifest.job.project or "", manifest.source.host_name]
+    for entry in manifest.containers:
+        values += [
+            entry.name,
+            entry.image,
+            entry.compose_project or "",
+            entry.compose_service or "",
+        ]
+    return [value for value in values if value]
+
+
 # INNER TAR GUARD
 
 

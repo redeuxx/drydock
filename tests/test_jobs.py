@@ -45,6 +45,17 @@ def test_run_log_redacts_secrets_and_escapes_control_characters(tmp_path: Path) 
     assert oct((tmp_path / "logs").stat().st_mode & 0o777) == "0o700"
     # Short values (flags, ports) are not treated as secrets.
     assert log.redact("FLAG is 1") == "FLAG is 1"
+    # Nor is a value that is part of a name drydock shows anyway (POSTGRES_DB=<project>).
+    log.add_secrets(["retrak", "s3cret-pass"])
+    info = {
+        "Name": "/retrak-db-1",
+        "Config": {"Image": "postgres:18", "Labels": {"com.docker.compose.project": "retrak"}},
+    }
+    log.add_public(runlog.public_names(info))
+    assert runlog.public_names(info) == ["retrak-db-1", "postgres:18", "retrak"]
+    assert (
+        log.redact("Pausing retrak-db-1 with s3cret-pass") == "Pausing retrak-db-1 with [redacted]"
+    )
 
 
 def test_read_log_returns_complete_lines_only(tmp_path: Path) -> None:
@@ -783,25 +794,25 @@ async def test_a_jobs_targets_run_one_after_another(admin: Browser, fake_docker:
         (0, "container worker"),
         (0, "container cache"),
     ]
-    # Cancelling a queued run lets nothing after it jump ahead of the running one.
-    await admin.post(f"/runs/{second}/cancel")
-    await admin.app.state.dispatcher.wait(second)
-    await anyio.sleep(0.3)
-    assert run_status(admin, third) == "queued"
-    # The job stays busy until its last target is done.
-    assert (await admin.post(f"/jobs/{job_id}/run")).status_code == 409
-    await admin.post(f"/runs/{first}/cancel")
-    await wait_until(lambda: run_status(admin, third) == "running", 5, "third run starts")
-    assert (await admin.post(f"/jobs/{job_id}/run")).status_code == 409
+    # Cancelling the last target leaves the ones before it be.
     await admin.post(f"/runs/{third}/cancel")
     await admin.app.state.dispatcher.wait(third)
+    assert run_status(admin, third) == "cancelled"
+    assert (run_status(admin, first), run_status(admin, second)) == ("running", "queued")
+    # The job stays busy until its last target is done.
+    assert (await admin.post(f"/jobs/{job_id}/run")).status_code == 409
+    # Cancelling a run cancels the job's later targets too.
+    await admin.post(f"/runs/{first}/cancel")
+    for run_id in (first, second):
+        await admin.app.state.dispatcher.wait(run_id)
+        assert run_status(admin, run_id) == "cancelled"
     assert "container cache" in (await admin.get("/runs")).text
     again = await start_run(admin, job_id)
     await wait_until(lambda: run_status(admin, again) == "running", 5, "the job runs again")
     await admin.post(f"/runs/{again}/cancel")
-    for run_id in (again + 1, again + 2):
-        await admin.post(f"/runs/{run_id}/cancel")
+    for run_id in (again, again + 1, again + 2):
         await admin.app.state.dispatcher.wait(run_id)
+        assert run_status(admin, run_id) == "cancelled"
 
 
 async def test_the_job_list_shows_the_worst_run_of_the_newest_sequence(admin: Browser) -> None:

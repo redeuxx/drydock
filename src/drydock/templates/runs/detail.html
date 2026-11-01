@@ -10,6 +10,7 @@
   {% if (active or awaiting) and auth.user.role >= (Role.admin if restore else Role.operator) %}
   {% if awaiting %}{% set question = "Discard this restore? Its verified data is removed." %}
   {% elif restore %}{% set question = "Cancel this restore? Drydock rolls back what it changed so far." %}
+  {% elif run.target_label %}{% set question = "Cancel this run and the job's targets after it? Drydock starts any container it stopped again." %}
   {% else %}{% set question = "Cancel this run? Drydock starts any container it stopped again." %}{% endif %}
   <form method="post" action="/runs/{{ run.id }}/cancel" hx-post="/runs/{{ run.id }}/cancel" hx-nonce="{{ csp_nonce }}" hx-confirm="{{ question }}" class="ml-auto">
     <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
@@ -59,7 +60,7 @@
   <div class="card-body">
     <h2 id="log-heading" class="card-title">Log{% if active %} <span class="text-sm font-normal opacity-70">(updates every 2 seconds)</span>{% endif %}</h2>
     {% if truncated %}<p class="text-sm opacity-70">The log is longer than a megabyte; only its last megabyte is shown.</p>{% endif %}
-    <pre id="run-log" role="log" class="max-h-[32rem] overflow-auto rounded-box bg-base-200 p-3 text-xs whitespace-pre-wrap break-all" tabindex="0" aria-labelledby="log-heading">{{ log_text }}{% if active %}{{ log_poller(run.id, offset, csp_nonce) }}{% endif %}</pre>
+    <pre id="run-log" role="log" class="max-h-[32rem] overflow-auto rounded-box bg-base-200 p-3 text-xs whitespace-pre-wrap break-all" tabindex="0" aria-labelledby="log-heading">{{ log_text|logtimes }}{% if active %}{{ log_poller(run.id, offset, csp_nonce) }}{% endif %}</pre>
   </div>
 </section>
 {% endblock %}

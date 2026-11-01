@@ -196,6 +196,12 @@ def test_times_show_in_drydocks_zone_with_utc_beside_them() -> None:
         assert templating.stamp(moment.replace(tzinfo=None), seconds=False) == (
             "2026-11-01 10:30 CST (16:30 UTC)"
         )
+        # Run log lines: each stamp at the start of a line, nothing else.
+        log = "2026-11-01 16:30:18 Started at 2026-11-01 16:30:18.\n2026-11-01 16:31:00 Done.\n"
+        assert templating.logtimes(log) == (
+            "2026-11-01 10:30:18 CST Started at 2026-11-01 16:30:18.\n"
+            "2026-11-01 10:31:00 CST Done.\n"
+        )
         templating.set_zone("UTC")
         assert templating.stamp(moment) == "2026-11-01 16:30:18 UTC"
     finally:

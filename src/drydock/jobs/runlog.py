@@ -33,12 +33,27 @@ def env_values(env: Iterable[str] | None) -> list[str]:
     return [item.split("=", 1)[1] for item in env or [] if "=" in item]
 
 
+def public_names(info: dict) -> list[str]:
+    """What a container inspect names that drydock shows anyway: the container's name, its
+    image and its Compose project and service."""
+    config = info.get("Config") or {}
+    labels = config.get("Labels") or {}
+    found = (
+        str(info.get("Name") or "").lstrip("/"),
+        config.get("Image"),
+        labels.get("com.docker.compose.project"),
+        labels.get("com.docker.compose.service"),
+    )
+    return [value for value in found if isinstance(value, str) and value]
+
+
 class RunLog:
     """Appends redacted, timestamped lines. Safe to call from any thread."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
         self._secrets: set[str] = set()
+        self._public: set[str] = set()
         self._lock = threading.Lock()
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
 
@@ -46,14 +61,23 @@ class RunLog:
         with self._lock:
             self._secrets.update(v for v in values if len(v) >= MIN_SECRET_LEN)
 
+    def add_public(self, values: Iterable[str]) -> None:
+        """Names the UI shows anyway (job, host, project, container and image names). An
+        environment value that is part of one, like POSTGRES_DB=<project>, is no secret,
+        and masking it would garble every line that names the project."""
+        with self._lock:
+            self._public.update(v for v in values if v)
+
     def secrets(self) -> list[str]:
-        """The registered secrets, longest first (the order redact replaces them in).
+        """The registered secrets, longest first (the order redact replaces them in), less
+        those that are part of a public name.
 
         Hook output (jobs/hooks.OutputLog) searches for every one of them before it cuts
         a long output line, so a secret never straddles two lines.
         """
         with self._lock:
-            return sorted(self._secrets, key=len, reverse=True)
+            kept = (s for s in self._secrets if not any(s in name for name in self._public))
+            return sorted(kept, key=len, reverse=True)
 
     def redact(self, text: str) -> str:
         for secret in self.secrets():

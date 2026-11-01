@@ -18,7 +18,7 @@
   <div class="card-body">
     <h2 id="log-heading" class="card-title">{% if run.status == "verifying" %}2. Verify{% else %}Restoring{% endif %} <span class="text-sm font-normal opacity-70">(updates every 2 seconds)</span></h2>
     {% if run.status == "verifying" %}<p class="text-sm">Drydock reads the whole archive and checks every member before anything else happens. No host is contacted until it has passed. This page shows the plan form when it is done.</p>{% endif %}
-    <pre id="run-log" role="log" class="max-h-[32rem] overflow-auto rounded-box bg-base-200 p-3 text-xs whitespace-pre-wrap break-all" tabindex="0" aria-labelledby="log-heading">{{ log_text }}{{ log_poller(run.id, offset, csp_nonce) }}</pre>
+    <pre id="run-log" role="log" class="max-h-[32rem] overflow-auto rounded-box bg-base-200 p-3 text-xs whitespace-pre-wrap break-all" tabindex="0" aria-labelledby="log-heading">{{ log_text|logtimes }}{{ log_poller(run.id, offset, csp_nonce) }}</pre>
   </div>
 </section>
 

@@ -139,7 +139,7 @@ from drydock.hosts.inventory import (
 from drydock.hosts.manager import HostManager, HostUnavailable
 from drydock.jobs import hooks, mounts, retention
 from drydock.jobs import targets as job_targets
-from drydock.jobs.runlog import RunLog, env_values, log_dir, log_path
+from drydock.jobs.runlog import RunLog, env_values, log_dir, log_path, public_names
 from drydock.models import Backup, Host, Job, Run, StorageTarget, Upload, utcnow
 from drydock.models import Hook as HookRow
 from drydock.restore import apply as restore_apply
@@ -687,13 +687,21 @@ class Dispatcher:
         return True
 
     def cancel(self, run_id: int) -> bool:
-        """Asks a run to stop. Call on the event loop. False if it is not active."""
+        """Asks a run to stop, and the job's later targets with it (one job has one chain
+        at a time, its runs in ID order). Call on the event loop. False if it is not
+        active."""
         active = self._active.get(run_id)
         if active is None:
             return False
-        active.cancel.set()
-        if not active.started and active.task is not None:
-            active.task.cancel()  # still waiting for a container lock or resolving targets
+        later = [
+            other
+            for other in self._active.values()
+            if active.job_id is not None and other.job_id == active.job_id and other.run_id > run_id
+        ]
+        for each in (active, *later):
+            each.cancel.set()
+            if not each.started and each.task is not None:
+                each.task.cancel()  # still waiting for a container lock or resolving targets
         return True
 
     async def wait(self, run_id: int) -> None:
@@ -999,6 +1007,7 @@ class Dispatcher:
                 run_log(f"Waiting for run {waiting[-1][0]}, the job's previous target, to finish.")
                 await asyncio.wait({task for _, task in waiting})
             plan = await run_blocking(self._load_plan, run_id, job_id)
+            run_log.add_public([plan.job.name, plan.host.name, *plan.targets, plan.project or ""])
             if plan.job.encrypted:
                 run_log.add_secrets(self._crypto.job_passphrases(uuid.UUID(plan.job.uuid)))
             subject = (
@@ -1274,6 +1283,7 @@ class Dispatcher:
                     f"Container {ref} does not exist on host {plan.host.name}."
                 )
             run_log.add_secrets(env_values(info["Config"].get("Env")))
+            run_log.add_public(public_names(info))
             state = info.get("State") or {}
             running = bool(state.get("Running"))  # also true while paused
             paused = bool(state.get("Paused"))
@@ -1629,6 +1639,7 @@ class Dispatcher:
                 ),
             )
             run_log.add_secrets(restore_verify.secret_values(staged))
+            run_log.add_public(restore_verify.public_values(staged))
             await run_blocking(self._verified, run_id, staged.verification, run_log)
         except BaseException as exc:
             await self._ended(active, run_log, exc)
@@ -1660,6 +1671,7 @@ class Dispatcher:
                 self._crypto,
             )
             run_log.add_secrets(restore_verify.secret_values(staged))
+            run_log.add_public([*restore_verify.public_values(staged), choice.new_name])
             verified = staged.verification
             if (verified.storage_target_id, verified.archive) != (
                 source.storage_target_id,
@@ -2837,6 +2849,7 @@ def restart(
         with contextlib.suppress(docker.errors.DockerException, requests.RequestException):
             info = api.inspect_container(target.id)
             run_log.add_secrets(env_values((info.get("Config") or {}).get("Env")))
+            run_log.add_public(public_names(info))
         try:
             api.start(target.id)
         except (docker.errors.DockerException, requests.RequestException) as exc:
@@ -2865,6 +2878,7 @@ def unpause(api, targets: list[Target], run_log: RunLog) -> list[str]:
             info = None  # try the unpause anyway; its error is logged
         if isinstance(info, dict):
             run_log.add_secrets(env_values((info.get("Config") or {}).get("Env")))
+            run_log.add_public(public_names(info))
             if not (info.get("State") or {}).get("Paused"):
                 say(f"Container {target.name} is not paused any more.")
                 continue
