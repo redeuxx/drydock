@@ -563,7 +563,8 @@ async def test_the_job_list_and_page_say_whether_a_job_is_enabled(admin: Browser
     assert '<span class="badge badge-success">enabled</span> Runs on its schedule' in on_page
     off_page = (await admin.get(f"/jobs/{off}")).text
     assert '<span class="badge badge-error">disabled</span> No scheduled runs' in off_page
-    assert off_page.index('name="enabled"') < off_page.index('name="name"'), "Enabled comes first"
+    off_edit = (await admin.get(f"/jobs/{off}/edit")).text
+    assert off_edit.index('name="enabled"') < off_edit.index('name="name"'), "Enabled comes first"
 
 
 # SKIPPED MOUNTS
@@ -583,7 +584,8 @@ async def test_skipped_mounts_are_saved_shown_and_kept_by_older_clients(admin: B
     assert skips(admin, job_id) == ["bind:/opt/imgcache", "volume:redis_data"]
     page = (await admin.get(f"/jobs/{job_id}")).text
     assert "bind mount /opt/imgcache</span>, <span" in page
-    assert 'name="skip_mounts" value="bind:/opt/imgcache" checked' in page
+    edit = (await admin.get(f"/jobs/{job_id}/edit")).text
+    assert 'name="skip_mounts" value="bind:/opt/imgcache" checked' in edit
     (details,) = admin.sql(
         "SELECT details FROM audit_events WHERE action = 'job.create' ORDER BY id DESC LIMIT 1"
     )[0]
@@ -629,3 +631,77 @@ async def test_mount_options_need_a_host_and_target(admin: Browser) -> None:
     assert "Choose the host and the target first." in response.text
     # A ticked key stays listed, so saving never drops it silently.
     assert 'value="bind:/opt/c" checked' in response.text
+
+
+@pytest.mark.parametrize(
+    ("fields", "shown"),
+    [
+        ({"retention_mode": "last", "keep_last": "3"}, "keeps the newest 3"),
+        ({"retention_mode": "age", "max_age_days": "1"}, "keeps 1 day"),
+        (
+            {"retention_mode": "gfs", "daily": "7", "weekly": "4", "monthly": "0", "yearly": "1"},
+            "keeps 7 daily, 4 weekly, 1 yearly",
+        ),
+    ],
+)
+async def test_the_job_list_shows_the_retention(admin: Browser, fields: dict, shown: str) -> None:
+    await add_job(admin, "kept", **fields)
+    assert shown in (await admin.get("/jobs")).text
+
+
+# DASHBOARD, BELL AND ABOUT
+
+
+async def test_the_dashboard_shows_failures_recent_runs_and_hosts(admin: Browser) -> None:
+    job_id = await add_job(admin, "nightly")
+    admin.sql(
+        "INSERT INTO runs (job_id, kind, status, stopped_containers_json, error, created_at,"
+        " finished_at) VALUES (?, 'backup', 'failed', '[]', 'The host is unreachable.',"
+        " datetime('now'), datetime('now'))",
+        (job_id,),
+    )
+    page = (await admin.get("/")).text
+    assert "Needs attention" in page and "The host is unreachable." in page
+    assert "Recent backups" in page and "nightly" in page and "Hosts" in page
+
+
+async def test_the_bell_counts_unread_runs_until_marked_read(admin: Browser) -> None:
+    job_id = await add_job(admin, "belled")
+    admin.sql(
+        "INSERT INTO runs (job_id, kind, status, stopped_containers_json, created_at,"
+        " finished_at) VALUES (?, 'backup', 'done', '[]', datetime('now', '+1 minute'),"
+        " datetime('now', '+1 minute'))",
+        (job_id,),
+    )
+    page = (await admin.get("/jobs")).text
+    assert "Notifications, 1 unread" in page and "Backup of belled: done" in page
+    response = await admin.post("/feed/read", {"next": "/jobs"})
+    assert response.status_code == 303 and response.headers["location"] == "/jobs"
+    admin.sql("UPDATE users SET feed_read_at = datetime('now', '+2 minutes')")
+    page = (await admin.get("/jobs")).text
+    assert "unread" not in page.split("</header>")[0]
+    assert "Backup of belled: done" in (await admin.get("/feed")).text
+
+
+async def test_viewers_see_backups_but_not_restores_or_alerts(admin: Browser) -> None:
+    admin.sql(
+        "INSERT INTO runs (kind, status, stopped_containers_json, created_at, finished_at)"
+        " VALUES ('restore', 'done', '[]', datetime('now'), datetime('now'))"
+    )
+    admin.sql(
+        "INSERT INTO audit_events (ts, action, target, outcome, details)"
+        " VALUES (datetime('now'), 'host.hostkey_mismatch', 'host:3', 'failure', '{}')"
+    )
+    feed = (await admin.get("/feed")).text
+    assert "Restore #" in feed and "Host key mismatch on host 3" in feed
+    await add_user(admin, "watcher", "viewer")
+    await admin.login("watcher")
+    feed = (await admin.get("/feed")).text
+    assert "Restore #" not in feed and "Host key mismatch" not in feed
+
+
+async def test_the_about_page_names_the_version_and_the_stack(admin: Browser) -> None:
+    page = (await admin.get("/about")).text
+    assert '<dd class="font-mono">0.1</dd>' in page
+    assert "https://pypi.org/project/fastapi/" in page and "rclone" in page
+    assert "https://github.com/rclone/rclone/releases/tag/v1.75.2" in page

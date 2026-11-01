@@ -374,7 +374,7 @@ async def test_attaching_targets_to_jobs(admin: Browser, sink: SimpleNamespace) 
     page = await admin.get(f"/jobs/{job_id}")
     assert "ops (failure)" in page.text
     box = f'name="notify_failure" value="{target_id}" aria-label="Notify ops on failure" checked'
-    assert box in page.text
+    assert box in (await admin.get(f"/jobs/{job_id}/edit")).text
     base = job_form(admin)
     # A client that sends no notification fields keeps them.
     assert (await admin.post(f"/jobs/{job_id}", base)).status_code == 303
@@ -587,7 +587,7 @@ def test_migration_0008_creates_and_drops_the_tables(tmp_path: Path) -> None:
             conn.commit()
         alembic_to(engine, "head")
         with closing(sqlite3.connect(path)) as conn:
-            assert version(conn) == [("0011",)]
+            assert version(conn) == [("0012",)]
             assert "kind IN ('webhook', 'email', 'ntfy', 'gotify', 'url')" in (
                 table_sql(conn, "notification_targets") or ""
             )

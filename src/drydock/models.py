@@ -6,6 +6,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -50,6 +51,8 @@ class User(Base):
     role: Mapped[int]
     disabled: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    # The bell's notifications up to here are read (drydock.feed).
+    feed_read_at: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
 
 
 class UserSession(Base):
@@ -70,6 +73,8 @@ class AuditEvent(Base):
     """Append-only: SQLite triggers reject UPDATE and DELETE."""
 
     __tablename__ = "audit_events"
+    # The bell reads a few actions, newest first (drydock.feed).
+    __table_args__ = (Index("ix_audit_events_action_ts", "action", "ts"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     ts: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
@@ -314,7 +319,7 @@ class Run(Base):
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     started_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
-    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime, index=True)
     # JSON: the restore source, choices and summary. Never create bodies, env values or
     # compose file contents.
     plan: Mapped[str | None] = mapped_column(Text)

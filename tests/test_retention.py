@@ -285,7 +285,7 @@ async def test_job_form_stores_validates_and_audits_the_policy(admin: Browser) -
     assert json.loads(stored) == {"mode": "gfs", "daily": 7, "weekly": 4, "monthly": 0, "yearly": 1}
     page = await admin.get(f"/jobs/{gfs_id}")
     assert "The newest backup of each of the last 7 days, 4 weeks, 1 year." in page.text
-    assert 'name="weekly" value="4"' in page.text
+    assert 'name="weekly" value="4"' in (await admin.get(f"/jobs/{gfs_id}/edit")).text
 
     response = await admin.post(
         f"/jobs/{job_id}",
@@ -337,7 +337,8 @@ async def test_job_form_stores_validates_and_audits_the_policy(admin: Browser) -
     admin.sql("UPDATE jobs SET retention = 'nonsense' WHERE id = ?", (job_id,))
     page = await admin.get(f"/jobs/{job_id}")
     assert page.status_code == 200 and "Not valid: nothing is deleted" in page.text
-    assert "The stored retention policy is not valid" in page.text
+    edit = await admin.get(f"/jobs/{job_id}/edit")
+    assert "The stored retention policy is not valid" in edit.text
 
 
 # THE DISPATCHER

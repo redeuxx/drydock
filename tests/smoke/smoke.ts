@@ -445,7 +445,14 @@ check(
 );
 
 await page.goto(jobPath);
-check(!(await page.content()).includes("Treat this like the secret key"), "the job page never shows the passphrase");
+check(
+  !(await page.content()).includes("Treat this like the secret key") &&
+    (await page.locator(`a[href='${jobPath}/edit']`).count()) === 1 &&
+    (await page.locator("form[action$='/passphrase']").count()) === 0,
+  "the job page shows the summary and an Edit link, never the passphrase",
+);
+const editPath = `${jobPath}/edit`;
+await page.goto(editPath);
 await page.click(`form[action='${jobPath}/passphrase'] button[type=submit]`);
 await page.locator("#main [role=status], #main #reauth-password").first().waitFor({ timeout: 5000 });
 if ((await page.locator("#reauth-password").count()) > 0) {
@@ -458,7 +465,7 @@ const revealed = await page
   .waitFor({ timeout: 5000 })
   .then(() => true)
   .catch(() => false);
-check(revealed && path(page) === jobPath, "the superadmin reveals the passphrase in place");
+check(revealed && path(page) === editPath, "the superadmin reveals the passphrase in place");
 
 // A HOOK IN THE LIBRARY (NOT ATTACHED, SO THE RUN ABOVE STAYS AS IT WAS)
 
@@ -529,7 +536,8 @@ check(path(page) === "/login", "an htmx request without a session redirects to /
 // LOGOUT THROUGH HTMX
 
 await login();
-await Promise.all([page.waitForURL(`${BASE}/login`), page.click("header button[type=submit]")]);
+await page.click("#user-menu summary");
+await Promise.all([page.waitForURL(`${BASE}/login`), page.click("#user-menu form[action='/logout'] button")]);
 check(path(page) === "/login", "htmx logout lands on /login");
 await page.goto("/account");
 check(path(page) === "/login", "the session is gone after logout");

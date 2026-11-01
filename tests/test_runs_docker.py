@@ -493,6 +493,25 @@ async def test_container_and_stack_jobs_never_overlap(
         assert targets.running(first) and targets.running(second)
 
 
+# CONTAINERS RUN AGAIN BEFORE THE IMAGES
+
+
+@pytest.mark.parametrize("mode", ["pause", "stop"])
+async def test_containers_run_again_before_the_images_are_saved(
+    settings: Settings, targets: Targets, mode: str
+) -> None:
+    box = targets.container(volume=targets.volume())
+    async with running(settings) as browser:
+        app = await setup_app(browser)
+        run_id = await app.run(await app.add_job(box.name, "all", consistency_mode=mode))
+        assert app.status(run_id) == "done", app.log(run_id)
+        log = app.log(run_id)
+    again = "Unpaused container" if mode == "pause" else "Started container"
+    assert log.index(again) < log.index("Saving image") < log.index("Archive written")
+    assert log.index("Saving volume") < log.index(again)
+    assert targets.running(box)
+
+
 # A REAL DRYDOCK PROCESS, KILLED OR STOPPED MID-BACKUP
 
 

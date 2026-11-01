@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}About{% endblock %}
+{% block content %}
+<h1 class="mb-4 text-3xl font-bold">About drydock</h1>
+<section class="card mb-4 bg-base-100 shadow-sm">
+  <div class="card-body">
+    <dl class="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-1">
+      <dt class="opacity-70">Project</dt><dd>Drydock: backup and restore for Docker containers, volumes and Compose stacks</dd>
+      <dt class="opacity-70">Version</dt><dd class="font-mono">{{ version }}</dd>
+      <dt class="opacity-70">Source</dt><dd><a class="link" href="{{ project_url }}" rel="noopener noreferrer">{{ project_url }}</a></dd>
+      <dt class="opacity-70">Helper image</dt><dd class="font-mono text-sm break-all">{{ helper_image }}</dd>
+    </dl>
+  </div>
+</section>
+<section class="card bg-base-100 shadow-sm">
+  <div class="card-body">
+    <h2 class="card-title">Stack</h2>
+    <div class="overflow-x-auto">
+      <table class="table">
+        <thead><tr><th scope="col">Component</th><th scope="col">Version</th><th scope="col">Used for</th></tr></thead>
+        <tbody>
+          {% for item in components %}
+          <tr>
+            <td>{{ item.name }}</td>
+            <td class="font-mono">{% if item.url %}<a class="link" href="{{ item.url }}" rel="noopener noreferrer">{{ item.version }}</a>{% else %}{{ item.version or "unknown" }}{% endif %}</td>
+            <td class="text-sm opacity-80">{{ item.role }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+{% endblock %}

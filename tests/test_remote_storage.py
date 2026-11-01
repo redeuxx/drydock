@@ -434,7 +434,9 @@ async def test_defaults_and_locations(admin: Browser) -> None:
 async def test_advanced_options_sit_in_details(
     admin: Browser, kind: str, basic: str, advanced: str
 ) -> None:
-    page = (await admin.get(f"/storage/new?type={kind}")).text
+    page = (await admin.get(f"/storage/new?type={kind}")).text.partition("<main")[
+        2
+    ]  # not the menus
     before, details, _ = page.partition("<details")
     assert details and f'name="{basic}"' in before and f'name="{advanced}"' not in before
     assert f'name="{advanced}"' in page.partition("<details")[2].partition("</details>")[0]
@@ -551,7 +553,7 @@ def test_migration_0009_widens_the_storage_kinds(tmp_path: Path) -> None:
             conn.commit()
         alembic_to(engine, "head")
         with closing(sqlite3.connect(path)) as conn:
-            assert version(conn) == [("0011",)]
+            assert version(conn) == [("0012",)]
             assert "AUTOINCREMENT" in (table_sql(conn, "storage_targets") or "")
             for kind in ("sftp", "smb", "webdav", "drive"):
                 conn.execute(insert, (kind, kind))

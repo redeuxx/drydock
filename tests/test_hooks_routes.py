@@ -201,8 +201,8 @@ async def test_job_targeted_by_id_attaches_a_hook_with_that_id(admin: Browser) -
     response = await admin.post("/jobs", by_id | {"pre_hooks": "by-name"})
     assert response.status_code == 422 and "Hook by-name runs in web" in response.text
     job_id = new_id(await admin.post("/jobs", by_id | {"pre_hooks": "by-id"}))
-    page = await admin.get(f"/jobs/{job_id}")
-    # The job page lists only the hooks it can attach as it is.
+    page = await admin.get(f"/jobs/{job_id}/edit")
+    # The edit page lists only the hooks it can attach as it is.
     assert 'by-id</span> <span class="opacity-70">in 3f2a9c1b7d0e' in page.text
     assert "by-name</span>" not in page.text
 
@@ -241,7 +241,8 @@ async def test_admin_can_attach_existing_hooks_and_the_diff_is_audited(admin: Br
         }
     ]
     page = await admin.get(f"/jobs/{job_id}")
-    assert f'href="/hooks/{second}"' in page.text and "h2\nh1</textarea>" in page.text
+    edit = await admin.get(f"/jobs/{job_id}/edit")
+    assert f'href="/hooks/{second}"' in page.text and "h2\nh1</textarea>" in edit.text
 
 
 async def test_unknown_duplicate_and_too_many_hooks_are_refused(admin: Browser) -> None:
@@ -274,7 +275,7 @@ async def test_hook_names_split_only_on_line_feeds(admin: Browser) -> None:
     job_id = new_id(await admin.post("/jobs", form))
     assert json.loads(job_row(admin, job_id)[5]) == hook_ids
     # The edit form carries the names back, so saving it unchanged keeps them.
-    page = await admin.get(f"/jobs/{job_id}")
+    page = await admin.get(f"/jobs/{job_id}/edit")
     assert "a\u2028b" in page.text
     response = await admin.post(
         f"/jobs/{job_id}", job_form(host_id, storage_id, pre_hooks="\n".join(names))
@@ -337,7 +338,7 @@ async def test_viewers_see_hook_names_but_never_argv(admin: Browser) -> None:
     )
     stack = {"target_type": "stack", "target": "app", "pre_hooks": "dbdump"}
     job_id = new_id(await admin.post("/jobs", job_form(host_id, storage_id, **stack)))
-    page = await admin.get(f"/jobs/{job_id}")
+    page = await admin.get(f"/jobs/{job_id}/edit")
     assert "pgservice" in page.text  # admins see where an attachable hook runs
     await add_user(admin, "viewer", "viewer")
     await admin.login("viewer")
@@ -386,7 +387,8 @@ async def test_live_mode_warning_on_form_and_detail(admin: Browser) -> None:
     assert alert.search(page.text)
     page = await admin.get(f"/jobs/{stop}")
     assert not alert.search(page.text)
-    assert job_routes.LIVE_WARNING in page.text  # the form's note, always shown
+    edit = await admin.get(f"/jobs/{stop}/edit")
+    assert job_routes.LIVE_WARNING in edit.text  # the form's note, always shown
 
     # frontend/app.ts focuses the first role="alert" in #main after a swap, so on a live
     # job's page the standing warning must not take focus from what a submit produced.

@@ -16,7 +16,7 @@
           <a class="link" href="/jobs/{{ job.id }}">{{ job.name }}</a>
           {% if job.encrypted %}<span class="badge badge-soft badge-success ml-1">encrypted</span>{% endif %}
         </td>
-        <td class="whitespace-nowrap">{% if job.enabled %}<span class="badge badge-soft badge-success">enabled</span>{% else %}<span class="badge badge-soft badge-error">disabled</span>{% endif %}<br><span class="text-xs opacity-70">{{ schedule_label(job.cron) }}</span></td>
+        <td class="whitespace-nowrap">{% if job.enabled %}<span class="badge badge-soft badge-success">enabled</span>{% else %}<span class="badge badge-soft badge-error">disabled</span>{% endif %}<br><span class="text-xs opacity-70">{{ schedule_label(job.cron) }}</span><br><span class="text-xs opacity-70">{{ retention_short(job.retention) }}</span></td>
         <td class="text-sm break-all"><span class="font-mono">{{ job.target }}</span>{% if job.target_type == "stack" %} <span class="badge badge-soft badge-info badge-sm">stack</span>{% endif %}<br><span class="text-xs opacity-70">on {{ host_name or "?" }}</span></td>
         <td>{{ scope_labels.get(job.scope, job.scope) }}<br><span class="text-xs opacity-70">{{ job.consistency_mode }} mode</span></td>
         <td>{{ storage_name or "?" }}</td>

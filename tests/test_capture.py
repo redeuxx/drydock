@@ -384,6 +384,27 @@ def test_a_skipped_volume_is_mounted_but_not_saved(local_target, tmp_path: Path)
 
 
 @needs_docker
+def test_after_data_runs_between_the_data_and_the_images(local_target, tmp_path: Path) -> None:
+    handle, target = local_target
+    container = target["container"]
+    env = make_env(handle, tmp_path, Crypto((os.urandom(32),)), "local")
+    lines, log = collect()
+    capture.capture(
+        env,
+        job("all"),
+        [container.id],
+        tmp_path / "order.tar.zst",
+        cancel=threading.Event(),
+        log=log,
+        after_data=lambda: lines.append("AFTER DATA"),
+    )
+    marker = lines.index("AFTER DATA")
+    assert any(line.startswith("Saving volume") for line in lines[:marker])
+    assert any(line.startswith("Saving image") for line in lines[marker:])
+    assert not any(line.startswith("Saving image") for line in lines[:marker])
+
+
+@needs_docker
 def test_encrypted_capture(local_target, tmp_path: Path) -> None:
     if not (AGE_DIR / "age").is_file():
         pytest.skip("needs the age CLI")

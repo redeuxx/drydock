@@ -17,7 +17,8 @@ is the data of a bind of /, a pseudo-filesystem or Docker's own storage.
 
 Everything that needs no stopped container (inspect, compose files, registry lookups)
 happens first; before_data (the dispatcher runs pre-hooks and stops or pauses the
-containers there) runs just before the first data member, so containers stay down only
+containers there) runs just before the first data member, and after_data (where they
+run again) right after the last one, before the images, so containers stay down only
 while their data is read.
 
 Volume and bind data come from get_archive on one created (never started) helper that
@@ -644,6 +645,7 @@ def capture(
     log: Log,
     created_at: datetime | None = None,
     before_data: Callable[[], None] | None = None,
+    after_data: Callable[[], None] | None = None,
     on_abort: Callable[[], None] | None = None,
     secrets: Callable[[list[str]], None] | None = None,
 ) -> tuple[m.Manifest, ArchiveResult]:
@@ -651,7 +653,9 @@ def capture(
     docker.errors.DockerException or requests.RequestException on failure; nothing is
     left behind in that case (no output file, no staged member, no helper).
 
-    before_data runs once everything else is known, just before the data is read.
+    before_data runs once everything else is known, just before the data is read, and
+    after_data once the last volume and bind mount are written, before the images (which
+    need nothing stopped or paused).
     secrets receives the values of captured env files, so the caller can redact them.
 
     On failure on_abort runs after the output is gone but before the helper is removed:
@@ -723,7 +727,7 @@ def capture(
                 cancel=cancel,
             ) as writer:
                 writer.add_manifest(manifest)
-                write_members(writer, env, plan, manifest, images, box, log)
+                write_members(writer, env, plan, manifest, images, box, log, after_data)
                 result = writer.close()
         except BaseException:
             if on_abort is not None:
@@ -741,6 +745,7 @@ def write_members(
     images: list[tuple[m.ImageEntry, dict[str, Any] | None]],
     box,
     log: Log,
+    after_data: Callable[[], None] | None = None,
 ) -> None:
     by_id = {c["Id"]: c for c in plan.containers}
     for entry in manifest.containers:
@@ -768,6 +773,10 @@ def write_members(
             path = f"/b{entry.n}/." if entry.kind == "dir" else f"/b{entry.n}"
             with contextlib.closing(archive_stream(box, path)) as chunks:
                 writer.add_stream(entry.data_member, chunks)
+    if after_data is not None:
+        # The data is read: images never change while a container runs, so the containers
+        # stopped or paused for the data need not wait for the images.
+        after_data()
     api = env.handle.client.api
     for entry, _ in images:
         if entry.data_member:

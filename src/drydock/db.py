@@ -50,6 +50,9 @@ def make_sessionmaker(engine: Engine) -> sessionmaker[Session]:
 
 def get_db(request: Request) -> Iterator[Session]:
     with request.app.state.sessionmaker() as session:
+        # templating.render reads the bell through it: a second session would wait for
+        # this one's write lock (every transaction is BEGIN IMMEDIATE).
+        request.state.db = session
         yield session
 
 

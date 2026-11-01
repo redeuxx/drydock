@@ -12,6 +12,7 @@ The passphrase is derived from the secret key and the job's UUID and never store
 the POST below ever puts it in a response; no GET does.
 """
 
+import functools
 import json
 import re
 import uuid
@@ -55,6 +56,7 @@ from drydock.storage.rclone import KINDS as REMOTE_KINDS
 from drydock.templating import render, see_other
 
 router = APIRouter(prefix="/jobs")
+EDIT = "jobs/edit.html"  # the job's edit page; job_page renders detail.html otherwise
 
 Viewer = Annotated[Auth, Depends(require_role(Role.viewer))]
 Operator = Annotated[Auth, Depends(require_role(Role.operator))]
@@ -581,10 +583,15 @@ def dispatcher(request: Request) -> Dispatcher:
     return request.app.state.dispatcher
 
 
+@functools.cache
+def sorted_zones() -> tuple[str, ...]:
+    return tuple(sorted(known_zones()))
+
+
 def choices(request: Request, db: Session) -> dict[str, Any]:
     return {
         "default_tz": request.app.state.settings.tz,
-        "zones": sorted(known_zones()),
+        "zones": sorted_zones(),
         "schedule_presets": SCHEDULE_PRESETS,
         "mount_label": mounts.label,
         "notification_targets": db.scalars(
@@ -611,9 +618,13 @@ def job_page(
     auth: Auth,
     job: Job,
     status_code: int = 200,
+    template: str = "jobs/detail.html",
     **context: Any,
 ) -> Response:
-    context.setdefault("form", JobForm.from_job(job, db))
+    """The job page (summary and recent runs), or with template="jobs/edit.html" its edit
+    page (the form, the passphrase and deleting the job)."""
+    if template == EDIT:
+        context.setdefault("form", JobForm.from_job(job, db))
     context.setdefault("skip_mounts", sorted(mounts.stored(job.skip_mounts)))
     context.setdefault("errors", [])
     context.setdefault("error", None)
@@ -623,7 +634,7 @@ def job_page(
     ).all()
     return render(
         request,
-        "jobs/detail.html",
+        template,
         status_code,
         auth=auth,
         job=job,
@@ -636,7 +647,9 @@ def job_page(
         schedule_text=describe_schedule(job, request.app.state.settings.tz),
         notifications=notification_names(db, job.id),
         # Only admins see hook containers; viewers and operators see names.
-        available_hooks=available(db, job) if auth.user.role >= Role.admin else [],
+        available_hooks=available(db, job)
+        if template == EDIT and auth.user.role >= Role.admin
+        else [],
         **choices(request, db),
         **context,
     )
@@ -666,6 +679,7 @@ def list_jobs(request: Request, auth: Viewer, db: Session = Depends(get_db)) -> 
         rows=rows,
         scope_labels=SCOPE_LABELS,
         schedule_label=schedule_label,
+        retention_short=retention.short,
     )
 
 
@@ -879,6 +893,11 @@ def create_job(
 # VIEW AND EDIT
 
 
+@router.get("/{job_id}/edit")
+def edit_job(request: Request, job_id: int, auth: Admin, db: Session = Depends(get_db)) -> Response:
+    return job_page(request, db, auth, get_job(db, job_id), template=EDIT)
+
+
 @router.get("/{job_id}")
 def view_job(
     request: Request, job_id: int, auth: Viewer, db: Session = Depends(get_db)
@@ -955,7 +974,7 @@ def update_job(
     errors, pre_ids, post_ids = validate(db, form, request.app.state.settings.tz, job.id)
     if errors:
         db.rollback()
-        return job_page(request, db, auth, job, 422, form=form, errors=errors)
+        return job_page(request, db, auth, job, 422, EDIT, form=form, errors=errors)
     before = summary(job, db)
     apply(job, form, pre_ids, post_ids)
     if form.notifications_sent:
@@ -988,7 +1007,7 @@ def delete_job(
     if active:
         db.rollback()
         error = "This job has a run in progress. Cancel it or wait for it to finish."
-        return job_page(request, db, auth, job, 409, error=error)
+        return job_page(request, db, auth, job, 409, EDIT, error=error)
     audit.record(
         db,
         actor=auth.user.username,
@@ -1059,4 +1078,4 @@ def reveal_passphrase(
         details={"name": job.name, "uuid": job.uuid, "candidates": len(passphrases)},
     )
     db.commit()
-    return job_page(request, db, auth, job, passphrases=passphrases)
+    return job_page(request, db, auth, job, template=EDIT, passphrases=passphrases)

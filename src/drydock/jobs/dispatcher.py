@@ -1374,10 +1374,13 @@ class Dispatcher:
                     "crash-consistent at best."
                 )
 
+        hooks_ran = False
+
         def after_hooks() -> None:
-            nonlocal post_error
-            if not entered or not post:
+            nonlocal post_error, hooks_ran
+            if hooks_ran or not entered or not post:
                 return
+            hooks_ran = True
             # Paused containers keep their health; restarted ones may need a moment.
             restarted = {t.id for t in stopped if t.name not in restart_failed}
             waiting = list(dict.fromkeys(cid for _, cid, _ in post if cid in restarted))
@@ -1402,6 +1405,14 @@ class Dispatcher:
                 log.exception("Run %d: a post-hook failed", plan.run_id)
                 post_error = "Unexpected error in drydock. See the drydock server log."
 
+        def resume() -> None:
+            """The containers run again and the post-hooks run: once the data is read,
+            or when the capture ends first. Both steps run at most once."""
+            try:
+                start_again()
+            finally:
+                after_hooks()
+
         try:
             try:
                 env = capture.CaptureEnv(
@@ -1421,15 +1432,13 @@ class Dispatcher:
                     log=run_log,
                     created_at=created_at,
                     before_data=before_data,
+                    after_data=resume,  # the images follow; they need nothing held
                     on_abort=start_again,  # before the helper is removed, which can be slow
                     secrets=run_log.add_secrets,
                 )
             finally:
                 # If the capture failed too, its exception wins; the post error is logged.
-                try:
-                    start_again()
-                finally:
-                    after_hooks()
+                resume()
             self._check_storage(plan)
             if isinstance(storage, LocalStorage):
                 stored = storage.publish(partial, name)

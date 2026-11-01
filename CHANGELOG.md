@@ -25,6 +25,12 @@ The first release.
 - New name, overwrite, data only or images only, onto any managed host. Every archive is fully verified before any host is contacted, the plan is shown and confirmed, and a failed restore rolls back what it created.
 - Host-path denylist, flagged risky container settings that need a superadmin, and startup recovery for interrupted restores.
 
+### Interface
+- A dashboard with failed backups, recent runs, the next scheduled runs, hosts and storage.
+- A notification bell with unread markers for finished runs and, for admins, missed schedules, host key mismatches and storage that needs reconnecting.
+- An About page with the version and the stack's components, each linked to its release.
+- Job pages show the summary and recent runs; editing has a page of its own.
+
 ### Security
 - Roles (viewer, operator, admin, superadmin), Argon2id passwords, sessions with idle and absolute limits, re-authentication for sensitive actions, CSRF protection, a strict CSP and an audit log.
 - Secrets in the database are encrypted with the secret key, which supports rotation.

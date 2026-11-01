@@ -171,11 +171,13 @@ async def test_error_pages_keep_the_logged_in_header(admin: Browser) -> None:
     for path, status in (("/audit", 403), ("/users/999", 403)):
         response = await admin.get(path)
         assert response.status_code == status
-        assert "Log out" in response.text and ">vic<" in response.text, path
+        header = response.text.split("</header>")[0]
+        assert "Log out" in header and "vic" in header.split('id="user-menu"')[1], path
     await admin.login("admin")
     response = await admin.get("/users/999")
     assert response.status_code == 404
-    assert "Log out" in response.text and ">admin<" in response.text
+    header = response.text.split("</header>")[0]
+    assert "Log out" in header and "admin" in header.split('id="user-menu"')[1]
     admin.client.cookies.clear()
     response = await admin.get("/nope")
     assert response.status_code == 404

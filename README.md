@@ -60,10 +60,12 @@ Port 8000 is open to every network that can reach the host; Docker's published p
 
 ## First backup
 
-1. **Hosts > Add local host** (the Docker URL is prefilled), or **Add SSH host** for a remote one: its address and a user that can use Docker, then scan its host key and enter that user's password once so drydock can install its own key ([hosts](docs/hosts.md)).
-2. **Storage > Add storage**: a directory mounted into the container, or a remote target ([backups](docs/backups.md#storage)).
-3. **Jobs > Add job**: pick the container or Compose project, the scope, the mode and optionally a schedule, retention and notifications ([backups](docs/backups.md#jobs-and-runs)).
-4. **Run now**, then **Restore** to bring an archive back ([restore](docs/restore.md)).
+1. **Manage > Hosts > Add local host** (the Docker URL is prefilled), or **Add SSH host** for a remote one: its address and a user that can use Docker, then scan its host key and enter that user's password once so drydock can install its own key ([hosts](docs/hosts.md)).
+2. **Manage > Storage > Add storage**: a directory mounted into the container, or a remote target ([backups](docs/backups.md#storage)).
+3. **Manage > Jobs > Add job**: pick the container or Compose project, the scope, the mode and optionally a schedule, retention and notifications ([backups](docs/backups.md#jobs-and-runs)).
+4. **Run now** on the job's page, then **Manage > Restore** to bring an archive back ([restore](docs/restore.md)).
+
+The dashboard shows failed backups, recent runs, the next scheduled runs and the hosts' state; the bell beside your name lists finished runs (and, for admins, missed schedules, host key mismatches and storage that needs reconnecting). Your name opens your account, the admin pages and **About**, which shows the version and every component of the stack.
 
 ## Documentation
 

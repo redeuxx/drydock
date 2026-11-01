@@ -80,6 +80,20 @@ class Policy:
         return f"{kept}. The newest backup always stays."
 
 
+def short(text: str | None) -> str:
+    """A stored policy in a few words, for the job list."""
+    try:
+        policy = parse(text)
+    except PolicyError:
+        return "retention not valid"
+    if policy.mode == "last":
+        return f"keeps the newest {policy.keep_last}"
+    if policy.mode == "age":
+        return f"keeps {plural(policy.max_age_days, 'day')}"
+    spans = [f"{getattr(policy, f)} {f}" for f in GFS_UNITS if getattr(policy, f)]
+    return "keeps " + ", ".join(spans)
+
+
 def plural(count: int, unit: str) -> str:
     return f"{count} {unit}" if count == 1 else f"{count} {unit}s"
 

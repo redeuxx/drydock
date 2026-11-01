@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% from "_macros.html" import alerts, submit %}
+{% from "jobs/_fields.html" import job_fields %}
+{% block title %}Edit job {{ job.name }}{% endblock %}
+{% block content %}
+<div class="mb-4 flex flex-wrap items-center gap-3">
+  <h1 class="text-3xl font-bold break-all">Edit job {{ job.name }}</h1>
+  <a href="/jobs/{{ job.id }}" class="btn btn-ghost ml-auto">Back to the job</a>
+</div>
+{{ alerts([error] if error else []) }}
+<div class="grid gap-4">
+  {% if auth.user.role >= Role.admin %}
+  <section class="card bg-base-100 shadow-sm" aria-labelledby="edit-heading">
+    <div class="card-body">
+      <h2 id="edit-heading" class="card-title">Edit job</h2>
+      {{ alerts(errors) }}
+      {% if retention_invalid %}
+      <div role="note" class="alert alert-warning alert-soft">
+        <span>The stored retention policy is not valid, so retention deletes nothing. The form shows the default policy; saving stores the policy it shows.</span>
+      </div>
+      {% endif %}
+      <form method="post" action="/jobs/{{ job.id }}" hx-post="/jobs/{{ job.id }}" hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-1">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        {{ job_fields(form, "edit", hosts, targets, scope_labels, mode_labels, target_labels, available_hooks, live_warning, retention_labels, default_tz, csp_nonce, notification_targets, zones, schedule_presets, mount_label) }}
+        <div class="mt-2">{{ submit("Save") }}</div>
+      </form>
+    </div>
+  </section>
+  {% endif %}
+
+  {% if auth.user.role >= Role.superadmin %}
+  <section class="card bg-base-100 shadow-sm" aria-labelledby="passphrase-heading">
+    <div class="card-body">
+      <h2 id="passphrase-heading" class="card-title">Archive passphrase</h2>
+      <p class="text-sm">Encrypted archives of this job decrypt outside drydock with <code>age -d</code> and this passphrase. It is derived from the secret key and the job ID, so it is never stored. Revealing it needs your password from the last 10 minutes and is recorded in the audit log.</p>
+      {% if passphrases %}
+      <div role="status" class="alert alert-warning alert-soft" data-focus-result>
+        <div class="w-full">
+          <p>Treat this like the secret key. Anyone with it can read this job's archives.</p>
+          <dl class="mt-2 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1">
+            {% for passphrase in passphrases %}
+            <dt>{{ "Current key" if loop.first else "Older key " ~ loop.index0 }}</dt>
+            <dd><code class="break-all select-all">{{ passphrase }}</code></dd>
+            {% endfor %}
+          </dl>
+          {% if passphrases|length > 1 %}<p class="mt-2 text-sm">Archives made before a key rotation use an older key's passphrase.</p>{% endif %}
+        </div>
+      </div>
+      {% else %}
+      <form method="post" action="/jobs/{{ job.id }}/passphrase" hx-post="/jobs/{{ job.id }}/passphrase" hx-nonce="{{ csp_nonce }}" class="card-actions">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        {{ submit("Reveal passphrase", "btn-warning btn-outline") }}
+      </form>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% if auth.user.role >= Role.admin %}
+  <section class="card border border-error/40 bg-base-100 shadow-sm" aria-labelledby="danger-heading">
+    <div class="card-body">
+      <h2 id="danger-heading" class="card-title">Delete job</h2>
+      <p class="text-sm">Its runs and catalog entries stay. Archives already stored are not deleted, and the secret key still decrypts them.</p>
+      <form method="post" action="/jobs/{{ job.id }}/delete" hx-post="/jobs/{{ job.id }}/delete" hx-nonce="{{ csp_nonce }}" hx-confirm="Delete this job?" class="card-actions">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        {{ submit("Delete job", "btn-error") }}
+      </form>
+    </div>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

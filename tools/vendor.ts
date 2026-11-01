@@ -1,6 +1,6 @@
 // Copies the pinned htmx build into the Python package's static directory.
 // npm ci has already checked every file against the integrity hashes in package-lock.json.
-import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -23,3 +23,13 @@ for (const file of files) {
   copyFileSync(join(source, "dist", file), destination);
 }
 console.log(`vendored htmx ${manifest.version}: ${files.join(", ")}`);
+
+// The about page lists these; nothing else reads the file.
+const versions: Record<string, string> = {};
+for (const name of ["htmx.org", "tailwindcss", "daisyui"]) {
+  const pkg = JSON.parse(readFileSync(join(root, "node_modules", name, "package.json"), "utf8")) as {
+    version: string;
+  };
+  versions[name] = pkg.version;
+}
+writeFileSync(join(root, "src", "drydock", "static", "vendor", "versions.json"), JSON.stringify(versions));

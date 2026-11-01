@@ -18,26 +18,93 @@
   {%- if auth %} hx-nonce="{{ csp_nonce }}" hx-headers:inherited='{{ {"X-CSRF-Token": auth.csrf_token}|tojson }}' hx-target:inherited="#main" hx-select:inherited="#main" hx-swap:inherited="outerHTML" hx-disable:inherited="findAll button"{% endif %}>
   <a href="#main" class="btn btn-sm btn-primary sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2">Skip to content</a>
   <header class="navbar flex-wrap gap-2 border-b border-base-300 bg-base-100 px-4">
-    <div class="flex-1">
-      <a href="/" class="text-xl font-bold tracking-tight">Drydock</a>
+    <div class="flex flex-1 flex-wrap items-center gap-2">
+      <a href="/" class="mr-2 text-xl font-bold tracking-tight">Drydock</a>
+      {% if auth %}
+      {% set current = request.url.path %}
+      {% set manage = [("/jobs", "Jobs", Role.viewer), ("/runs", "Runs", Role.viewer), ("/backups", "Backups", Role.viewer), ("/restore", "Restore", Role.admin), ("/hooks", "Hooks", Role.admin), ("/hosts", "Hosts", Role.admin), ("/storage", "Storage", Role.admin)] %}
+      {% set ns = namespace(manage_active=false) %}
+      {% for href, label, minimum in manage %}{% if current == href or current.startswith(href + "/") %}{% set ns.manage_active = true %}{% endif %}{% endfor %}
+      <nav aria-label="Main">
+        <ul class="menu menu-horizontal gap-1 p-0">
+          <li><a href="/"{% if current == "/" %} class="menu-active" aria-current="page"{% endif %}>Dashboard</a></li>
+          <li>
+            <details data-menu>
+              <summary{% if ns.manage_active %} class="menu-active"{% endif %}>Manage</summary>
+              <ul class="z-30 w-44 rounded-box bg-base-100 p-2 shadow">
+                {% for href, label, minimum in manage if auth.user.role >= minimum %}
+                {% set active = current == href or current.startswith(href + "/") %}
+                <li><a href="{{ href }}"{% if active %} class="menu-active" aria-current="page"{% endif %}>{{ label }}</a></li>
+                {% endfor %}
+              </ul>
+            </details>
+          </li>
+        </ul>
+      </nav>
+      {% endif %}
     </div>
     {% if auth %}
-    {% set current = request.url.path %}
-    {% set links = [("/", "Home", Role.viewer), ("/jobs", "Jobs", Role.viewer), ("/hooks", "Hooks", Role.admin),("/runs", "Runs", Role.viewer), ("/backups", "Backups", Role.viewer), ("/restore", "Restore", Role.admin), ("/hosts", "Hosts", Role.admin), ("/storage", "Storage", Role.admin), ("/notifications", "Notifications", Role.admin), ("/audit", "Audit log", Role.admin), ("/users", "Users", Role.superadmin), ("/account", "Account", Role.viewer)] %}
-    <nav aria-label="Main">
-      <ul class="menu menu-horizontal gap-1 p-0">
-        {% for href, label, minimum in links if auth.user.role >= minimum %}
-        {% set active = current == href or (href != "/" and current.startswith(href + "/")) %}
-        <li><a href="{{ href }}"{% if active %} class="menu-active" aria-current="page"{% endif %}>{{ label }}</a></li>
-        {% endfor %}
-      </ul>
-    </nav>
-    <div class="flex items-center gap-2">
-      <span class="hidden text-sm opacity-70 sm:inline">{{ auth.user.username }}</span>
-      <form method="post" action="/logout" hx-post="/logout" hx-nonce="{{ csp_nonce }}">
-        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
-        <button type="submit" class="btn btn-ghost btn-sm">Log out</button>
-      </form>
+    <div class="flex items-center gap-1">
+      <details id="user-menu" class="dropdown dropdown-end" data-menu>
+        <summary class="btn btn-ghost btn-sm gap-1">
+          {{ auth.user.username }}
+          <svg aria-hidden="true" class="size-4 opacity-70" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z" clip-rule="evenodd"/></svg>
+        </summary>
+        <ul class="menu dropdown-content z-30 mt-2 w-56 rounded-box bg-base-100 p-2 shadow">
+          <li><a href="/account"{% if current.startswith("/account") %} class="menu-active" aria-current="page"{% endif %}>Account</a></li>
+          {% if auth.user.role >= Role.superadmin %}<li><a href="/users"{% if current.startswith("/users") %} class="menu-active" aria-current="page"{% endif %}>Users</a></li>{% endif %}
+          {% if auth.user.role >= Role.admin %}
+          <li><a href="/notifications"{% if current.startswith("/notifications") %} class="menu-active" aria-current="page"{% endif %}>Notification targets</a></li>
+          <li><a href="/audit"{% if current.startswith("/audit") %} class="menu-active" aria-current="page"{% endif %}>Audit log</a></li>
+          {% endif %}
+          <li><a href="/about"{% if current == "/about" %} class="menu-active" aria-current="page"{% endif %}>About</a></li>
+          <li>
+            <form method="post" action="/logout" hx-post="/logout" hx-nonce="{{ csp_nonce }}" class="p-0">
+              <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+              <button type="submit" class="w-full px-3 py-1.5 text-left">Log out</button>
+            </form>
+          </li>
+        </ul>
+      </details>
+      {% if feed %}
+      <details id="bell" class="dropdown dropdown-end" data-menu>
+        <summary class="btn btn-ghost btn-sm btn-circle" aria-label="Notifications{% if feed.unread %}, {{ feed.unread }} unread{% endif %}">
+          <span class="indicator">
+            <svg aria-hidden="true" class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0"/></svg>
+            {% if feed.unread %}<span class="badge badge-xs badge-warning indicator-item">{{ feed.unread if feed.unread <= feed.max else "99+" }}</span>{% endif %}
+          </span>
+        </summary>
+        <div class="dropdown-content z-30 mt-2 w-80 rounded-box border border-base-300 bg-base-100 shadow">
+          <div class="flex items-center justify-between border-b border-base-300 px-4 py-2">
+            <span class="text-xs font-semibold tracking-wide uppercase opacity-70">Notifications</span>
+            {% if feed.unread %}
+            <form method="post" action="/feed/read" hx-post="/feed/read" hx-nonce="{{ csp_nonce }}">
+              <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+              <input type="hidden" name="next" value="{{ current if request.method == 'GET' else '/feed' }}">
+              <button type="submit" class="link link-hover text-xs">Mark all read</button>
+            </form>
+            {% endif %}
+          </div>
+          <ul class="max-h-96 overflow-y-auto">
+            {% for item in feed["items"] %}
+            <li>
+              <a href="{{ item.link }}" class="flex items-start gap-3 px-4 py-2 hover:bg-base-200">
+                <span aria-hidden="true" class="mt-1.5 size-2.5 shrink-0 rounded-full {{ {'success': 'bg-success', 'warning': 'bg-warning', 'error': 'bg-error'}[item.level] }}"></span>
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate text-sm">{{ item.title }}</span>
+                  <span class="block text-xs opacity-60">{{ item.when|ago }}</span>
+                </span>
+                {% if item.unread %}<span class="mt-1.5 size-2 shrink-0 rounded-full bg-warning"><span class="sr-only">unread</span></span>{% endif %}
+              </a>
+            </li>
+            {% else %}
+            <li class="px-4 py-3 text-sm opacity-70">Nothing yet.</li>
+            {% endfor %}
+          </ul>
+          <a href="/feed" class="link link-hover block border-t border-base-300 px-4 py-2 text-center text-sm">See all</a>
+        </div>
+      </details>
+      {% endif %}
     </div>
     {% endif %}
   </header>

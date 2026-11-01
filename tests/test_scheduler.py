@@ -148,7 +148,7 @@ async def test_form_preview_and_rebuild_without_restart(admin: Browser) -> None:
     for path in ("/jobs/new",):
         assert 'name="schedule" value="1"' in (await admin.get(path)).text
     job_id = await add_job(admin, "weekly", **scheduled("0 3 * * 0", "America/New_York"), **base)
-    assert 'name="schedule" value="1"' in (await admin.get(f"/jobs/{job_id}")).text
+    assert 'name="schedule" value="1"' in (await admin.get(f"/jobs/{job_id}/edit")).text
     assert admin.sql("SELECT cron, timezone FROM jobs WHERE id = ?", (job_id,)) == [
         ("0 3 * * 0", "America/New_York")
     ]
@@ -459,14 +459,14 @@ async def test_a_preset_sets_the_schedule_and_custom_uses_the_typed_cron(admin: 
     assert stored_schedule(admin, custom)[0] == "15 4 * * mon"
     manual = await add_job(admin, "manual", schedule="1", cron_preset="manual", cron="15 4 * * mon")
     assert stored_schedule(admin, manual)[0] is None
-    page = (await admin.get(f"/jobs/{preset}")).text
+    page = (await admin.get(f"/jobs/{preset}/edit")).text
     assert '<option value="0 */6 * * *" selected>Every 6 hours</option>' in page
 
 
 async def test_clients_without_a_preset_keep_the_typed_cron(admin: Browser) -> None:
     job_id = await add_job(admin, "script", schedule="1", cron="30 1 * * *")
     assert stored_schedule(admin, job_id)[0] == "30 1 * * *"
-    page = (await admin.get(f"/jobs/{job_id}")).text
+    page = (await admin.get(f"/jobs/{job_id}/edit")).text
     assert '<option value="custom" selected>' in page
 
 
@@ -491,5 +491,5 @@ async def test_the_preview_follows_the_preset(admin: Browser) -> None:
 async def test_a_zone_no_longer_listed_stays_selected(admin: Browser) -> None:
     job_id = await add_job(admin, "old-zone", schedule="1", cron_preset="0 3 * * *")
     admin.sql("UPDATE jobs SET timezone = 'Mars/Olympus' WHERE id = ?", (job_id,))
-    page = (await admin.get(f"/jobs/{job_id}")).text
+    page = (await admin.get(f"/jobs/{job_id}/edit")).text
     assert '<option value="Mars/Olympus" selected>Mars/Olympus (no longer listed)</option>' in page

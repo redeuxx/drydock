@@ -159,6 +159,17 @@ document.addEventListener("htmx:before:request", (event) => {
   }
 });
 
+// MENUS
+//
+// The header's dropdowns are <details data-menu> elements: they open without script, and
+// this closes an open one when a click lands outside it.
+
+document.addEventListener("click", (event) => {
+  for (const menu of document.querySelectorAll<HTMLDetailsElement>("details[data-menu][open]")) {
+    if (!(event.target instanceof Node) || !menu.contains(event.target)) menu.open = false;
+  }
+});
+
 // SCHEDULE PRESETS
 //
 // The job form's schedule list (data-cron-preset) fills the cron field, so switching to

@@ -1,16 +1,86 @@
 {% extends "base.html" %}
-{% from "_macros.html" import role_badge %}
-{% block title %}Home{% endblock %}
+{% from "_macros.html" import run_status_badge, host_status_badge with context %}
+{% block title %}Dashboard{% endblock %}
 {% block content %}
-<h1 class="mb-4 text-3xl font-bold">Drydock</h1>
-<section class="card bg-base-100 shadow-sm">
-  <div class="card-body">
-    <p>Signed in as <strong>{{ auth.user.username }}</strong> {{ role_badge(auth.user.role) }}</p>
-    <ul class="list-disc pl-5">
-      <li><a class="link" href="/jobs">Backup jobs</a>, their <a class="link" href="/runs">runs</a> and the <a class="link" href="/backups">backups</a> they made</li>
-      {% if auth.user.role >= Role.admin %}<li><a class="link" href="/restore">Restore</a> an archive from storage</li>{% endif %}
-      {% if auth.user.role >= Role.admin %}<li><a class="link" href="/hosts">Docker hosts</a> and <a class="link" href="/storage">storage</a></li>{% endif %}
-    </ul>
-  </div>
-</section>
+<h1 class="mb-4 text-3xl font-bold">Dashboard</h1>
+<div class="mb-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+  <a href="/jobs" class="card bg-base-100 shadow-sm hover:shadow">
+    <div class="card-body p-4"><p class="text-sm opacity-70">Jobs</p><p class="text-2xl font-bold">{{ jobs|length }}</p><p class="text-xs opacity-70">{{ enabled }} enabled</p></div>
+  </a>
+  <a href="/runs" class="card bg-base-100 shadow-sm hover:shadow">
+    <div class="card-body p-4"><p class="text-sm opacity-70">Running or queued</p><p class="text-2xl font-bold">{{ active }}</p><p class="text-xs opacity-70">runs now</p></div>
+  </a>
+  <a href="/runs" class="card bg-base-100 shadow-sm hover:shadow">
+    <div class="card-body p-4"><p class="text-sm opacity-70">Failed, last {{ failure_days }} days</p><p class="text-2xl font-bold{% if failed_count %} text-error{% endif %}">{{ failed_count }}</p><p class="text-xs opacity-70">backups that failed or were interrupted</p></div>
+  </a>
+  <a href="/backups" class="card bg-base-100 shadow-sm hover:shadow">
+    <div class="card-body p-4"><p class="text-sm opacity-70">Backups</p><p class="text-2xl font-bold">{{ backup_count }}</p><p class="text-xs opacity-70">{{ backup_bytes|filesize or "0 bytes" }} in the catalog</p></div>
+  </a>
+</div>
+<div class="grid gap-4 md:grid-cols-2">
+  {% if failed %}
+  <section class="card border border-error/40 bg-base-100 shadow-sm md:col-span-2" aria-labelledby="failed-heading">
+    <div class="card-body">
+      <h2 id="failed-heading" class="card-title">Needs attention</h2>
+      <ul class="flex flex-col gap-1 text-sm">
+        {% for run in failed %}
+        <li><a class="link" href="/runs/{{ run.id }}">Run #{{ run.id }}</a> of {{ names.get(run.job_id, "a deleted job") }} {{ run_status_badge(run.status) }} <span class="opacity-70">{{ run.created_at|ago }}{% if run.error %}: {{ run.error|truncate(120) }}{% endif %}</span></li>
+        {% endfor %}
+      </ul>
+    </div>
+  </section>
+  {% endif %}
+  <section class="card bg-base-100 shadow-sm" aria-labelledby="recent-heading">
+    <div class="card-body">
+      <h2 id="recent-heading" class="card-title">Recent backups</h2>
+      {% if recent %}
+      <ul class="flex flex-col gap-1 text-sm">
+        {% for run in recent %}
+        <li class="flex flex-wrap items-center gap-2"><a class="link" href="/runs/{{ run.id }}">#{{ run.id }}</a> {{ names.get(run.job_id, "a deleted job") }} {{ run_status_badge(run.status) }} <span class="opacity-70">{{ run.created_at|ago }}{% if run.size %}, {{ run.size|filesize }}{% endif %}</span></li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="text-sm opacity-70">No backup has run yet.{% if auth.user.role >= Role.admin %} <a class="link" href="/jobs/new">Add a job</a>.{% endif %}</p>
+      {% endif %}
+    </div>
+  </section>
+  <section class="card bg-base-100 shadow-sm" aria-labelledby="next-heading">
+    <div class="card-body">
+      <h2 id="next-heading" class="card-title">Next scheduled runs</h2>
+      {% if upcoming %}
+      <ul class="flex flex-col gap-1 text-sm">
+        {% for when, job in upcoming %}
+        <li><a class="link" href="/jobs/{{ job.id }}">{{ job.name }}</a> <span class="opacity-70">{{ when.strftime("%a %Y-%m-%d %H:%M %Z") }}</span></li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="text-sm opacity-70">No enabled job has a schedule.</p>
+      {% endif %}
+    </div>
+  </section>
+  {% if hosts %}
+  <section class="card bg-base-100 shadow-sm" aria-labelledby="hosts-heading">
+    <div class="card-body">
+      <h2 id="hosts-heading" class="card-title">Hosts</h2>
+      <ul class="flex flex-col gap-1 text-sm">
+        {% for host, status in hosts %}
+        <li class="flex items-center gap-2"><a class="link" href="/hosts/{{ host.id }}">{{ host.name }}</a> {{ host_status_badge(status) }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </section>
+  {% endif %}
+  {% if storage %}
+  <section class="card bg-base-100 shadow-sm" aria-labelledby="storage-heading">
+    <div class="card-body">
+      <h2 id="storage-heading" class="card-title">Storage</h2>
+      <ul class="flex flex-col gap-1 text-sm">
+        {% for target in storage %}
+        <li><a class="link" href="/storage/{{ target.id }}">{{ target.name }}</a> <span class="opacity-70">{{ target.kind }}{% if not target.enabled %}, disabled{% endif %}</span></li>
+        {% endfor %}
+      </ul>
+    </div>
+  </section>
+  {% endif %}
+</div>
 {% endblock %}

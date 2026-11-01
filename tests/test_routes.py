@@ -90,6 +90,7 @@ EXPECTED_MIN_ROLE = [
     ({"GET"}, re.compile(r"^/jobs/cron-preview$"), Role.admin),
     ({"GET"}, re.compile(r"^/jobs/target-options$"), Role.admin),
     ({"GET"}, re.compile(r"^/jobs/mount-options$"), Role.admin),
+    ({"GET"}, re.compile(r"^/jobs/[^/]+/edit$"), Role.admin),
     ({"POST"}, re.compile(r"^/jobs"), Role.admin),
     ({"GET", "POST"}, re.compile(r".*"), Role.viewer),
 ]
@@ -102,6 +103,9 @@ INVENTORY = {
     ("POST", "/account/password"),
     ("GET", "/audit"),
     ("GET", "/healthz"),
+    ("GET", "/feed"),
+    ("POST", "/feed/read"),
+    ("GET", "/about"),
     ("GET", "/hosts"),
     ("POST", "/hosts"),
     ("GET", "/hosts/new"),
@@ -158,6 +162,7 @@ INVENTORY = {
     ("GET", "/jobs/target-options"),
     ("GET", "/jobs/mount-options"),
     ("GET", "/jobs/{job_id}"),
+    ("GET", "/jobs/{job_id}/edit"),
     ("POST", "/jobs/{job_id}"),
     ("POST", "/jobs/{job_id}/delete"),
     ("POST", "/jobs/{job_id}/passphrase"),
@@ -518,10 +523,15 @@ async def test_role_matrix(admin: Browser, role: str, allowed: set[str]) -> None
         expected = 200 if section_allowed or path.endswith("/containers") else 403
         assert response.status_code == expected, f"{role} GET {path}"
         if path == f"/jobs/{ids['job_id']}":
-            # Run now for operators, editing for admins, the passphrase for superadmins.
+            # Run now for operators and an Edit link for admins; the passphrase is on the
+            # edit page, for superadmins.
             assert ('/run"' in response.text) == (role != "viewer"), role
-            assert ("Edit job" in response.text) == (role in ("admin", "superadmin")), role
-            assert ('/passphrase"' in response.text) == (role == "superadmin"), role
+            edit_link = f'href="/jobs/{ids["job_id"]}/edit"'
+            assert (edit_link in response.text) == (role in ("admin", "superadmin")), role
+            assert '/passphrase"' not in response.text, role
+            if role in ("admin", "superadmin"):
+                edit = await admin.get(f"/jobs/{ids['job_id']}/edit")
+                assert ('/passphrase"' in edit.text) == (role == "superadmin"), role
             # Every role sees the hook's name; only admins get a link to its page.
             assert "dump" in response.text, role
             hook_link = f'href="/hooks/{ids["hook_id"]}"' in response.text
@@ -607,6 +617,7 @@ def test_redirect_targets_stay_on_drydock(value: str | None, expected: str) -> N
 # placeholders in form values are filled the same way ({storage_root} is the allowed root).
 AUDITED_SUCCESS = [
     ("/setup", None, "setup.complete", 303),
+    ("/feed/read", {"next": "/jobs"}, "feed.read", 303),
     ("/users", {"username": "victim", "password": PASSWORD, "role": "viewer"}, "user.create", 303),
     ("/users/{user_id}/role", {"role": "operator"}, "user.role", 303),
     ("/users/{user_id}/disabled", {"disabled": "1"}, "user.disable", 303),
