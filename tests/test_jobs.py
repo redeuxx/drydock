@@ -518,3 +518,34 @@ async def test_a_run_waits_for_the_startup_reap_of_its_host(
         assert events[:2] == ["reaped", "opened"]
         await browser.post(f"/runs/{run_id}/cancel")
         await browser.app.state.dispatcher.wait(run_id)
+
+
+# TARGET SUGGESTIONS
+
+
+async def test_the_target_field_loads_suggestions_for_the_chosen_host(admin: Browser) -> None:
+    page = (await admin.get("/jobs/new")).text
+    assert 'list="target-choices"' in page
+    assert 'hx-get="/jobs/target-options"' in page
+    empty = await admin.get("/jobs/target-options")  # no host chosen yet
+    assert empty.status_code == 200
+    assert '<datalist id="target-choices">' in empty.text and "<option" not in empty.text
+
+
+async def test_an_unreachable_host_still_lets_the_target_be_typed(admin: Browser) -> None:
+    host_id = add_host(admin)  # tcp://127.0.0.1:9: nothing listens
+    response = await admin.get(
+        "/jobs/target-options", params={"host_id": host_id, "target_type": "stack"}
+    )
+    assert response.status_code == 200
+    assert "Could not list the host" in response.text and "Type the name instead." in response.text
+
+
+@pytest.mark.parametrize(
+    "params",
+    [{"host_id": "\u00b2"}, {"host_id": "9" * 20}, {"host_id": "1", "target_type": "stacks"}],
+)
+async def test_odd_target_option_requests_list_nothing(admin: Browser, params: dict) -> None:
+    add_host(admin)
+    response = await admin.get("/jobs/target-options", params=params)
+    assert response.status_code == 200 and "<option" not in response.text

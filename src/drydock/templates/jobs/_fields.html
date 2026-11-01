@@ -1,5 +1,5 @@
 {# Job settings, shared by the add form and the job page. #}
-{% macro job_fields(form, prefix, hosts, targets, scope_labels, mode_labels, target_labels, available_hooks, live_warning, retention_labels, default_tz, csp_nonce, notification_targets) -%}
+{% macro job_fields(form, prefix, hosts, targets, scope_labels, mode_labels, target_labels, available_hooks, live_warning, retention_labels, default_tz, csp_nonce, notification_targets, zones, schedule_presets) -%}
 <div class="fieldset">
   <label class="fieldset-legend" for="{{ prefix }}-name">Name</label>
   <input id="{{ prefix }}-name" class="input w-full" name="name" value="{{ form.name }}" autocomplete="off" required maxlength="64">
@@ -23,8 +23,9 @@
 </div>
 <div class="fieldset">
   <label class="fieldset-legend" for="{{ prefix }}-target">Container or Compose project</label>
-  <input id="{{ prefix }}-target" class="input w-full font-mono" name="target" value="{{ form.target }}" autocomplete="off" required maxlength="128" aria-describedby="{{ prefix }}-target-hint">
-  <p id="{{ prefix }}-target-hint" class="label whitespace-normal">A container's name or ID, or for a stack the project name docker compose ls shows.</p>
+  <input id="{{ prefix }}-target" class="input w-full font-mono" name="target" value="{{ form.target }}" list="target-choices" autocomplete="off" required maxlength="128" aria-describedby="{{ prefix }}-target-hint {{ prefix }}-target-list">
+  <p id="{{ prefix }}-target-hint" class="label whitespace-normal">Pick from the list for the chosen host, or type a container's name or ID, or for a stack the project name docker compose ls shows.</p>
+  <div id="{{ prefix }}-target-list" aria-live="polite" hx-get="/jobs/target-options" hx-trigger="focusin once from:#{{ prefix }}-target, change from:#{{ prefix }}-host, change from:#{{ prefix }}-target-type" hx-include="#{{ prefix }}-host, #{{ prefix }}-target-type" hx-target="this" hx-select="#target-options" hx-swap="innerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}"></div>
 </div>
 <div class="fieldset">
   <label class="fieldset-legend" for="{{ prefix }}-storage">Storage</label>
@@ -53,14 +54,27 @@
   <p id="{{ prefix }}-mode-hint" role="note" class="label whitespace-normal{% if form.consistency_mode == 'live' %} alert alert-warning alert-soft{% endif %}">{{ live_warning }}</p>
 </div>
 <input type="hidden" name="schedule" value="1">
-<div class="fieldset">
-  <label class="fieldset-legend" for="{{ prefix }}-cron">Schedule (cron)</label>
-  <input id="{{ prefix }}-cron" class="input w-full font-mono" name="cron" value="{{ form.cron }}" autocomplete="off" maxlength="100" placeholder="0 3 * * 0" aria-describedby="{{ prefix }}-cron-hint {{ prefix }}-cron-preview">
-  <p id="{{ prefix }}-cron-hint" class="label whitespace-normal">Five fields: minute, hour, day of month, month, day of week. 0 3 * * 0 runs on Sundays at 03:00. Day of week 0 and 7 are Sunday (sun to sat also work); restrict the day of the month or the day of the week, not both. Leave empty to start the job only by hand.</p>
+<div class="fieldset" data-schedule>
+  <label class="fieldset-legend" for="{{ prefix }}-cron-preset">Schedule</label>
+  <select id="{{ prefix }}-cron-preset" class="select w-full" name="cron_preset" data-cron-preset aria-describedby="{{ prefix }}-cron-preview">
+    {% for value, label in schedule_presets.items() %}
+    <option value="{{ value }}"{% if form.cron_preset == value %} selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+  <div data-cron-custom>
+    <label class="label text-sm" for="{{ prefix }}-cron">Cron expression</label>
+    <input id="{{ prefix }}-cron" class="input w-full font-mono" name="cron" value="{{ form.cron }}" autocomplete="off" maxlength="100" placeholder="0 3 * * 0" aria-describedby="{{ prefix }}-cron-hint {{ prefix }}-cron-preview">
+    <p id="{{ prefix }}-cron-hint" class="label whitespace-normal">Five fields: minute, hour, day of month, month, day of week. 0 3 * * 0 runs on Sundays at 03:00. Day of week 0 and 7 are Sunday (sun to sat also work); restrict the day of the month or the day of the week, not both.</p>
+  </div>
   <label class="label text-sm" for="{{ prefix }}-timezone">Time zone</label>
-  <input id="{{ prefix }}-timezone" class="input w-full font-mono" name="timezone" value="{{ form.timezone }}" autocomplete="off" maxlength="64" placeholder="{{ default_tz }}" aria-describedby="{{ prefix }}-timezone-hint">
-  <p id="{{ prefix }}-timezone-hint" class="label whitespace-normal">A name such as Europe/Berlin. Empty: drydock's time zone ({{ default_tz }}).</p>
-  <div id="{{ prefix }}-cron-preview" class="text-sm" aria-live="polite" aria-busy="true" hx-get="/jobs/cron-preview" hx-trigger="load, input changed delay:400ms from:#{{ prefix }}-cron, input changed delay:400ms from:#{{ prefix }}-timezone" hx-include="#{{ prefix }}-cron, #{{ prefix }}-timezone" hx-target="this" hx-select="#cron-preview" hx-swap="innerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}"></div>
+  <select id="{{ prefix }}-timezone" class="select w-full" name="timezone">
+    <option value=""{% if not form.timezone %} selected{% endif %}>Drydock's time zone ({{ default_tz }})</option>
+    {% if form.timezone and form.timezone not in zones %}<option value="{{ form.timezone }}" selected>{{ form.timezone }} (no longer listed)</option>{% endif %}
+    {% for zone in zones %}
+    <option value="{{ zone }}"{% if form.timezone == zone %} selected{% endif %}>{{ zone }}</option>
+    {% endfor %}
+  </select>
+  <div id="{{ prefix }}-cron-preview" class="text-sm" aria-live="polite" aria-busy="true" hx-get="/jobs/cron-preview" hx-trigger="load, change from:#{{ prefix }}-cron-preset, input changed delay:400ms from:#{{ prefix }}-cron, change from:#{{ prefix }}-timezone" hx-include="#{{ prefix }}-cron-preset, #{{ prefix }}-cron, #{{ prefix }}-timezone" hx-target="this" hx-select="#cron-preview" hx-swap="innerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}"></div>
 </div>
 <div class="fieldset">
   <label class="fieldset-legend" for="{{ prefix }}-pre-hooks">Run before</label>

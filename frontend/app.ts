@@ -159,6 +159,18 @@ document.addEventListener("htmx:before:request", (event) => {
   }
 });
 
+// SCHEDULE PRESETS
+//
+// The job form's schedule list (data-cron-preset) fills the cron field, so switching to
+// Custom starts from the preset just chosen. The server applies the preset either way.
+
+document.addEventListener("change", (event) => {
+  const list = event.target;
+  if (!(list instanceof HTMLSelectElement) || !list.hasAttribute("data-cron-preset")) return;
+  const field = list.closest("[data-schedule]")?.querySelector<HTMLInputElement>('input[name="cron"]');
+  if (field && list.value !== "custom") field.value = list.value === "manual" ? "" : list.value;
+});
+
 // FOCUS AFTER A SWAP OF #MAIN
 //
 // hx-disable disables the focused submit button, so focus falls to <body>. Move it to the

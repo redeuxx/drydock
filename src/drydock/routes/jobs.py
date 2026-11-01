@@ -27,8 +27,10 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from drydock import audit
+from drydock.config import known_zones
 from drydock.db import get_db
 from drydock.engine import stacks
+from drydock.hosts import inventory
 from drydock.jobs import retention, scheduler
 from drydock.jobs.dispatcher import Dispatcher, DispatchError
 from drydock.jobs.hooks import MAX_HOOKS_PER_PHASE, HookError, check_binding
@@ -46,6 +48,7 @@ from drydock.models import (
     utcnow,
 )
 from drydock.routes.auth import FormStr, client_ip
+from drydock.routes.hosts import DOCKER_ERRORS, INVENTORY_TIMEOUT, manager, open_host, release
 from drydock.security.rbac import Role, require_recent_auth, require_role
 from drydock.security.sessions import Auth
 from drydock.storage.rclone import KINDS as REMOTE_KINDS
@@ -101,6 +104,33 @@ MAX_NOTIFICATIONS = 20
 PREVIEW_COUNT = 5
 
 
+SCHEDULE_PRESETS = {
+    "manual": "Only when started by hand",
+    "0 * * * *": "Every hour",
+    "0 */6 * * *": "Every 6 hours",
+    "0 3 * * *": "Every day at 03:00",
+    "0 3 * * 0": "Every Sunday at 03:00",
+    "0 3 1 * *": "On the 1st of every month at 03:00",
+    "custom": "Custom (a cron expression)",
+}
+DEFAULT_SCHEDULE = "0 3 * * *"  # what a new job offers: a nightly backup
+
+
+def preset_of(cron: str) -> str:
+    """The preset a stored cron shows as in the form: "manual" without one, else "custom"."""
+    if not cron:
+        return "manual"
+    return cron if cron in SCHEDULE_PRESETS and cron != "manual" else "custom"
+
+
+def scheduled(cron: str, preset: str | None) -> str:
+    """The cron a form means: a known preset, or the typed one for "custom" and for clients
+    that send no preset (older forms and scripts)."""
+    if preset is None or preset == "custom" or preset not in SCHEDULE_PRESETS:
+        return " ".join(cron.split())
+    return "" if preset == "manual" else preset
+
+
 @dataclass
 class JobForm:
     name: str = ""
@@ -124,7 +154,8 @@ class JobForm:
     weekly: str = "4"
     monthly: str = "12"
     yearly: str = "0"
-    cron: str = ""  # empty: started by hand only
+    cron: str = DEFAULT_SCHEDULE  # empty: started by hand only
+    cron_preset: str = DEFAULT_SCHEDULE  # the schedule list's choice; see SCHEDULE_PRESETS
     timezone: str = ""  # empty: drydock's TZ
     schedule_sent: bool = True  # False: a client that predates schedules; keep the stored one
     # Notification target IDs, as typed; False: a client that predates them, keep the stored.
@@ -155,6 +186,7 @@ class JobForm:
             retention_mode=policy.get("mode", "last"),
             **numbers,
             cron=job.cron or "",
+            cron_preset=preset_of(job.cron or ""),
             timezone=job.timezone or "",
             notify_success=[str(n.target_id) for n in attachments(db, job.id) if n.on_success],
             notify_failure=[str(n.target_id) for n in attachments(db, job.id) if n.on_failure],
@@ -162,8 +194,12 @@ class JobForm:
 
 
 def submitted(
-    notify_success: list[str] | None = None, notify_failure: list[str] | None = None, **values: str
+    notify_success: list[str] | None = None,
+    notify_failure: list[str] | None = None,
+    cron_preset: str | None = None,
+    **values: str,
 ) -> JobForm:
+    cron = scheduled(values["cron"], cron_preset)
     return JobForm(
         name=values["name"].strip(),
         host_id=values["host_id"].strip(),
@@ -188,7 +224,8 @@ def submitted(
         monthly=values["monthly"].strip(),
         yearly=values["yearly"].strip(),
         # The form always sends schedule=1, so an empty cron there means "by hand only".
-        cron=" ".join(values["cron"].split()),
+        cron=cron,
+        cron_preset=preset_of(cron),
         timezone=values["timezone"].strip(),
         schedule_sent=values["schedule"] == "1",
         # The form always sends notifications=1, so no boxes there means "none".
@@ -527,6 +564,8 @@ def dispatcher(request: Request) -> Dispatcher:
 def choices(request: Request, db: Session) -> dict[str, Any]:
     return {
         "default_tz": request.app.state.settings.tz,
+        "zones": sorted(known_zones()),
+        "schedule_presets": SCHEDULE_PRESETS,
         "notification_targets": db.scalars(
             select(NotificationTarget).order_by(NotificationTarget.name)
         ).all(),
@@ -614,16 +653,49 @@ def new_job_form(request: Request, auth: Admin, db: Session = Depends(get_db)) -
     )
 
 
+@router.get("/target-options")
+def target_options(
+    request: Request,
+    auth: Admin,
+    host_id: str = Query("", max_length=20),
+    target_type: str = Query("container", max_length=16),
+    db: Session = Depends(get_db),
+) -> Response:
+    """The containers or Compose projects on a host (#target-options), suggested in the
+    job form's target field as the host and type change. Also a page of its own. Reads
+    the host like its inventory does and writes nothing."""
+    names: list[str] = []
+    error = None
+    ident = as_id(host_id)
+    host = db.get(Host, ident) if ident is not None else None
+    if host is not None and target_type in TARGET_TYPES:
+        host = release(db, host)  # no lock while waiting on the network
+        try:
+            with open_host(request, host, INVENTORY_TIMEOUT) as handle:
+                groups = inventory.list_inventory(handle.client, manager(request).instance_id)
+        except DOCKER_ERRORS as exc:
+            error = str(exc) or type(exc).__name__
+        else:
+            if target_type == "stack":
+                names = sorted({g.project for g in groups if g.project})
+            else:
+                names = sorted(c.name for g in groups for c in g.containers)
+    return render(
+        request, "jobs/target_options.html", auth=auth, host=host, names=names, error=error
+    )
+
+
 @router.get("/cron-preview")
 def cron_preview(
     request: Request,
     auth: Admin,
     cron: str = Query("", max_length=200),
     timezone: str = Query("", max_length=64),
+    cron_preset: str | None = Query(None, max_length=200),
 ) -> Response:
     """The next fire times of a schedule (#cron-preview), as the scheduler computes them.
     Also a page of its own. The job form loads it as the fields change."""
-    cron = " ".join(cron.split())
+    cron = scheduled(cron, cron_preset)
     tz = timezone.strip() or request.app.state.settings.tz
     try:
         scheduler.zone(tz)  # also without a cron: saving checks it
@@ -659,6 +731,7 @@ def create_job(
     monthly: FormStr = "",
     yearly: FormStr = "",
     cron: FormStr = "",
+    cron_preset: Annotated[str | None, Form()] = None,
     timezone: FormStr = "",
     schedule: FormStr = "",
     notify_success: Annotated[list[str] | None, Form()] = None,
@@ -687,6 +760,7 @@ def create_job(
         monthly=monthly,
         yearly=yearly,
         cron=cron,
+        cron_preset=cron_preset,
         timezone=timezone,
         schedule=schedule,
         notify_success=notify_success,
@@ -763,6 +837,7 @@ def update_job(
     monthly: FormStr = "",
     yearly: FormStr = "",
     cron: FormStr = "",
+    cron_preset: Annotated[str | None, Form()] = None,
     timezone: FormStr = "",
     schedule: FormStr = "",
     notify_success: Annotated[list[str] | None, Form()] = None,
@@ -792,6 +867,7 @@ def update_job(
         monthly=monthly,
         yearly=yearly,
         cron=cron,
+        cron_preset=cron_preset,
         timezone=timezone,
         schedule=schedule,
         notify_success=notify_success,

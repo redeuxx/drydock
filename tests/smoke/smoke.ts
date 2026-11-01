@@ -377,19 +377,26 @@ async function previewShows(text: string): Promise<boolean> {
     .then(() => true)
     .catch(() => false);
 }
-check(await previewShows("started by hand"), "the empty schedule preview loads with the form");
-await page.fill("#new-timezone", "America/New_York");
-await page.fill("#new-cron", "0 3 * * 0");
-check(await previewShows("Sun "), "the preview lists Sunday runs for day-of-week 0");
+check(await previewShows("Next runs"), "a new job's nightly schedule preview loads with the form");
+check(!(await page.isVisible("#new-cron")), "the cron field stays hidden for a preset");
+await page.selectOption("#new-timezone", "America/New_York");
+await page.selectOption("#new-cron-preset", "0 3 * * 0");
+check(await previewShows("Sun "), "the preview follows the weekly preset");
 check(
   (await page.getAttribute("#new-cron-preview", "aria-busy")) === "false" &&
     (await page.title()).startsWith("Add job"),
   "the preview swap keeps the page title and clears aria-busy",
 );
+await page.selectOption("#new-cron-preset", "custom");
+check(
+  (await page.isVisible("#new-cron")) && (await page.inputValue("#new-cron")) === "0 3 * * 0",
+  "Custom shows the cron field, filled from the preset",
+);
 await page.fill("#new-cron", "0 3 1 * 1");
 check(await previewShows("not both"), "the preview explains a refused expression");
-await page.fill("#new-cron", "");
-await page.fill("#new-timezone", "");
+await page.selectOption("#new-cron-preset", "manual");
+check(await previewShows("started by hand"), "the preview says a manual job has no schedule");
+await page.selectOption("#new-timezone", "");
 await Promise.all([page.waitForURL(/\/jobs\/\d+$/), page.click("main button[type=submit]")]);
 const jobPath = path(page);
 check(/^\/jobs\/\d+$/.test(jobPath), "HX-Redirect navigates to the new job");

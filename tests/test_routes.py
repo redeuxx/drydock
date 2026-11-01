@@ -88,6 +88,7 @@ EXPECTED_MIN_ROLE = [
     ({"GET"}, re.compile(r"^/hooks"), Role.admin),
     ({"GET"}, re.compile(r"^/jobs/new$"), Role.admin),
     ({"GET"}, re.compile(r"^/jobs/cron-preview$"), Role.admin),
+    ({"GET"}, re.compile(r"^/jobs/target-options$"), Role.admin),
     ({"POST"}, re.compile(r"^/jobs"), Role.admin),
     ({"GET", "POST"}, re.compile(r".*"), Role.viewer),
 ]
@@ -153,6 +154,7 @@ INVENTORY = {
     ("POST", "/jobs"),
     ("GET", "/jobs/new"),
     ("GET", "/jobs/cron-preview"),
+    ("GET", "/jobs/target-options"),
     ("GET", "/jobs/{job_id}"),
     ("POST", "/jobs/{job_id}"),
     ("POST", "/jobs/{job_id}/delete"),

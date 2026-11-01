@@ -71,7 +71,8 @@ def sshhost(handle: docker_client.DockerHandle):
 def helpers_left(client, instance_id: str) -> list:
     """The helper containers of an installation that still exist on a daemon."""
     labels = [f"{k}={v}" for k, v in helper.helper_labels(instance_id).items()]
-    return client.containers.list(all=True, filters={"label": labels})
+    # sparse: a full list() inspects each match, which 404s when the reaper removes it first.
+    return client.containers.list(all=True, filters={"label": labels}, sparse=True)
 
 
 def sh(container, script: str, *args: str) -> str:

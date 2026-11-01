@@ -441,3 +441,55 @@ def test_migration_0007_adds_and_drops_the_schedule_columns(tmp_path: Path) -> N
             assert sequence(conn, "jobs") == [(1,)]
     finally:
         engine.dispose()
+
+
+# SCHEDULE PRESETS AND TIME ZONES IN THE FORM
+
+
+def stored_schedule(browser: Browser, job_id: int) -> tuple:
+    return browser.sql("SELECT cron, timezone FROM jobs WHERE id = ?", (job_id,))[0]
+
+
+async def test_a_preset_sets_the_schedule_and_custom_uses_the_typed_cron(admin: Browser) -> None:
+    preset = await add_job(
+        admin, "preset", schedule="1", cron_preset="0 */6 * * *", cron="1 2 3 4 *"
+    )
+    assert stored_schedule(admin, preset) == ("0 */6 * * *", None)
+    custom = await add_job(admin, "custom", schedule="1", cron_preset="custom", cron="15 4 * * mon")
+    assert stored_schedule(admin, custom)[0] == "15 4 * * mon"
+    manual = await add_job(admin, "manual", schedule="1", cron_preset="manual", cron="15 4 * * mon")
+    assert stored_schedule(admin, manual)[0] is None
+    page = (await admin.get(f"/jobs/{preset}")).text
+    assert '<option value="0 */6 * * *" selected>Every 6 hours</option>' in page
+
+
+async def test_clients_without_a_preset_keep_the_typed_cron(admin: Browser) -> None:
+    job_id = await add_job(admin, "script", schedule="1", cron="30 1 * * *")
+    assert stored_schedule(admin, job_id)[0] == "30 1 * * *"
+    page = (await admin.get(f"/jobs/{job_id}")).text
+    assert '<option value="custom" selected>' in page
+
+
+async def test_a_new_job_offers_a_nightly_schedule_and_every_zone(admin: Browser) -> None:
+    page = (await admin.get("/jobs/new")).text
+    assert '<option value="0 3 * * *" selected>Every day at 03:00</option>' in page
+    assert '<option value="Europe/Berlin">Europe/Berlin</option>' in page
+    assert 'value="localtime"' not in page
+    job_id = await add_job(
+        admin, "zoned", schedule="1", cron_preset="0 3 * * *", timezone="Asia/Tokyo"
+    )
+    assert stored_schedule(admin, job_id) == ("0 3 * * *", "Asia/Tokyo")
+
+
+async def test_the_preview_follows_the_preset(admin: Browser) -> None:
+    response = await admin.get(
+        "/jobs/cron-preview", params={"cron_preset": "0 3 1 * *", "cron": "0 0 * * *"}
+    )
+    assert "03:00" in response.text and "00:00" not in response.text
+
+
+async def test_a_zone_no_longer_listed_stays_selected(admin: Browser) -> None:
+    job_id = await add_job(admin, "old-zone", schedule="1", cron_preset="0 3 * * *")
+    admin.sql("UPDATE jobs SET timezone = 'Mars/Olympus' WHERE id = ?", (job_id,))
+    page = (await admin.get(f"/jobs/{job_id}")).text
+    assert '<option value="Mars/Olympus" selected>Mars/Olympus (no longer listed)</option>' in page

@@ -433,9 +433,10 @@ async def test_startup_reconnects_and_reaps_ssh_hosts(settings: Settings) -> Non
         handle = await connect_host(browser, host_id)
         try:
             # Blocking calls must leave the event loop free: it also runs the SSH forward.
+            # sparse: list() would inspect each match, which 404s if the reaper wins the race.
             for _ in range(150):
                 found = await docker_client.run_blocking(
-                    handle.client.containers.list, all=True, filters={"id": orphan.id}
+                    handle.client.containers.list, all=True, filters={"id": orphan.id}, sparse=True
                 )
                 if not found:
                     break
@@ -523,3 +524,35 @@ async def test_ssh_host_through_the_ui(admin: Browser) -> None:
     assert "gAAAAA" not in page.text
     roots = [Path("/data"), Path("/tmp"), Path("/run"), admin.settings.data_dir]  # noqa: S108
     assert find_key_material([r for r in roots if r.exists()]) == []
+
+
+# JOB FORM SUGGESTIONS
+
+
+@needs_docker
+async def test_the_job_form_suggests_the_hosts_containers_and_projects(admin: Browser) -> None:
+    with admin.app.state.sessionmaker() as db, db.begin():
+        host = Host(name="local", kind="local", docker_url=DOCKER_URL, enabled=True)
+        db.add(host)
+        db.flush()
+        host_id = host.id
+    project = f"drydock-test-pick-{uuid.uuid4().hex[:8]}"
+    with host_docker() as handle:
+        box = handle.client.containers.create(
+            IMAGE,
+            ["sleep", "60"],
+            name=f"{project}-web-1",
+            labels={TEST_LABEL: "1", "com.docker.compose.project": project},
+        )
+        try:
+            containers = await admin.get(
+                "/jobs/target-options", params={"host_id": host_id, "target_type": "container"}
+            )
+            stacks = await admin.get(
+                "/jobs/target-options", params={"host_id": host_id, "target_type": "stack"}
+            )
+        finally:
+            box.remove(force=True)
+    assert f'<option value="{project}-web-1">' in containers.text
+    assert f'<option value="{project}">' in stacks.text
+    assert f'<option value="{project}-web-1">' not in stacks.text

@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Containers and projects{% endblock %}
+{% block content %}
+<h1 class="mb-4 text-3xl font-bold">Containers and projects{% if host %} on {{ host.name }}{% endif %}</h1>
+{# The job form loads this element alone (hx-select="#target-options") as the host and the
+   kind of target change; the datalist feeds the target field's suggestions. #}
+<div id="target-options">
+  <datalist id="target-choices">
+    {% for name in names %}<option value="{{ name }}"></option>{% endfor %}
+  </datalist>
+  {% if error %}
+  <p class="label whitespace-normal text-warning">Could not list the host ({{ error }}). Type the name instead.</p>
+  {% elif host and not names %}
+  <p class="label whitespace-normal">Nothing of this kind runs on {{ host.name }}.</p>
+  {% elif names %}
+  <p class="label whitespace-normal">Type to filter the {{ names|length }} on {{ host.name }}, or enter a name or ID.</p>
+  {% endif %}
+</div>
+{% endblock %}
