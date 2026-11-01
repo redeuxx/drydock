@@ -124,7 +124,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from drydock import audit
 from drydock.archive.verify import VerifyError
 from drydock.archive.writer import ArchiveError, Cancelled
-from drydock.config import Settings
+from drydock.config import Settings, known_zones
 from drydock.crypto import Crypto, CryptoError
 from drydock.engine import capture, stacks
 from drydock.hosts import client as docker_client
@@ -2529,7 +2529,7 @@ class Dispatcher:
         """The job's time zone (else TZ) for GFS days. Raises PolicyError for a name that is
         not a listed zone (edited by hand), never naming a path."""
         name = name or self.settings.tz
-        if name not in zoneinfo.available_timezones():
+        if name not in known_zones():
             raise retention.PolicyError("The job's time zone is not known.")
         return zoneinfo.ZoneInfo(name)
 

@@ -37,11 +37,12 @@ def validate_username(username: str) -> str | None:
 
 
 def safe_next(value: str | None) -> str:
-    """Only same-site absolute paths, so a redirect can never leave drydock."""
+    """Only same-site absolute paths of printable ASCII, so a redirect can never leave
+    drydock and always fits a header (HX-Redirect is sent unquoted)."""
     if not value or not value.startswith("/") or value.startswith("//") or "\\" in value:
         return "/"
     parts = urlsplit(value)
-    if parts.scheme or parts.netloc or any(ord(c) < 0x21 for c in value):
+    if parts.scheme or parts.netloc or any(not 0x21 <= ord(c) <= 0x7E for c in value):
         return "/"
     return value
 

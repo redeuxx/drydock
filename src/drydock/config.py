@@ -2,6 +2,7 @@
 
 import base64
 import binascii
+import functools
 import ipaddress
 import os
 import re
@@ -201,6 +202,13 @@ def parse_allowed_hosts(value: str | None, base_url: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys([h.lower() for h in hosts] + ["localhost", "127.0.0.1"]))
 
 
+@functools.cache
+def known_zones() -> frozenset[str]:
+    """IANA zone names. Before Python 3.15, available_timezones() also lists "localtime"
+    (Debian's link to /etc/localtime), which names no zone."""
+    return frozenset(zoneinfo.available_timezones()) - {"localtime"}
+
+
 def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
     keys = load_secret_keys(env)
     base_url = parse_base_url(env.get("DRYDOCK_BASE_URL", "http://localhost:8000"))
@@ -233,7 +241,7 @@ def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
         raise ConfigError(f"DRYDOCK_LOCAL_DOCKER_URL must use one of {schemes}.")
     tz = env.get("TZ") or "UTC"
     # The same check as a job's own time zone (jobs.scheduler.zone): a listed name only.
-    if tz not in zoneinfo.available_timezones():
+    if tz not in known_zones():
         raise ConfigError(f"TZ={tz!r} is not a known time zone.")
     history = env.get("DRYDOCK_RUN_HISTORY_DAYS") or str(DEFAULT_RUN_HISTORY_DAYS)
     if not (

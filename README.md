@@ -2,15 +2,23 @@
 
 Drydock is a self-hosted web app that backs up and restores Docker containers, volumes and Compose stacks, on the local host and on remote hosts over SSH.
 
-This is an early build (Phases 0 to 4 of [PLAN.md](PLAN.md)): accounts, roles, CSRF protection, secret encryption, audit logging, the connection layer to Docker hosts (socket proxy, SSH tunnels with pinned host keys, helper containers, container inventory), "Run now" backups of single containers and Compose stacks into signed, optionally encrypted archives in a local directory, in stop, pause or live mode and with pre- and post-hooks (see [Jobs and runs](#jobs-and-runs)), and restores from that directory onto any host (see [Restore](#restore)).
-
-**Upgrading from a Phase 3 build is one-way.** Drydock migrates its database at startup, and the Phase 4 migration (revision 0005) adds stack jobs, consistency modes and hooks. An older image refuses to start on a database at revision 0005, and archives written by Phase 4 (which record the job's mode and target type) cannot be verified or restored by an older build. Archives from earlier builds still restore. Stop drydock and copy the `drydock-data` volume before upgrading; to go back, restore that copy, which loses everything done since.
+Backups run on a schedule or by hand, in stop, pause or live mode, with pre- and post-hooks. Archives are signed and encrypted by default. They go to a local directory, SFTP, SMB, WebDAV or Google Drive, with a retention policy per job and notifications when runs succeed or fail. A restore goes onto any managed host, under a new name or over the original, from storage, a browser upload, a file on the server or another drydock's archive. See [CHANGELOG.md](CHANGELOG.md) for releases and [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 
 ## Read this first
 
 **Drydock is root-equivalent on every host it manages.** Anyone who controls drydock can start privileged containers, read every volume and replace any container. Treat access to its UI like root SSH access to all of those hosts.
 
 **The first visitor becomes superadmin.** There is no setup token. Until the setup form at `/setup` has been submitted, anyone who can reach the port can create the superadmin account and take over. Drydock logs a warning at every start while no superadmin exists. Complete setup immediately after the first start, over an SSH tunnel.
+
+**Back up the secret key on its own, away from `/data`.** The key encrypts every stored credential, signs every archive and is the source of every archive passphrase:
+
+| You lose | What happens |
+|---|---|
+| Only the database (`/data`) | Nothing in your archives. Passphrases are derived from the key and the job ID in each archive name, so a new drydock with the same key lists, verifies and restores every archive on storage. Hosts, storage, jobs and users have to be set up again. |
+| Only the key | Every stored credential (SSH keys, storage passwords and tokens, notification URLs) becomes unreadable and has to be entered again. Every encrypted archive is unreadable for good, and the unencrypted ones it signed show as unsigned, so only a superadmin can restore them. |
+| Both | Every encrypted archive is gone. |
+
+Keep the key in a password manager or offline, not in the same backup as the `drydock-data` volume: anyone holding both can read every archive.
 
 ## Install
 
@@ -30,11 +38,25 @@ Drydock publishes its port on `127.0.0.1` only. Reach it through an SSH tunnel (
    sudo chmod 0400 secrets/drydock_secret_key
    ```
 
-3. Start drydock.
+3. Start drydock, either built from this checkout:
 
    ```sh
    docker compose up -d --build
    ```
+
+   or, from v0.1.0 on, from a published release: in `compose.yaml`, replace `build: .` and `image: drydock:local` with the release image, then start it.
+
+   ```yaml
+   services:
+     drydock:
+       image: git.wenberg.net/redeuxx/drydock:0.1
+   ```
+
+   ```sh
+   docker compose up -d
+   ```
+
+   Releases are published for amd64 and arm64 as `X.Y.Z` and `X.Y` (which moves to each patch release). Each carries an SPDX SBOM and SLSA provenance: `docker buildx imagetools inspect git.wenberg.net/redeuxx/drydock:0.1 --format '{{ json .Provenance }}'` shows the commit it was built from. If the registry asks for a login, `docker login git.wenberg.net` first.
 
 4. From your workstation, open a tunnel and complete setup right away:
 
@@ -45,6 +67,15 @@ Drydock publishes its port on `127.0.0.1` only. Reach it through an SSH tunnel (
    Then browse to <http://localhost:8000/>, which redirects to `/setup`.
 
 Browsers treat `http://localhost` as a secure context, so session cookies keep the `Secure` flag and the `__Host-` prefix over the tunnel. If `DRYDOCK_BASE_URL` is plain HTTP on a LAN address, cookies lose the `Secure` flag and drydock logs a warning at every start. Use HTTPS or the tunnel instead.
+
+## Upgrading
+
+Drydock migrates its database at startup, and a migration is one-way: an older image refuses to start on a database a newer one has migrated, and archives a newer build writes may not verify in an older one. Archives from older builds restore in newer ones. To upgrade:
+
+1. Stop drydock (`docker compose stop`, which gives it 90 seconds to start any containers it stopped) and copy the `drydock-data` volume.
+2. Change the image tag (or pull the checkout and rebuild) and start it again.
+
+To go back, restore that copy with the older image, which loses everything done since. `docker compose down` keeps the volume and every setting; `down --volumes` deletes the database.
 
 ## Configuration
 
@@ -143,7 +174,7 @@ To read and write volumes drydock runs short-lived helper containers (`busybox`,
 
 ### Storage
 
-Archives go to a storage target: for now, a directory mounted into the drydock container. Mount it, list it in `DRYDOCK_LOCAL_STORAGE_ROOTS`, and make it writable by uid 10001:
+Archives go to a storage target: a directory mounted into the drydock container, or [remote storage](#remote-storage). For a directory, mount it, list it in `DRYDOCK_LOCAL_STORAGE_ROOTS`, and make it writable by uid 10001:
 
 ```yaml
 services:
@@ -165,7 +196,13 @@ Then add it under **Storage > Add storage** (admins). A storage directory must r
 
 A superadmin can also set up SFTP, SMB, WebDAV and Google Drive targets under **Storage > Add storage**. Jobs can back up to all of them, and **Restore** lists a target's archives with their previews and restores them.
 
-A Google Drive target uses your own Google OAuth client: the storage page links to a guide (**Storage > Add storage > Google Drive**, then "how to create the OAuth client"). Enter the client ID and secret, save, then click **Connect to Google** on the storage page. Use a *web application* client when you reach drydock over the SSH tunnel at `localhost` or on an https host name, with the redirect URI `<DRYDOCK_BASE_URL>/storage/oauth/callback`. Use a *desktop app* client when you reach it on a LAN address over plain http: Google then sends the browser to `http://127.0.0.1:<port>/`, where nothing answers, and you paste that address back into drydock. A connection attempt works once, for 10 minutes, and only for the superadmin who started it. Publish the client's consent screen: Google drops a testing-mode app's access after 7 days. If Google refuses drydock's access later (revoked, or a testing-mode client), the next transfer fails, the storage shows "reconnect required", and the failure notification targets of its jobs get one message. With the default `drive.file` access drydock sees only the files its client created, so deleting and recreating the client hides older backups. Changing the client ID or the access scope forgets the connection.
+A Google Drive target uses your own Google OAuth client. The storage page links to the same steps (**Storage > Add storage > Google Drive**, then "how to create the OAuth client"):
+
+1. In the Google Cloud console, create or pick a project and enable the Google Drive API.
+2. Under Google Auth Platform, set up the consent screen with the scope `https://www.googleapis.com/auth/drive.file` (or `.../auth/drive` for full drive access), and publish it (Audience: In production). An unverified app in production shows Google's warning once; that is expected for your own client.
+3. Create the OAuth client, of the type described below, and copy its ID and secret into the storage form.
+
+Save, then click **Connect to Google** on the storage page. Use a *web application* client when you reach drydock over the SSH tunnel at `localhost` or on an https host name, with the redirect URI `<DRYDOCK_BASE_URL>/storage/oauth/callback`. Use a *desktop app* client when you reach it on a LAN address over plain http: Google then sends the browser to `http://127.0.0.1:<port>/`, where nothing answers, and you paste that address back into drydock. A connection attempt works once, for 10 minutes, and only for the superadmin who started it. Publish the client's consent screen: Google drops a testing-mode app's access after 7 days. If Google refuses drydock's access later (revoked, or a testing-mode client), the next transfer fails, the storage shows "reconnect required", and the failure notification targets of its jobs get one message. With the default `drive.file` access drydock sees only the files its client created, so deleting and recreating the client hides older backups. Changing the client ID or the access scope forgets the connection.
 
 A restore from remote storage first downloads the whole archive into the staging directory (`restore-<run id>/download/`), after checking that the disk there has the archive's size free plus a 64 MiB reserve; with less, it fails before downloading anything. Both verification passes then read that copy, and it is removed with the rest of the run's staged data when the run ends, is discarded or expires (startup recovery removes what a crash left). While retention deletes a remote archive, a restore of it is refused, and an archive an open restore names is kept.
 
@@ -424,6 +461,22 @@ npm run check
 CI runs only on git.wenberg.net (Forgejo Actions, `.forgejo/workflows/ci.yml`), on a runner whose jobs drive its host's Docker daemon; `compose.ci.yaml` swaps the checkout's bind mount for a volume there and skips the `slow` tests, whose latency ceilings a busy shared runner cannot hold. A newer push cancels the run in progress, and Markdown-only changes start none. The repository is pushed to GitHub too, without any workflow.
 
 The integration tests reach the host's Docker daemon through the same socket proxy as production and create (then remove) containers and volumes there. A privileged `docker:dind` container running sshd stands in for a remote host; the tests generate the SSH key pair in memory and authorize it at test time. The Phase 1 spikes (marked `slow`) move a gigabyte through each path and need about 4 GB free in the Docker VM; `pytest -m 'not slow'` skips them.
+
+### Releases
+
+The `multiarch` CI job builds amd64 and arm64 on every push, scans both with Trivy and checks that each carries an SBOM and provenance. A tag `vX.Y.Z` that matches `version` in `pyproject.toml` then pushes `X.Y.Z` and `X.Y` to `git.wenberg.net/redeuxx/drydock`, from the same build that was scanned. Push the branch first and the tag after: a newer push cancels a run in progress.
+
+The job logs in with the repository Actions secret `REGISTRY_TOKEN`, a Forgejo access token of the repository owner with the `write:package` scope and nothing else. Without it, tags fail at the publish step.
+
+The scan fails on any high or critical finding that `.trivyignore.yaml` does not list. Each entry there names the CVE, why drydock is not exposed, the files it applies to when it is in one binary, and an expiry date, after which the scan fails on it again; review it then rather than moving the date.
+
+Before tagging a release that adds a migration, add its upgrade fixture (`tests/fixtures/upgrade/<revision>.sql`) so the next release's migrations are tested against a database it wrote:
+
+```sh
+docker compose -f compose.test.yaml run --rm --no-deps tests uv run --no-sync python -m tests.upgrade_fixture tests/fixtures/upgrade "$(git rev-parse --short HEAD)"
+```
+
+`tests/test_upgrade.py` fails while the head revision has no fixture. Add the release to `CHANGELOG.md`.
 
 ### Frontend rules
 

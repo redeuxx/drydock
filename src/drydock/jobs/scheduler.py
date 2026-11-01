@@ -29,7 +29,6 @@ the others.
 
 import asyncio
 import contextlib
-import functools
 import logging
 import re
 import zoneinfo
@@ -45,7 +44,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from drydock import audit
-from drydock.config import Settings
+from drydock.config import Settings, known_zones
 from drydock.hosts.client import run_blocking
 from drydock.hosts.manager import HostManager
 from drydock.jobs.dispatcher import Dispatcher, DispatchError
@@ -127,14 +126,9 @@ def weekday(value: str) -> int:
     raise CronError(BAD_WEEKDAY)
 
 
-@functools.cache
-def zones() -> frozenset[str]:
-    return frozenset(zoneinfo.available_timezones())
-
-
 def zone(name: str) -> zoneinfo.ZoneInfo:
     # Checked against the list, never handed to ZoneInfo as a path.
-    if name not in zones():
+    if name not in known_zones():
         raise CronError(f"Unknown time zone {name[:64]}. Use a name such as Europe/Berlin.")
     return zoneinfo.ZoneInfo(name)
 

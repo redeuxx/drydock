@@ -4,11 +4,13 @@
 #   age       the age CLI and its batchpass plugin for archive encryption, checksummed
 #   rclone    the rclone binary for remote storage, checksummed
 #   runtime   Python slim, uid 10001, works with a read-only root filesystem
-# Every base image is pinned by version and multi-arch index digest.
+# Every base image is pinned by version and multi-arch index digest. frontend, age and
+# rclone produce the same files for every architecture, so they run on the build
+# platform: a multi-arch build emulates only the build and runtime stages.
 
 # FRONTEND
 
-FROM node:24.21.0-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS frontend
+FROM --platform=$BUILDPLATFORM node:24.21.0-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS frontend
 WORKDIR /build
 COPY package.json package-lock.json ./
 # Install scripts stay off: every native tool used here ships as a prebuilt optional package.
@@ -22,7 +24,7 @@ RUN npm run build
 
 # BUILD
 
-FROM python:3.15.0-slim@sha256:ea4f1f290e071bf7d28199cfb3e09f5dbad31b50e9c32fd58f2f2d7be915f3ae AS build
+FROM python:3.15.2-slim@sha256:c4158543ecb725b99e57d129dfd43d761d4c43e4577b5e23326aabb223cf7f4e AS build
 COPY --from=ghcr.io/astral-sh/uv:0.13.0@sha256:cdc6093146eb3ff6a40107b38f008b789e050e77ad87865e381d9917da55a168 /uv /bin/uv
 ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
     UV_COMPILE_BYTECODE=1 \
@@ -43,7 +45,7 @@ RUN uv sync --locked --no-dev --no-editable \
 
 # age v1.3.2 encrypts archives (see README.md). The release tarball is checked against
 # the SHA-256 pinned here for each architecture; only age and age-plugin-batchpass are kept.
-FROM python:3.15.0-slim@sha256:ea4f1f290e071bf7d28199cfb3e09f5dbad31b50e9c32fd58f2f2d7be915f3ae AS age
+FROM --platform=$BUILDPLATFORM python:3.15.2-slim@sha256:c4158543ecb725b99e57d129dfd43d761d4c43e4577b5e23326aabb223cf7f4e AS age
 ARG TARGETARCH
 RUN set -eu; \
     case "$TARGETARCH" in \
@@ -64,7 +66,7 @@ RUN set -eu; \
 # zip is checked against the SHA-256 pinned here for each architecture, copied from the
 # release's SHA256SUMS (identical on downloads.rclone.org and GitHub); a mismatch fails the
 # build. Only the rclone binary is kept.
-FROM python:3.15.0-slim@sha256:ea4f1f290e071bf7d28199cfb3e09f5dbad31b50e9c32fd58f2f2d7be915f3ae AS rclone
+FROM --platform=$BUILDPLATFORM python:3.15.2-slim@sha256:c4158543ecb725b99e57d129dfd43d761d4c43e4577b5e23326aabb223cf7f4e AS rclone
 ARG TARGETARCH
 RUN set -eu; \
     case "$TARGETARCH" in \
@@ -81,8 +83,15 @@ RUN set -eu; \
 
 # RUNTIME
 
-FROM python:3.15.0-slim@sha256:ea4f1f290e071bf7d28199cfb3e09f5dbad31b50e9c32fd58f2f2d7be915f3ae AS runtime
-RUN groupadd --gid 10001 drydock \
+FROM python:3.15.2-slim@sha256:c4158543ecb725b99e57d129dfd43d761d4c43e4577b5e23326aabb223cf7f4e AS runtime
+# pip is never used at runtime, and its vendored packages only add scan findings.
+# The certificate check guards the rclone exception in .trivyignore.yaml: the Go
+# intermediates it denylists chain to emSign ECC Root CA - G3 (this SHA-256), which the
+# base image's ca-certificates no longer trusts. Go reads the bundle and every file here.
+RUN rm -r /usr/local/lib/python3.*/site-packages/pip /usr/local/lib/python3.*/site-packages/pip-*.dist-info \
+      /usr/local/lib/python3.*/ensurepip /usr/local/bin/pip* \
+ && python -c 'import glob, hashlib, re, ssl; pems = [m for f in glob.glob("/etc/ssl/certs/*") for m in re.findall("-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----", open(f).read(), re.S)]; assert len(pems) > 100; assert "86a1ecba089c4a8d3bbe2734c612ba341d813e043cf9e8a862cd5c57a36bbe6b" not in {hashlib.sha256(ssl.PEM_cert_to_DER_cert(p)).hexdigest() for p in pems}, "emSign ECC Root CA - G3 is trusted again"' \
+ && groupadd --gid 10001 drydock \
  && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin drydock \
  && mkdir -p /data /run/drydock \
  && chown 10001:10001 /data /run/drydock \

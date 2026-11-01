@@ -23,6 +23,7 @@ from drydock.models import Backup, Run
 from drydock.notify import Notifier
 from drydock.restore import apply as restore_apply
 from drydock.restore import plan as restore_plan
+from drydock.routes import auth as auth_routes
 from drydock.security import csrf
 from drydock.security.rbac import Role, authenticated
 from drydock.storage import certs, gdrive_oauth
@@ -193,6 +194,10 @@ def dependency_calls(route: RouteContext) -> list:
     return calls
 
 
+def declared_roles(route: RouteContext) -> list[Role]:
+    return [c.required_role for c in dependency_calls(route) if hasattr(c, "required_role")]
+
+
 def fill(path: str, user_id: int, **ids: int) -> str:
     """Replaces {user_id} and any other {name} placeholder (default: user_id)."""
     for name in (
@@ -227,7 +232,7 @@ async def test_every_route_is_classified(admin: Browser) -> None:
     assert {(method, path) for method, path, _ in api_routes(app)} == INVENTORY
     for method, path, route in api_routes(app):
         calls = dependency_calls(route)
-        roles = [c.required_role for c in calls if hasattr(c, "required_role")]
+        roles = declared_roles(route)
         source = inspect.getsource(route.endpoint)
         if path in PUBLIC:
             assert not roles, path
@@ -508,6 +513,77 @@ async def test_role_matrix(admin: Browser, role: str, allowed: set[str]) -> None
             assert hook_link == (role in ("admin", "superadmin")), role
         if path == f"/hooks/{ids['hook_id']}":
             assert ("Edit hook" in response.text) == (role == "superadmin"), role
+
+
+async def test_every_route_refuses_every_role_below_its_minimum(admin: Browser) -> None:
+    """The role the inventory reads is the one enforced: every method on every route
+    answers 403 to each lower role, with a valid CSRF token, and changes nothing."""
+    minimums = [
+        (method, path, roles[0])
+        for method, path, route in api_routes(admin.app)
+        if (roles := declared_roles(route))
+    ]
+    lower = (Role.viewer, Role.operator, Role.admin)
+    for role in lower:
+        await add_user(admin, f"user-{role.name}", role.name)
+    tested = set()
+    for role in lower:
+        await admin.login(f"user-{role.name}")
+        headers = admin.origin_headers | {"X-CSRF-Token": await admin.csrf_token()}
+        before = snapshot(admin)
+        for method, path, minimum in minimums:
+            if role >= minimum:
+                continue
+            response = await admin.client.request(method, fill(path, 1), headers=headers)
+            assert response.status_code == 403, f"{role.name} {method} {path}"
+            assert "Your role does not allow this." in response.text, f"{method} {path}"
+            tested.add(minimum)
+        assert snapshot(admin) == before, role.name
+    assert tested == {Role.operator, Role.admin, Role.superadmin}
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+        # The package's own modules sit one level above the static folder.
+        "/static/%2e%2e/main.py",
+        "/static/%252e%252e/main.py",
+        "/static/css/%2e%2e/%2e%2e/config.py",
+    ],
+)
+async def test_nothing_is_served_outside_the_inventory(admin: Browser, path: str) -> None:
+    response = await admin.get(path)
+    assert response.status_code == 404, path
+    assert "import" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("/users/3", "/users/3"),
+        ("/restore?x=1", "/restore?x=1"),
+        (None, "/"),
+        ("", "/"),
+        ("users", "/"),
+        ("//evil.example/x", "/"),
+        ("/\\evil.example", "/"),
+        ("\\\\evil.example", "/"),
+        ("https://evil.example/", "/"),
+        ("javascript:alert(1)", "/"),
+        ("/\tevil", "/"),
+        ("/ok\r\nSet-Cookie: x=1", "/"),
+        ("/ x", "/"),
+        ("/x\x7f", "/"),
+        ("/\u20ac", "/"),
+        ("/x\u2028y", "/"),
+        ("/x\u00a0y", "/"),
+    ],
+)
+def test_redirect_targets_stay_on_drydock(value: str | None, expected: str) -> None:
+    assert auth_routes.safe_next(value) == expected
 
 
 # Every unsafe route, in an order that works on one fresh install, with a valid request,

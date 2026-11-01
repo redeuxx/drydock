@@ -1,0 +1,75 @@
+# High and critical findings in the drydock image that cannot be fixed yet, each with
+# why drydock is not exposed and a date after which CI fails on it again. CI scans the
+# image with Trivy (.forgejo/workflows/ci.yml); anything not listed here fails the build.
+#
+# Review an entry before its date: drop it when a fixed package or release exists, or
+# extend it with a fresh statement. Never extend one without re-reading the advisory.
+#
+# The image runs drydock as uid 10001 with no capabilities, no-new-privileges and a
+# read-only root filesystem (compose.yaml), so setuid binaries cannot raise privileges.
+
+vulnerabilities:
+  # DEBIAN 13 BASE PACKAGES, NO FIXED VERSION IN DEBIAN YET
+
+  # util-linux: setuid mount(8) and nsenter privilege escalations. Drydock never runs mount
+  # or nsenter, the image has no fstab entries, and no-new-privileges disables setuid.
+  - id: CVE-2026-76642
+    statement: util-linux setuid mount hooks; never run, setuid disabled by no-new-privileges
+    expired_at: 2027-01-31
+  - id: CVE-2026-78408
+    statement: nsenter --join-cgroup; drydock never runs nsenter
+    expired_at: 2027-01-31
+  - id: CVE-2026-78409
+    statement: mount X-mount.subdir; never run, no fstab entries, setuid disabled
+    expired_at: 2027-01-31
+  - id: CVE-2026-78410
+    statement: mount restricted bind mounts; never run, no fstab entries, setuid disabled
+    expired_at: 2027-01-31
+  # acl: symlink traversal when a privileged caller passes an attacker's path to libacl.
+  # Nothing in drydock calls libacl, and the process has no privileges to borrow.
+  - id: CVE-2026-54369
+    statement: libacl pathname functions; unused by drydock, which runs unprivileged
+    expired_at: 2027-01-31
+  # ncurses: a buffer overflow in the infocmp command-line tool, which drydock never runs.
+  - id: CVE-2025-69720
+    statement: ncurses infocmp tool; never run
+    expired_at: 2027-01-31
+  # systemd: a systemd-homed privilege escalation. Only the libsystemd0 and libudev1
+  # libraries are installed (util-linux depends on them); no systemd runs in the image.
+  - id: CVE-2026-16742
+    statement: systemd-homed; not installed, only client libraries are present
+    expired_at: 2027-01-31
+  # perl: memory exhaustion in Archive::Tar. Drydock never runs Perl; archives are read by
+  # drydock's own guarded tar reader.
+  - id: CVE-2026-9538
+    statement: perl Archive::Tar; drydock never runs perl
+    expired_at: 2027-01-31
+
+  # GO STANDARD LIBRARY IN UPSTREAM RELEASE BINARIES, NO FIXED RELEASE YET
+
+  # age v1.3.2 (Go 1.27.0) is the latest release. age and its batchpass plugin only
+  # encrypt and decrypt through pipes: no TLS, HTTP, HTTP/2 or certificate checks.
+  - id: CVE-2026-111943
+    paths: ["opt/age/age", "opt/age/age-plugin-batchpass"]
+    statement: crypto/x509 intermediate denylist; age verifies no certificates
+    expired_at: 2026-12-31
+  - id: CVE-2026-78667
+    paths: ["opt/age/age", "opt/age/age-plugin-batchpass"]
+    statement: net/http Range parsing in file servers; age serves no HTTP
+    expired_at: 2026-12-31
+  - id: CVE-2026-78669
+    paths: ["opt/age/age", "opt/age/age-plugin-batchpass"]
+    statement: HTTP/2 SETTINGS flood; age speaks no HTTP/2
+    expired_at: 2026-12-31
+  - id: CVE-2026-97031
+    paths: ["opt/age/age", "opt/age/age-plugin-batchpass"]
+    statement: crypto/tls ECH server memory use; age runs no TLS server
+    expired_at: 2026-12-31
+  # rclone v1.75.2 (Go 1.26.9) is the latest release. The fix adds a denylist of
+  # compromised eMudhra intermediates, which chain to emSign ECC Root CA - G3. The base
+  # image's ca-certificates (20250419+deb13u1) no longer trusts that root, and the
+  # Dockerfile fails the build if it comes back, so rclone cannot chain to them.
+  - id: CVE-2026-111943
+    paths: ["opt/rclone/rclone"]
+    statement: crypto/x509 intermediate denylist; their root is gone from the image's trust store
+    expired_at: 2026-12-31

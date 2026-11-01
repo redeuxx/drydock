@@ -85,7 +85,8 @@ def test_invalid_expressions_are_refused(expr: str) -> None:
 
 
 def test_unknown_time_zones_are_refused() -> None:
-    for name in ("Mars/Olympus", "../../etc/passwd", "/etc/localtime", ""):
+    # localtime: Python 3.14's available_timezones() lists Debian's link to /etc/localtime.
+    for name in ("Mars/Olympus", "../../etc/passwd", "/etc/localtime", "localtime", ""):
         with pytest.raises(CronError, match="Unknown time zone"):
             trigger("0 3 * * *", name)
 

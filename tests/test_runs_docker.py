@@ -531,64 +531,133 @@ def db_status(settings: Settings) -> str | None:
     return row[0] if row else None
 
 
-async def mid_backup(settings: Settings, targets: Targets, box, proc: subprocess.Popen) -> None:
-    """Waits until the process has stopped the container and is staging the volume."""
+async def mid_backup(
+    settings: Settings, targets: Targets, box, proc: subprocess.Popen, *, paused: bool = False
+) -> None:
+    """Waits until the process has stopped (or paused) the container and is staging the
+    volume."""
+
+    def held() -> bool:
+        state = targets.client.api.inspect_container(box.id)["State"]
+        return state["Paused"] if paused else not state["Running"]
 
     def capturing() -> bool:
         assert proc.poll() is None, "drydock exited early"
         staging = staged_files(settings)
         return (
             db_status(settings) == "running"
-            and not targets.running(box)
+            and held()
             and any(n.startswith("member-") for n in staging)
         )
 
     await wait_until(capturing, 120, "the backup to stage the volume")
 
 
-@pytest.mark.parametrize("how", ["kill", "term"])
-async def test_drydock_dies_or_stops_mid_backup(
-    settings: Settings, targets: Targets, tmp_path: Path, how: str
+async def test_drydock_killed_mid_backup(
+    settings: Settings, targets: Targets, tmp_path: Path
 ) -> None:
+    """SIGTERM, as `docker compose stop` and `down` send it, is in the next test."""
     box = targets.container(volume=targets.volume(mib=1024))
     job_id, instance_id = await prepare_job(settings, box.name)
     proc = start_drydock(settings, job_id, tmp_path / "drydock.out")
     try:
         await mid_backup(settings, targets, box, proc)
-        if how == "kill":
-            proc.send_signal(signal.SIGKILL)
-            proc.wait(timeout=10)
-            # Nothing ran after the kill: the container is still down, the helper and the
-            # staged member are still there.
-            assert not targets.running(box)
-            assert helpers_left(targets.client, instance_id)
-            assert staged_files(settings)
-            async with running(settings) as browser:
-                await wait_until(lambda: targets.running(box), 30, "recovery restarting it")
-                status = browser.sql("SELECT status, error FROM runs")
-                assert status == [("interrupted", "Drydock stopped before the run finished.")]
-                assert staged_files(settings) == []
-                await wait_until(
-                    lambda: not helpers_left(targets.client, instance_id), 30, "the reaper"
-                )
-                log = runlog.log_path(settings.data_dir, 1).read_text()
-                assert "Interrupted" in log and "Started container" in log
-        else:
-            started = time.monotonic()
-            proc.send_signal(signal.SIGTERM)  # what `docker compose stop` sends to PID 1
-            code = proc.wait(timeout=90)
-            print(f"\nSIGTERM SHUTDOWN: {time.monotonic() - started:.2f} s")
-            # uvicorn re-raises the signal once its graceful shutdown (lifespan included) ends.
-            assert code in (0, -signal.SIGTERM), (tmp_path / "drydock.out").read_text()
-            assert targets.running(box)
-            assert db_status(settings) == "cancelled"
+        proc.send_signal(signal.SIGKILL)
+        proc.wait(timeout=10)
+        # Nothing ran after the kill: the container is still down, the helper and the
+        # staged member are still there.
+        assert not targets.running(box)
+        assert helpers_left(targets.client, instance_id)
+        assert staged_files(settings)
+        async with running(settings) as browser:
+            await wait_until(lambda: targets.running(box), 30, "recovery restarting it")
+            status = browser.sql("SELECT status, error FROM runs")
+            assert status == [("interrupted", "Drydock stopped before the run finished.")]
             assert staged_files(settings) == []
-            assert helpers_left(targets.client, instance_id) == []
+            await wait_until(
+                lambda: not helpers_left(targets.client, instance_id), 30, "the reaper"
+            )
+            log = runlog.log_path(settings.data_dir, 1).read_text()
+            assert "Interrupted" in log and "Started container" in log
         assert stored_files(settings) == []
     finally:
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+
+
+# DOCKER COMPOSE DOWN AND UP
+
+
+def kept_state(settings: Settings) -> dict[str, list[tuple]]:
+    """What a restart must leave alone. Runs and sessions change, and so does when a
+    host was last reached."""
+    tables = {
+        "users": "*",
+        "installation": "*",
+        "hosts": "id, name, kind, docker_url, enabled",
+        "storage_targets": "*",
+        "jobs": "*",
+        "backups": "*",
+    }
+    with closing(sqlite3.connect(settings.data_dir / "drydock.db")) as conn:
+        return {
+            table: conn.execute(f"SELECT {columns} FROM {table} ORDER BY 1").fetchall()  # noqa: S608
+            for table, columns in tables.items()
+        }
+
+
+@pytest.mark.parametrize("mode", ["stop", "pause"])
+async def test_compose_down_and_up_mid_backup_keeps_state(
+    settings: Settings, targets: Targets, tmp_path: Path, mode: str
+) -> None:
+    """`docker compose down` sends SIGTERM and removes the container, and with it the
+    run directory's tmpfs; `up` starts a new process on the same /data volume. All state
+    is kept, no run is left running and the container drydock stopped or paused runs."""
+    box = targets.container(volume=targets.volume(mib=1024))
+    small = targets.container()
+    async with running(settings) as browser:
+        app = await setup_app(browser)
+        done = await app.run(await app.add_job(small.name, "config", encrypted="1"))
+        assert app.status(done) == "done", app.log(done)
+        job_id = await app.add_job(box.name, "data", consistency_mode=mode)
+        archive = app.run_row(done)["archive_name"]
+        instance_id = app.instance_id
+    before = kept_state(settings)
+    proc = start_drydock(settings, job_id, tmp_path / "drydock.out")
+    try:
+        await mid_backup(settings, targets, box, proc, paused=mode == "pause")
+        started = time.monotonic()
+        proc.send_signal(signal.SIGTERM)  # what `docker compose stop` and `down` send to PID 1
+        code = proc.wait(timeout=90)
+        print(f"\nSIGTERM SHUTDOWN ({mode}): {time.monotonic() - started:.2f} s")
+        # uvicorn re-raises the signal once its graceful shutdown (lifespan included) ends.
+        assert code in (0, -signal.SIGTERM), (tmp_path / "drydock.out").read_text()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    # Down: shutdown itself started or unpaused the container and cleaned up.
+    state = targets.client.api.inspect_container(box.id)["State"]
+    assert state["Running"] and not state["Paused"]
+    assert db_status(settings) == "cancelled"
+    assert staged_files(settings) == []
+    assert helpers_left(targets.client, instance_id) == []
+    # The container's tmpfs is gone; up mounts an empty one.
+    shutil.rmtree(settings.run_dir)
+    settings.run_dir.mkdir(mode=0o700)
+    async with running(settings) as browser:
+        assert (await browser.login("admin")).status_code == 303
+        assert kept_state(settings) == before
+        statuses = dict(browser.sql("SELECT id, status FROM runs"))
+        assert statuses[done] == "done"
+        assert [s for s in statuses.values() if s in ("queued", "running")] == []
+        assert sorted(statuses.values()) == ["cancelled", "done"]
+        state = targets.client.api.inspect_container(box.id)["State"]
+        assert state["Running"] and not state["Paused"]
+        assert stored_files(settings) == [archive]
+        for path in ("/jobs", f"/jobs/{job_id}", f"/runs/{done}", "/backups"):
+            assert (await browser.get(path)).status_code == 200, path
 
 
 # MEMORY DURING A 5 GIB ENCRYPTED BACKUP
