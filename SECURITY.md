@@ -16,13 +16,14 @@ Drydock controls Docker on every host it manages, so it is root-equivalent on al
 - The socket proxy narrows the local Docker API but is not a security boundary, and the remote SSH user is root-equivalent on its host.
 - Admins can restore signed archives that carry no risk flags.
 - Unencrypted archives expose environment variables and `.env` files to whoever can read the storage.
+- The setup wizard has no token: until it completes, the first visitor to the port becomes superadmin.
 - Plain-HTTP LAN deployments send the session cookie without `Secure`, and there is no second factor yet.
 
 A way around any defence the threat model claims (for example, a viewer changing state, a restore writing to a denied host path, an unsigned archive restored without a superadmin, or a secret appearing in a page or log) is a vulnerability. So is anything that lets someone without an account act on drydock after setup.
 
 ## Deploying safely
 
-The README's [Read this first](README.md#read-this-first) and [Install](README.md#install) sections cover the setup wizard risk, the loopback binding and SSH tunnel, and the secret key file's ownership and backup; [docs/configuration.md](docs/configuration.md) covers reverse proxies. In short: complete `/setup` right after the first start over an SSH tunnel, keep port 8000 on 127.0.0.1, keep the secret key apart from `/data`, and keep jobs encrypted.
+The README's [Read this first](README.md#read-this-first) and [Install](README.md#install) sections cover the setup wizard risk and the secret key file's ownership and backup; [docs/configuration.md](docs/configuration.md) covers who can reach the port and reverse proxies. In short: complete `/setup` right after the first start, let only trusted networks reach port 8000 (or put HTTPS in front), keep the secret key apart from `/data`, and keep jobs encrypted.
 
 ## Supply chain
 

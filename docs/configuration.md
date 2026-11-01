@@ -4,7 +4,7 @@
 |---|---|---|
 | `DRYDOCK_SECRET_KEY_FILE` | | Path to the key file (preferred). Several keys, newest first, allow rotation. |
 | `DRYDOCK_SECRET_KEY` | | The key itself, if a file is not possible. |
-| `DRYDOCK_BASE_URL` | `http://localhost:8000` | Origin users browse to. Used for CSRF origin checks and cookie flags. |
+| `DRYDOCK_BASE_URL` | `http://localhost:8000` | Origin users browse to, exactly (scheme, host and port). Used for CSRF origin checks and cookie flags. Set it in `.env` next to `compose.yaml`. |
 | `DRYDOCK_ALLOWED_HOSTS` | host of the base URL | Accepted `Host` headers. `localhost` and `127.0.0.1` are always allowed. |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Proxies whose `X-Forwarded-For` is trusted. Required behind a reverse proxy; see below. |
 | `DRYDOCK_STAGING_DIR` | `/data/staging` | Scratch space for transfers. A backup needs about the size of its largest member (volume, bind mount or image) here; mount a larger disk if needed. It must not be the data or run directory or contain them. It must belong to this one installation and hold nothing else: archives uploaded for a restore wait in its `uploads` folder for 24 hours. Drydock deletes its own scratch names there (`member-*`, `probe-*.tar`, `trash-*`, `restore-<number>`) at startup, and in an hourly cleanup (scratch files only while no run is active; a staged restore once its run is finished). |
@@ -16,9 +16,15 @@
 | `TZ` | `UTC` | Time zone for schedules without one of their own. Must be a listed zone name such as `Europe/Berlin`. |
 | `DRYDOCK_RUN_HISTORY_DAYS` | `90` | Finished runs older than this many days (1 to 36500) are deleted with their log files, hourly from 5 minutes after start. It cannot be turned off; 36500 keeps history for good. |
 
+## Who can reach drydock
+
+`compose.yaml` publishes port 8000 on every interface. Docker adds its own firewall rules for published ports, ahead of ufw and firewalld, so a host firewall does not limit who reaches it; a firewall in front of the host does. To keep drydock off the network, publish `"127.0.0.1:8000:8000"` instead and reach it through an SSH tunnel (`ssh -L 8000:127.0.0.1:8000 you@host`, then <http://localhost:8000>, with `DRYDOCK_BASE_URL=http://localhost:8000`) or a reverse proxy on the host.
+
+Over plain HTTP on a LAN address, session cookies go without the `Secure` flag and drydock warns at every start. Anything beyond a trusted LAN should use HTTPS through a reverse proxy.
+
 ## Behind a reverse proxy
 
-Point the proxy on the same host at `http://127.0.0.1:8000`, have it set `X-Forwarded-For`, and set `DRYDOCK_BASE_URL` to the public `https://` URL. Drydock then sends `Strict-Transport-Security`.
+Publish `"127.0.0.1:8000:8000"` in `compose.yaml` so only the proxy reaches drydock, point the proxy on the same host at `http://127.0.0.1:8000`, have it set `X-Forwarded-For`, and set `DRYDOCK_BASE_URL` to the public `https://` URL. Drydock then sends `Strict-Transport-Security`.
 
 Docker's published port delivers the proxy's connections from the gateway of drydock's Compose network (for example `172.18.0.1`), never from `127.0.0.1`, so the default `FORWARDED_ALLOW_IPS` does not match. Set it to that gateway address:
 

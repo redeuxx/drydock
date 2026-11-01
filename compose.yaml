@@ -1,7 +1,8 @@
 # Production deployment. See README.md before the first start:
 #   1. Create the secret key file (chown 10001, chmod 0400).
-#   2. docker compose up -d
-#   3. Open an SSH tunnel (ssh -L 8000:127.0.0.1:8000 host) and complete /setup at once.
+#   2. Put DRYDOCK_BASE_URL=http://<this host>:8000 in .env next to this file.
+#   3. docker compose up -d, then complete /setup at once: until then, anyone who can reach
+#      port 8000 can make themselves superadmin.
 name: drydock
 
 services:
@@ -9,12 +10,15 @@ services:
     build: .
     image: drydock:local
     restart: unless-stopped
-    # Loopback only. Reach the UI through an SSH tunnel or a reverse proxy on this host.
+    # Every interface. Docker publishes ports past ufw, so only a firewall in front of this
+    # host limits who reaches it. Behind a reverse proxy here, use "127.0.0.1:8000:8000".
     ports:
-      - "127.0.0.1:8000:8000"
+      - "8000:8000"
     environment:
       DRYDOCK_SECRET_KEY_FILE: /run/secrets/drydock_secret_key
-      DRYDOCK_BASE_URL: http://localhost:8000
+      # The address users browse to, exactly (Host and CSRF origin checks, cookie flags).
+      # Set it in .env; compose.test.yaml reuses this file, so it cannot be required here.
+      DRYDOCK_BASE_URL: "${DRYDOCK_BASE_URL:-http://localhost:8000}"
       # Suggested when an admin adds the local host. Drydock never registers it on its own.
       DRYDOCK_LOCAL_DOCKER_URL: tcp://socket-proxy:2375
       TZ: UTC

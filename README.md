@@ -7,7 +7,7 @@ Backups run on a schedule or by hand, in stop, pause or live mode, with pre- and
 ## Read this first
 
 - **Drydock is root-equivalent on every host it manages.** Anyone who controls it can start privileged containers, read every volume and replace any container. Treat access to its UI like root SSH access to all of those hosts. The same goes for the SSH user it logs in as on each host, and for the socket proxy, which narrows the local Docker API but is not a security boundary ([hosts](docs/hosts.md)).
-- **The first visitor becomes superadmin.** Until `/setup` has been submitted, anyone who can reach the port can take over. Complete setup right after the first start, over an SSH tunnel.
+- **The first visitor becomes superadmin.** Until `/setup` has been submitted, anyone who can reach port 8000 can take over. Create the account right after the first start.
 - **Archives contain secrets**: environment variables and Compose `.env` files. Keep jobs encrypted unless the storage itself is encrypted and private.
 - **Live mode is crash-consistent at best.** Back databases up in stop or pause mode, or dump them with a pre-hook ([backups](docs/backups.md#jobs-and-runs)).
 - **Back up the secret key on its own, away from `/data`.** It encrypts stored credentials, signs archives and is the source of every archive passphrase:
@@ -22,14 +22,16 @@ Backups run on a schedule or by hand, in stop, pause or live mode, with pre- and
 
 ## Install
 
-You need Docker Engine 25 or later with the Compose plugin, and this repository:
+On the Docker host, over SSH. You need Docker Engine 25 or later with the Compose plugin.
 
-```sh
-git clone https://github.com/redeuxx/drydock.git
-cd drydock
-```
+1. Get drydock:
 
-1. Generate the secret key and restrict it. Drydock runs as uid 10001 and refuses to start if it cannot read the key.
+   ```sh
+   git clone https://github.com/redeuxx/drydock.git
+   cd drydock
+   ```
+
+2. Generate the secret key and restrict it. Drydock runs as uid 10001 and refuses to start if it cannot read the key.
 
    ```sh
    mkdir -p secrets
@@ -38,21 +40,23 @@ cd drydock
    sudo chmod 0400 secrets/drydock_secret_key
    ```
 
-2. Start drydock:
+3. Set the address you will browse to, exactly as you will type it (here the host's IP):
+
+   ```sh
+   echo "DRYDOCK_BASE_URL=http://192.168.1.50:8000" > .env
+   ```
+
+4. Start drydock:
 
    ```sh
    docker compose up -d --build
    ```
 
-3. Drydock listens on `127.0.0.1:8000` only. From your workstation, open a tunnel and complete setup right away:
+5. Browse to that address right away and create the superadmin account.
 
-   ```sh
-   ssh -L 8000:127.0.0.1:8000 you@docker-host
-   ```
+   `Invalid host header` means the address in your browser is not `DRYDOCK_BASE_URL`: fix `.env` and run `docker compose up -d` again.
 
-   Then browse to <http://localhost:8000/>, which redirects to `/setup`.
-
-Over the tunnel, `localhost` is a secure context, so session cookies keep their `Secure` flag. On a plain-HTTP LAN address they lose it, and drydock warns at every start; use HTTPS or the tunnel. For a reverse proxy, see [configuration](docs/configuration.md#behind-a-reverse-proxy).
+Port 8000 is open to every network that can reach the host; Docker's published ports bypass ufw. Over plain HTTP, session cookies lack the `Secure` flag and drydock warns at every start. Outside a trusted LAN, put HTTPS in front or keep drydock on loopback ([configuration](docs/configuration.md#who-can-reach-drydock)).
 
 ## First backup
 

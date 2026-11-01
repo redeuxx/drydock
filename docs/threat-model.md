@@ -13,7 +13,7 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 
 ## Attackers
 
-1. **Network attacker.** Reaches the drydock port but has no account. By default the port binds to 127.0.0.1 only.
+1. **Network attacker.** Reaches the drydock port but has no account. The port is published on every interface, so this is anyone the host's network lets through.
 2. **Cross-site attacker.** Controls a web page that a logged-in user visits.
 3. **Lower-privileged user.** Has a viewer, operator or admin account and wants more.
 4. **Malicious archive source.** Controls an archive on storage, an upload or a file in the restore inbox.
@@ -34,14 +34,14 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 ### T1. Taking over a fresh install through the setup wizard
 
 **Threat:** while no account exists, anyone who reaches `/setup` becomes superadmin. A DNS rebinding page could reach it through a victim's browser.
-**Defence:** the port binds to 127.0.0.1, every route redirects to `/setup` until it completes, setup runs under `BEGIN IMMEDIATE` so exactly one superadmin is created, a warning is logged at every start, the `Host` header must be on the allowlist, and the source IP is audited.
+**Defence:** every route redirects to `/setup` until it completes, setup runs under `BEGIN IMMEDIATE` so exactly one superadmin is created, a warning is logged at every start, the `Host` header must be on the allowlist, and the source IP is audited.
 **Tests:**
 - `tests/test_setup.py::test_everything_redirects_to_setup_before_first_user`
 - `tests/test_setup.py::test_startup_warns_while_no_superadmin`
 - `tests/test_setup.py::test_concurrent_setup_creates_exactly_one_superadmin`
 - `tests/test_setup.py::test_setup_audit_row_records_source_ip`
 - `tests/test_csrf.py::test_foreign_host_header_gets_400`
-- `tests/test_deploy.py::test_compose_binds_loopback_and_hardens_the_container`
+- `tests/test_deploy.py::test_compose_publishes_drydock_and_hardens_the_container`
 
 ### T2. Guessing passwords and finding usernames
 
@@ -571,7 +571,7 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 **Threat:** the container runs as root, with a writable root filesystem or extra capabilities, from an image or binary that can change under it or carries known vulnerabilities, or two drydocks share one `/data`.
 **Defence:** the image runs as uid 10001 with a read-only root filesystem, no capabilities and `no-new-privileges`. Base images are pinned by digest, age and rclone are checksummed, and a second process cannot take the `/data` lock. CI scans the image for high and critical vulnerabilities and secrets; findings that cannot be fixed yet need a dated exception in `.trivyignore.yaml`. Releases carry an SBOM and provenance for amd64 and arm64.
 **Tests:**
-- `tests/test_deploy.py::test_compose_binds_loopback_and_hardens_the_container`
+- `tests/test_deploy.py::test_compose_publishes_drydock_and_hardens_the_container`
 - `tests/test_deploy.py::test_dockerfile_runtime_stage`
 - `tests/test_deploy.py::test_smoke_app_matches_production_hardening`
 - `tests/test_deploy.py::test_every_base_image_is_pinned_by_digest`
@@ -593,5 +593,6 @@ These are known limits of v1. The README and docs/ explain each one to operators
 - **Unencrypted archives expose their contents**, including environment variables and `.env` files, to whoever can read the storage.
 - **Losing the secret key loses** stored credentials, archive signatures and every encrypted archive.
 - **Live mode is crash-consistent at best.** Databases need hooks for consistent backups.
+- **The setup wizard has no token.** Until `/setup` completes, the first visitor to the port becomes superadmin. Whoever installs drydock creates the account right away; the README says so, and drydock warns in its log and on the setup page until then.
 - **No second factor.** TOTP and SSO are deferred.
 - **Plain-HTTP LAN deployments** send the session cookie without `Secure`. Drydock warns at every start.

@@ -16,6 +16,7 @@ src/drydock/static/vendor/
 # LOCAL DATA AND SECRETS
 data/
 secrets/
+.env
 restore-inbox/
 *.db
 *.db-wal

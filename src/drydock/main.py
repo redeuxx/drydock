@@ -149,7 +149,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             log.warning(
                 "DRYDOCK_BASE_URL %s is plain HTTP on a non-loopback address. Session cookies "
                 "are sent without the Secure flag and can be stolen on the network. Use HTTPS "
-                "or reach drydock through an SSH tunnel to 127.0.0.1.",
+                "through a reverse proxy (docs/configuration.md).",
                 settings.base_url,
             )
         if settings.public_https and settings.forwarded_allow_ips == (DEFAULT_PROXIES,):
@@ -166,7 +166,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             log.warning(
                 "NO SUPERADMIN EXISTS. Anyone who can reach this port can open /setup and take "
                 "control of drydock, which is root-equivalent on every host it manages. "
-                "Complete setup now, through an SSH tunnel to 127.0.0.1."
+                "Complete setup now."
             )
         if app.state.primary:
             run_startup_hooks(app)

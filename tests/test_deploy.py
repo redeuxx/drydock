@@ -12,7 +12,7 @@ EXPECTED_CMD = [
     "uvicorn",
     "drydock.main:app",
     "--host",
-    "0.0.0.0",  # noqa: S104 (inside the container; compose publishes on 127.0.0.1)
+    "0.0.0.0",  # noqa: S104 (inside the container; compose decides what is published)
     "--port",
     "8000",
     "--workers",
@@ -53,12 +53,15 @@ def published_ports(service: dict) -> list[str]:
 # COMPOSE
 
 
-@pytest.mark.parametrize("name", ["compose.yaml", "compose.dev.yaml"])
-def test_compose_binds_loopback_and_hardens_the_container(name: str) -> None:
+@pytest.mark.parametrize(
+    ("name", "ports"),
+    # Production is reached directly; the dev loop stays on loopback.
+    [("compose.yaml", ["8000:8000"]), ("compose.dev.yaml", ["127.0.0.1:8000:8000"])],
+)
+def test_compose_publishes_drydock_and_hardens_the_container(name: str, ports: list[str]) -> None:
     compose = load_compose(name)
     service = compose["services"]["drydock"]
-    ports = published_ports(service)
-    assert ports == ["127.0.0.1:8000:8000"]
+    assert published_ports(service) == ports
     assert "network_mode" not in service
     assert tmpfs_options(service, "/run/drydock") == {
         "uid": "10001",

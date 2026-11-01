@@ -27,6 +27,6 @@ The first release.
 ### Security
 - Roles (viewer, operator, admin, superadmin), Argon2id passwords, sessions with idle and absolute limits, re-authentication for sensitive actions, CSRF protection, a strict CSP and an audit log.
 - Secrets in the database are encrypted with the secret key, which supports rotation.
-- The container runs as uid 10001 with a read-only root filesystem, no capabilities and `no-new-privileges`, and publishes its port on 127.0.0.1 only.
+- The container runs as uid 10001 with a read-only root filesystem, no capabilities and `no-new-privileges`.
 - [Threat model](docs/threat-model.md) with each threat linked to the tests that cover it.
 - Images for amd64 and arm64 with an SBOM and provenance, scanned in CI with dated exceptions in `.trivyignore.yaml`. Tested on Python 3.14 and 3.15.
