@@ -353,7 +353,6 @@ async def test_an_unconnected_drive_says_so(admin: Browser) -> None:
             "Private key is not a PEM or OpenSSH private key.",
         ),
         ("sftp", {"opt_set_modtime": "true"}, "tick the box"),
-        ("smb", {"folder": ""}, "Enter the share"),
         ("smb", {"folder": "/share"}, "must not start with /"),
         ("smb", {"opt_domain": "bad domain"}, "Domain: use"),
         ("smb", {"opt_host": "fd00::1"}, "SMB storage needs a host name or an IPv4"),

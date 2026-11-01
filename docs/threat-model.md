@@ -96,6 +96,7 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 **Threat:** a viewer, operator or admin does something reserved for a higher role, or the last superadmin is removed.
 **Defence:** the role matrix is enforced on the server for every route. The last superadmin cannot be demoted, disabled or deleted. Hooks, users, notification targets, remote storage and passphrase reveals are superadmin only.
 **Tests:**
+- `tests/test_smb_webdav_storage.py::test_only_a_superadmin_picks_the_share`
 - `tests/test_routes.py::test_role_matrix`
 - `tests/test_routes.py::test_every_route_refuses_every_role_below_its_minimum`
 - `tests/test_users.py::test_last_superadmin_is_protected`
@@ -465,6 +466,7 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 **Threat:** a storage form sets an rclone option that reads local files, runs a command or turns off checks, or another process on the host calls rclone's API.
 **Defence:** each backend has an option allowlist matched to the pinned rclone, file options and other types are refused, drydock sets its security options last, every value is quoted, rclone transfers only to and from the staging folder, and its API listens on a private unix socket with per-boot credentials.
 **Tests:**
+- `tests/test_smb_webdav_storage.py::test_browsing_refuses_paths_drydock_cannot_store`
 - `tests/test_rclone_backend.py::test_options_outside_the_allowlist_are_refused`
 - `tests/test_rclone_backend.py::test_drydock_sets_the_security_options_last`
 - `tests/test_rclone_backend.py::test_connection_strings_quote_every_value`
@@ -525,6 +527,7 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 **Threat:** a full disk, a cancel or a crash leaves a truncated archive that looks complete, or a new archive replaces an old one.
 **Defence:** free space is checked first, archives are written under a partial name and published only when complete, and publishing never replaces an existing archive.
 **Tests:**
+- `tests/test_smb_webdav_storage.py::test_an_smb_target_without_a_share_fails_before_a_backup_changes_anything`
 - `tests/test_archive.py::test_low_disk_space_fails_early`
 - `tests/test_archive.py::test_disk_full_while_writing_is_insufficient_space`
 - `tests/test_runs_docker.py::test_full_disk_fails_cleanly`

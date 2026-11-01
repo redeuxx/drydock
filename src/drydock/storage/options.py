@@ -185,7 +185,8 @@ BACKENDS: dict[str, Backend] = {
         "smb",
         "SMB",
         "Share and folder",
-        "The share, then an optional folder in it: backups or backups/drydock.",
+        "The share, then an optional folder in it: backups or backups/drydock. Leave it "
+        "empty to pick it with Browse once the storage is saved.",
         (
             host_option(),
             port_option("445"),
@@ -581,8 +582,6 @@ def check_folder(kind: str, raw: str) -> tuple[str, str | None]:
     segments = body.split("/") if body else []
     if any(segment in ("", ".", "..") for segment in segments):
         return folder, "The folder must not contain empty, . or .. parts."
-    if kind == "smb" and not segments:
-        return folder, "Enter the share, optionally followed by a folder in it."
     return folder, None
 
 

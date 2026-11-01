@@ -308,7 +308,7 @@ async def test_changes_need_recent_auth(admin: Browser) -> None:
     for path, data in attempts:
         response = await admin.post(path, data)
         assert response.status_code == 403, path
-        assert "Confirm your password" in response.text
+        assert "Confirm your drydock password" in response.text
     assert host_row(admin, host_id) == before
     assert admin.sql("SELECT count(*) FROM hosts") == [(1,)]
 

@@ -27,6 +27,7 @@ from drydock.routes import auth as auth_routes
 from drydock.security import csrf
 from drydock.security.rbac import Role, authenticated
 from drydock.storage import certs, gdrive_oauth
+from drydock.storage.rclone import RcloneBackend
 from tests.conftest import PASSWORD, Browser, add_user
 from tests.rclone_support import certificate
 from tests.restore_support import build_archive, container_inspect, image_tar
@@ -46,6 +47,14 @@ SSH_HOST_FORM = {
 }
 FAKE_HOST_KEY = ssh.public_key_line(asyncssh.generate_private_key("ssh-ed25519"))
 FAKE_FINGERPRINT = "SHA256:" + "A" * 43
+SMB_FORM = {  # no share yet: it is picked by browsing
+    "kind": "smb",
+    "name": "smb",
+    "opt_host": "203.0.113.9",
+    "opt_pass": "smb-password",
+    "folder": "",
+    "enabled": "1",
+}
 DRIVE_FORM = {
     "name": "gdrive",
     "kind": "drive",
@@ -125,6 +134,8 @@ INVENTORY = {
     ("POST", "/storage/{storage_id}"),
     ("POST", "/storage/{storage_id}/delete"),
     ("POST", "/storage/{storage_id}/test"),
+    ("POST", "/storage/{storage_id}/browse"),
+    ("POST", "/storage/{storage_id}/folder"),
     ("POST", "/storage/host-key"),
     ("POST", "/storage/certificate"),
     ("GET", "/storage/oauth/guide"),
@@ -622,6 +633,9 @@ AUDITED_SUCCESS = [
         303,
     ),
     ("/storage/{storage_id}/test", {}, "storage.test", 200),
+    # On an SMB target of its own (SMB_FORM), the listing faked.
+    ("/storage/{storage_id}/browse", {"path": ""}, "storage.browse", 200),
+    ("/storage/{storage_id}/folder", {"folder": "backups"}, "storage.update", 303),
     (
         "/storage/host-key",
         {"kind": "sftp", "name": "nas", "opt_host": "203.0.113.9", "opt_port": "22"},
@@ -783,6 +797,7 @@ async def test_every_unsafe_route_audits_its_success(fresh: Browser, monkeypatch
         gdrive_oauth.Flows, "take", lambda self, state, user_id, storage_id=None: flow
     )
     monkeypatch.setattr(gdrive_oauth, "exchange", lambda code, flow, cid, secret: "{}")
+    monkeypatch.setattr(RcloneBackend, "folders", lambda self, path: ["backups"])
     monkeypatch.setattr(HostManager, "docker_url", lambda self, host: "unix:///nonexistent")
     monkeypatch.setattr(docker_client, "open_client", lambda url, timeout=60: FakeDocker())
     monkeypatch.setattr(
@@ -839,6 +854,11 @@ async def test_every_unsafe_route_audits_its_success(fresh: Browser, monkeypatch
                 },
             )
         else:
+            if path.endswith(("/browse", "/folder")):  # an SMB target's routes
+                if "smb_id" not in ids:
+                    created = await fresh.post("/storage", SMB_FORM)
+                    ids["smb_id"] = int(created.headers["location"].rsplit("/", 1)[1])
+                path = path.replace("{storage_id}", str(ids["smb_id"]))
             if "/oauth/" in path:  # a Google Drive target's routes
                 if "drive_id" not in ids:
                     created = await fresh.post("/storage", DRIVE_FORM)

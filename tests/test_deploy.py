@@ -361,7 +361,8 @@ def test_ci_tests_every_python_the_project_allows() -> None:
     assert {cell["python"] for cell in cells} == {"3.14", "3.15"}
     for cell in cells:
         assert cell["image"].startswith(f"python:{cell['python']}.")
-    assert python["strategy"]["max-parallel"] == 1  # the integration tests share a daemon
+    # Forgejo runs the cells at once on one daemon: each gets its own Compose project.
+    assert "${{ matrix.slug }}" in python["env"]["COMPOSE_PROJECT_NAME"]
     assert python["env"]["DRYDOCK_TEST_PYTHON_IMAGE"] == "${{ matrix.image }}"
     assert 'requires-python = ">=3.14"' in (ROOT / "pyproject.toml").read_text()
     default = load_compose("compose.test.yaml")["services"]["tests"]["build"]["args"]

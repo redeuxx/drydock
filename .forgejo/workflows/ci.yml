@@ -38,10 +38,10 @@ jobs:
     name: Ruff and pytest (Python ${{ matrix.python }})
     runs-on: docker
     timeout-minutes: 40
-    # Every Python that requires-python allows. One at a time: the integration tests
-    # remove every drydock.test container on the daemon, including the other job's.
+    # Every Python that requires-python allows. Forgejo ignores max-parallel, so both run
+    # at once on one daemon: tests label their helpers with an installation ID of their
+    # own run (tests/docker_support.py TEST_INSTANCE) and touch nothing else they did not make.
     strategy:
-      max-parallel: 1
       matrix:
         include:
           - python: "3.15"

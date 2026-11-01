@@ -39,8 +39,10 @@ SSH_USER = "drydock"
 # compose.test.yaml's project; CI runs it under its own name (compose.ci.yaml).
 TEST_PROJECT = os.environ.get("DRYDOCK_TEST_PROJECT", "drydock-test")
 TEST_LABEL = "drydock.test"
-# Helpers that test code makes outside a running app carry this installation ID.
-TEST_INSTANCE = "drydocktest"
+# Helpers that test code makes outside a running app carry this installation ID. One per
+# test run: CI runs every Python at once on one daemon, and each run counts and reaps
+# only its own helpers.
+TEST_INSTANCE = f"drydocktest{uuid.uuid4().hex[:12]}"
 
 needs_docker = pytest.mark.skipif(
     not DOCKER_URL, reason="needs the socket proxy from compose.test.yaml"

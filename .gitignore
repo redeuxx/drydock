@@ -17,6 +17,7 @@ src/drydock/static/vendor/
 data/
 secrets/
 .env
+compose.override.yaml
 restore-inbox/
 *.db
 *.db-wal

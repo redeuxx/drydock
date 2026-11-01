@@ -130,6 +130,8 @@ RECONNECT = (
     "still in testing mode). Connect it again on its storage page."
 )
 SHARE_MISSING = "The share does not exist on the server."
+NO_SHARE = "No share is chosen yet. Open the storage page and pick one with Browse."
+MAX_FOLDERS = 500  # listed by folders(); past that, type the path in the storage form
 # (lower-case text in rclone's error, the message to show). First match wins.
 ERRORS = (
     ("host key mismatch", WRONG_KEY),
@@ -367,8 +369,14 @@ class RcloneBackend:
         except RcloneError:
             raise StorageError("Drydock could not pass a password to rclone.") from None
 
+    def _root(self) -> str:
+        folder = self._config["folder"]
+        if self._kind == "smb" and not folder:
+            raise StorageError(NO_SHARE)  # the server's root holds shares, not files
+        return folder
+
     def _fs(self) -> dict[str, str]:
-        return {"type": self._kind, "_root": self._config["folder"], **self._settings()}
+        return {"type": self._kind, "_root": self._root(), **self._settings()}
 
     def _source(self) -> dict[str, str]:
         return self._local(self._staging)
@@ -379,6 +387,7 @@ class RcloneBackend:
     def secrets(self) -> list[str]:
         """Every form of the stored secrets that reaches rclone, for redaction. Builds the
         settings first, so it raises StorageError for a target that cannot be used."""
+        self._root()
         self._settings()
         return self._secrets()
 
@@ -408,6 +417,7 @@ class RcloneBackend:
         params: dict[str, Any],
         timeout: float = TIMEOUT,
         missing: str | None = None,
+        quoted: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         if self._ca is not None and any(k in params for k in FS_PARAMS):
             params = params | {"_config": {"CaCert": [str(self._ca)]}}
@@ -416,9 +426,11 @@ class RcloneBackend:
         except RcloneUnavailable as exc:
             raise StorageError(str(exc)) from None
         except RcloneError as exc:
-            raise self._error(exc, missing) from None
+            raise self._error(exc, missing, quoted) from None
 
-    def _error(self, exc: RcloneError, missing: str | None = None) -> StorageError:
+    def _error(
+        self, exc: RcloneError, missing: str | None = None, quoted: tuple[str, ...] = ()
+    ) -> StorageError:
         """A fixed message for rclone's error; its own text only goes to the log, redacted."""
         text = str(exc)
         for secret in sorted(self._secrets(), key=len, reverse=True):
@@ -432,7 +444,15 @@ class RcloneBackend:
         # SMB quotes the folder below the share, with backslashes: each part goes too.
         folder = self._config.get("folder")
         parts = folder.split("/") if isinstance(folder, str) else []
-        for value in (folder, *parts, stored.get("host"), stored.get("user"), stored.get("url")):
+        values = (
+            folder,
+            *parts,
+            *quoted,
+            stored.get("host"),
+            stored.get("user"),
+            stored.get("url"),
+        )
+        for value in values:
             if isinstance(value, str) and len(value) >= SHORTEST_NEEDLE:
                 lower = lower.replace(value.lower(), "")
         if "network name not found" in lower:  # not a missing object: the share is wrong
@@ -606,6 +626,30 @@ class RcloneBackend:
             return []
         return [e for e in listed if isinstance(e, dict)] if isinstance(listed, list) else []
 
+    def folders(self, path: str) -> list[str]:
+        """The names of the folders at path, from the server's root: for SMB the root
+        lists the shares. path is checked by options.check_folder first. Returns at most
+        MAX_FOLDERS + 1 names, so the caller can tell the list is cut. Raises StorageError."""
+        listed = self._call(
+            "operations/list",
+            {
+                "fs": {"type": self._kind, "_root": "", **self._settings()},
+                "remote": path,
+                "opt": {"dirsOnly": True, "noMimeType": True},
+            },
+            missing="The folder",
+            quoted=(path, *path.split("/")),  # names from the server: never the message
+        ).get("list")
+        entries = listed if isinstance(listed, list) else []
+        names = {str(e.get("Name", "")) for e in entries if isinstance(e, dict)}
+        # Only names drydock could store as a folder: the rest cannot be picked anyway.
+        usable = sorted(
+            n
+            for n in names
+            if n and options.check_folder(self._kind, n)[1] is None and "/" not in n
+        )
+        return usable[: MAX_FOLDERS + 1]
+
     def get(
         self, name: str, local: Path, progress: Progress | None, cancel: threading.Event
     ) -> int:
@@ -665,7 +709,8 @@ class RcloneBackend:
         return self._read(name, max_bytes, PREVIEW_TIMEOUT)
 
     def _read(self, name: str, max_bytes: int, timeout: float = TIMEOUT) -> bytes:
-        conn = connection_string(self._kind, self._settings(), self._config["folder"])
+        root = self._root()  # before _settings, which calls rclone
+        conn = connection_string(self._kind, self._settings(), root)
         if self._ca is not None:
             # The ranged GET cannot carry _config: it reuses the connection an rc call with
             # the certificate made under this same string (rclone writes a JSON fs as these

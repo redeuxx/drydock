@@ -4,18 +4,22 @@
 
 Archives go to a storage target: a directory mounted into the drydock container, or [remote storage](#remote-storage). For a directory, mount it, list it in `DRYDOCK_LOCAL_STORAGE_ROOTS`, and make it writable by uid 10001:
 
+Put the mount in `compose.override.yaml` next to `compose.yaml`. Compose merges that file in automatically, and `git pull` never touches it:
+
 ```yaml
 services:
   drydock:
     environment:
       DRYDOCK_LOCAL_STORAGE_ROOTS: /backups
     volumes:
-      - drydock-data:/data
       - /srv/drydock-backups:/backups
 ```
 
 ```sh
-sudo install -d -o 10001 -g 10001 -m 0700 /srv/drydock-backups
+sudo mkdir -p /srv/drydock-backups
+sudo chown 10001:10001 /srv/drydock-backups
+sudo chmod 0700 /srv/drydock-backups
+docker compose up -d
 ```
 
 Then add it under **Storage > Add storage** (admins). A storage directory must resolve inside one of the allowed roots, symlinks included, and must not overlap `/data`, `/run`, the staging directory or the application. **Test storage** writes and removes a probe file. The directory is stored encrypted with the secret key, like every backend's settings. Archive names are built from a slug of the job name, the job's random ID and the UTC time (`drydock-<slug>-<job uuid>-<YYYYMMDDTHHMMSSZ>.tar.zst[.age]`), never from raw user input. Each archive is written straight into the storage directory under a temporary name (`.partial-<random>`) and published under its real name when complete, without ever replacing an existing file, so a reader never sees a partial archive. Startup recovery removes temporary files left by a crash.
@@ -38,7 +42,7 @@ An SFTP target needs the server's public host key. **Fetch from server**, next t
 
 A WebDAV target needs an `https://` URL. Over plain http, the server, or anyone on the way to it, could redirect rclone's requests (deletes included) to the Docker socket proxy, which drydock's container can reach. If no public certificate authority signed the server's certificate, as with a NAS's self-signed one, click **Fetch from server** next to **Server certificate**. Drydock shows the certificate the server presents, with its names, dates and SHA-256 fingerprint. Compare the fingerprint with the server's own (`openssl x509 -noout -fingerprint -sha256 -in` its certificate file, or the NAS's certificate page) before saving, because saving trusts the certificate. You can also paste the certificate in PEM format yourself. A pinned certificate is that target's only trust anchor; rclone still checks the validity dates and that the certificate lists the host in the URL (as a DNS name or IP address, not only as the common name), so drydock refuses one that does not. A certificate a public authority already vouches for is shown but not filled in: pinning it would break at its next renewal. The URL's host must be a host name or an IPv4 address.
 
-An SMB target names the share, then optionally a folder in it, under **Share and folder**. The host must be a host name or an IPv4 address, and the user may not contain `]`.
+An SMB target needs the server, the user and the password; the share and folder can wait. Save it, then click **Browse the server** on its storage page: drydock logs in with the saved login and lists the shares, and each folder you open lists the folders in it. **Use** stores the share and folder you are in. Browsing and picking need a superadmin, since the saved login can see every share the account can, and each listing is in the audit log. Until a share is chosen, backups and **Test connection** to it fail with "No share is chosen yet". You can also type the share and folder under **Share and folder** (`backups` or `backups/drydock`). The host must be a host name or an IPv4 address, and the user may not contain `]`.
 
 A backup to remote storage is first written to the staging directory (`DRYDOCK_STAGING_DIR`), which therefore needs room for a whole archive, and uploaded once the containers run again. It is uploaded under a temporary name (`<archive>.<8 hex>.partial`) and renamed when complete, so the archive name never shows a partial upload. Cancelling stops the upload and removes the partial file; any that could not be removed is named in the run log.
 

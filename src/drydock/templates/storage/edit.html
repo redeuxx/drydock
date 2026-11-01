@@ -74,6 +74,62 @@
     </div>
   </section>
 
+  {% if target.kind == "smb" %}
+  <section class="card bg-base-100 shadow-sm md:col-span-2" aria-labelledby="browse-heading">
+    <div class="card-body">
+      <h2 id="browse-heading" class="card-title">Share and folder</h2>
+      {% if form.values.get("folder") %}
+      <p class="text-sm">Backups go to <code class="break-all">{{ form.values.get("folder") }}</code>.</p>
+      {% else %}
+      <p class="text-sm">No share is chosen yet. Browse the server with the saved login and pick one.</p>
+      {% endif %}
+      {% if browse %}
+      {% if browse.error %}{{ alerts([browse.error]) }}{% endif %}
+      <p class="text-sm">{% if browse.path %}In <code class="break-all">{{ browse.path }}</code>:{% else %}Shares on the server:{% endif %}</p>
+      <ul class="flex flex-col gap-1" data-focus-result>
+        {% if browse.path %}
+        <li>
+          <form method="post" action="/storage/{{ target.id }}/browse" hx-post="/storage/{{ target.id }}/browse" hx-nonce="{{ csp_nonce }}">
+            <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+            <input type="hidden" name="path" value="{{ browse.parent }}">
+            <button type="submit" class="btn btn-ghost btn-sm">.. (up)</button>
+          </form>
+        </li>
+        {% endif %}
+        {% for entry in browse.entries %}
+        <li>
+          <form method="post" action="/storage/{{ target.id }}/browse" hx-post="/storage/{{ target.id }}/browse" hx-nonce="{{ csp_nonce }}">
+            <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+            <input type="hidden" name="path" value="{{ entry }}">
+            <button type="submit" class="btn btn-ghost btn-sm font-mono">{{ entry.rpartition("/")[2] }}/</button>
+          </form>
+        </li>
+        {% else %}
+        {% if not browse.error %}<li class="text-sm opacity-70">No folders here.</li>{% endif %}
+        {% endfor %}
+      </ul>
+      {% if browse.cut %}<p class="text-sm opacity-70">Only the first {{ browse.entries|length }} folders are listed. Type the rest of the path under Share and folder in Settings.</p>{% endif %}
+      {% if browse.path and editor and not browse.error %}
+      <form method="post" action="/storage/{{ target.id }}/folder" hx-post="/storage/{{ target.id }}/folder" hx-nonce="{{ csp_nonce }}" class="card-actions">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        <input type="hidden" name="folder" value="{{ browse.path }}">
+        {{ submit("Use " ~ browse.path) }}
+      </form>
+      {% endif %}
+      {% endif %}
+      {% if editor %}
+      <form method="post" action="/storage/{{ target.id }}/browse" hx-post="/storage/{{ target.id }}/browse" hx-nonce="{{ csp_nonce }}" class="card-actions">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        <input type="hidden" name="path" value="">
+        {{ submit("Browse the server", "btn-outline") }}
+      </form>
+      {% else %}
+      <p class="text-xs opacity-70">Only a superadmin can browse the server and pick the share.</p>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+
   {% if target.kind == "drive" %}
   <section class="card bg-base-100 shadow-sm md:col-span-2" aria-labelledby="google-heading">
     <div class="card-body">

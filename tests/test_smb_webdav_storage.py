@@ -19,6 +19,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 from drydock.restore import plan as p
+from drydock.security.rbac import Role
 from drydock.storage import certs
 from drydock.storage.base import StorageError
 from drydock.storage.rclone import (
@@ -562,3 +563,65 @@ async def test_a_restore_downloads_verifies_and_applies(
     assert run_status(admin, run_id) == "done", run_row(admin, run_id)
     assert streamed and not staged_dir(admin, run_id).exists()
     assert remote.files() == [name]
+
+
+# BROWSING FOR THE SHARE AND FOLDER
+
+
+@needs_samba
+async def test_an_smb_target_is_saved_without_a_share_then_browsed(
+    admin: Browser, smb: SmbShare
+) -> None:
+    (smb.path / "nightly").mkdir(parents=True)
+    form = Remote("smb", smb).form() | {"folder": ""}
+    storage_id = int((await admin.post("/storage", form)).headers["location"].rsplit("/", 1)[1])
+    page = (await admin.get(f"/storage/{storage_id}")).text
+    assert "No share is chosen yet" in page
+
+    test = await admin.post(f"/storage/{storage_id}/test")
+    assert "No share is chosen yet. Open the storage page" in test.text
+
+    shares = await admin.post(f"/storage/{storage_id}/browse", {"path": ""})
+    assert shares.status_code == 200 and 'value="backups"' in shares.text
+    inside = await admin.post(f"/storage/{storage_id}/browse", {"path": "backups"})
+    assert f'value="backups/{smb.folder}"' in inside.text
+    deeper = await admin.post(f"/storage/{storage_id}/browse", {"path": f"backups/{smb.folder}"})
+    assert f'value="backups/{smb.folder}/nightly"' in deeper.text
+
+    chosen = await admin.post(f"/storage/{storage_id}/folder", {"folder": f"backups/{smb.folder}"})
+    assert chosen.status_code == 303
+    test = await admin.post(f"/storage/{storage_id}/test")
+    assert "Connected. The storage is writable." in test.text
+    rows = admin.sql("SELECT outcome FROM audit_events WHERE action = 'storage.browse'")
+    assert rows == [("success",)] * 3
+
+
+@pytest.mark.parametrize("path", ["../etc", "backups/..", "/backups", "backups/\x00x", "a]b"])
+async def test_browsing_refuses_paths_drydock_cannot_store(admin: Browser, path: str) -> None:
+    form = {"name": "nas", "kind": "smb", "opt_host": "203.0.113.9", "folder": "", "enabled": "1"}
+    storage_id = int((await admin.post("/storage", form)).headers["location"].rsplit("/", 1)[1])
+    response = await admin.post(f"/storage/{storage_id}/browse", {"path": path})
+    assert response.status_code == 422
+    chosen = await admin.post(f"/storage/{storage_id}/folder", {"folder": path})
+    assert chosen.status_code == 422
+
+
+async def test_only_a_superadmin_picks_the_share(admin: Browser) -> None:
+    form = {"name": "nas", "kind": "smb", "opt_host": "203.0.113.9", "folder": "", "enabled": "1"}
+    storage_id = int((await admin.post("/storage", form)).headers["location"].rsplit("/", 1)[1])
+    admin.sql("UPDATE users SET role = ? WHERE username = 'admin'", (int(Role.admin),))
+    for route, field in (("folder", "folder"), ("browse", "path")):
+        response = await admin.post(f"/storage/{storage_id}/{route}", {field: "backups"})
+        assert response.status_code == 403, route
+    page = (await admin.get(f"/storage/{storage_id}")).text
+    assert "Only a superadmin can browse the server and pick the share." in page
+
+
+async def test_an_smb_target_without_a_share_fails_before_a_backup_changes_anything(
+    daemon: RcloneDaemon, staging: Path
+) -> None:
+    """The dispatcher calls secrets() before it stops or pauses a container."""
+    target = RcloneBackend(daemon, "smb", {"folder": "", "options": {"host": "nas"}}, staging)
+    for call in (target.secrets, lambda: target._read("x", 1), target.test):
+        with pytest.raises(StorageError, match="No share is chosen yet"):
+            call()

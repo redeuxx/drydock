@@ -31,7 +31,7 @@ from drydock.crypto import CryptoError
 from drydock.db import get_db
 from drydock.hosts import ssh
 from drydock.models import Backup, Job, StorageTarget
-from drydock.routes.auth import client_ip
+from drydock.routes.auth import FormStr, client_ip
 from drydock.routes.hosts import scan_now
 from drydock.security.rbac import Role, require_recent_auth, require_role
 from drydock.security.sessions import Auth
@@ -39,7 +39,7 @@ from drydock.storage import certs, gdrive_oauth, options
 from drydock.storage.base import StorageError
 from drydock.storage.local import LocalStorage, validate_root
 from drydock.storage.rclone import KINDS as REMOTE_KINDS
-from drydock.storage.rclone import RcloneBackend
+from drydock.storage.rclone import MAX_FOLDERS, RcloneBackend
 from drydock.storage.rclone_rc import RcloneError, RcloneUnavailable
 from drydock.templating import render, see_other
 
@@ -215,6 +215,7 @@ def edit_page(
         )
     context.setdefault("errors", [])
     context.setdefault("test", None)
+    context.setdefault("browse", None)
     editor = not remote or auth.user.role >= Role.superadmin
     helps: dict[str, str] = {}
     options_error = None
@@ -785,3 +786,105 @@ def test_storage(
     )
     db.commit()
     return edit_page(request, db, auth, target, test={"error": error})
+
+
+# BROWSE FOR A SHARE AND FOLDER
+
+BROWSABLE = ("smb",)
+
+
+def browsable_target(db: Session, storage_id: int) -> StorageTarget:
+    target = get_target(db, storage_id)
+    if target.kind not in BROWSABLE:
+        raise HTTPException(status_code=404)
+    return target
+
+
+def parent_of(path: str) -> str:
+    return path.rpartition("/")[0]
+
+
+@router.post("/{storage_id}/browse")
+def browse_storage(
+    request: Request,
+    storage_id: int,
+    auth: Admin,
+    path: FormStr = "",
+    db: Session = Depends(get_db),
+) -> Response:
+    """Lists the folders at path with the stored login, from the server's root (the shares).
+    A superadmin only: the login reaches every share the account can see, not just the
+    target's folder."""
+    target = browsable_target(db, storage_id)
+    require_remote_editor(auth)
+    username = auth.user.username  # read before the rollback expires auth.user
+    folder, error = options.check_folder(target.kind, path)
+    entries: list[str] = []
+    if error is None:
+        try:
+            backend = remote_backend(request, target)
+            db.rollback()  # no write lock while on the network
+            entries = backend.folders(folder)
+        except StorageError as exc:
+            error = str(exc)
+        target = get_target(db, storage_id)
+    audit.record(
+        db,
+        actor=username,
+        action="storage.browse",
+        target=f"storage:{target.id}",
+        outcome="success" if error is None else "failure",
+        ip=client_ip(request),
+        details={"path": folder} if error is None else {"path": folder[:200], "error": error},
+    )
+    db.commit()
+    valid = options.check_folder(target.kind, path)[1] is None
+    browse = {
+        "path": folder if valid else "",
+        "parent": parent_of(folder) if valid else "",
+        "entries": [f"{folder}/{name}" if folder else name for name in entries[:MAX_FOLDERS]],
+        "cut": len(entries) > MAX_FOLDERS,
+        "error": error,
+    }
+    return edit_page(request, db, auth, target, 422 if error else 200, browse=browse)
+
+
+@router.post("/{storage_id}/folder")
+def choose_folder(
+    request: Request,
+    storage_id: int,
+    auth: Admin,
+    folder: FormStr = "",
+    db: Session = Depends(get_db),
+) -> Response:
+    """Stores the share and folder picked while browsing. The login stays the same, as when
+    the folder is edited in the form."""
+    target = browsable_target(db, storage_id)
+    require_remote_editor(auth)
+    help_texts(request)  # refuses while rclone's options do not match the allowlist
+    chosen, error = options.check_folder(target.kind, folder)
+    config = load_config(request, target)
+    if error is None and not chosen:
+        error = "Pick a share first."
+    if error is None and config is None:
+        error = f"The settings {UNREADABLE}."
+    if error is not None or config is None:
+        db.rollback()
+        return edit_page(request, db, auth, target, 422, errors=[error])
+    if config.get("folder") == chosen:
+        db.rollback()
+        return see_other(request, f"/storage/{target.id}")
+    before = summary(request, target)
+    target.config_enc = store(request, config | {"folder": chosen})
+    after = summary(request, target)
+    audit.record(
+        db,
+        actor=auth.user.username,
+        action="storage.update",
+        target=f"storage:{target.id}",
+        ip=client_ip(request),
+        details={k: {"from": before[k], "to": after[k]} for k in before if before[k] != after[k]}
+        | {"options_changed": ["folder"]},
+    )
+    db.commit()
+    return see_other(request, f"/storage/{target.id}")
