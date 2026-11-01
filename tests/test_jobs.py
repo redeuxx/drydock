@@ -549,3 +549,83 @@ async def test_odd_target_option_requests_list_nothing(admin: Browser, params: d
     add_host(admin)
     response = await admin.get("/jobs/target-options", params=params)
     assert response.status_code == 200 and "<option" not in response.text
+
+
+async def test_the_job_list_and_page_say_whether_a_job_is_enabled(admin: Browser) -> None:
+    on = await add_job(admin, "on", schedule="1", cron_preset="0 3 * * *")
+    off = await add_job(admin, "off", enabled="", schedule="1", cron_preset="manual")
+    listing = (await admin.get("/jobs")).text
+    assert '>enabled</span><br><span class="text-xs opacity-70">Every day at 03:00<' in listing
+    assert (
+        '>disabled</span><br><span class="text-xs opacity-70">Only when started by hand<' in listing
+    )
+    on_page = (await admin.get(f"/jobs/{on}")).text
+    assert '<span class="badge badge-success">enabled</span> Runs on its schedule' in on_page
+    off_page = (await admin.get(f"/jobs/{off}")).text
+    assert '<span class="badge badge-error">disabled</span> No scheduled runs' in off_page
+    assert off_page.index('name="enabled"') < off_page.index('name="name"'), "Enabled comes first"
+
+
+# SKIPPED MOUNTS
+
+
+def skips(browser: Browser, job_id: int) -> list[str]:
+    return json.loads(browser.sql("SELECT skip_mounts FROM jobs WHERE id = ?", (job_id,))[0][0])
+
+
+async def test_skipped_mounts_are_saved_shown_and_kept_by_older_clients(admin: Browser) -> None:
+    job_id = await add_job(
+        admin,
+        "cached",
+        skip_mounts_sent="1",
+        skip_mounts=["volume:redis_data", "bind:/opt/imgcache"],
+    )
+    assert skips(admin, job_id) == ["bind:/opt/imgcache", "volume:redis_data"]
+    page = (await admin.get(f"/jobs/{job_id}")).text
+    assert "bind mount /opt/imgcache</span>, <span" in page
+    assert 'name="skip_mounts" value="bind:/opt/imgcache" checked' in page
+    (details,) = admin.sql(
+        "SELECT details FROM audit_events WHERE action = 'job.create' ORDER BY id DESC LIMIT 1"
+    )[0]
+    entry = json.loads(details)
+    assert entry["skip_mounts"] == ["bind:/opt/imgcache", "volume:redis_data"]
+
+    form = {"name": "cached", "target": "web", "scope": "config", "encrypted": "1", "enabled": "1"}
+    row = admin.sql("SELECT host_id, storage_target_id FROM jobs WHERE id = ?", (job_id,))[0]
+    form |= {"host_id": str(row[0]), "storage_target_id": str(row[1])}
+    # An older client sends no marker: the stored list stays.
+    assert (await admin.post(f"/jobs/{job_id}", form)).status_code == 303
+    assert skips(admin, job_id) == ["bind:/opt/imgcache", "volume:redis_data"]
+    # The form always sends the marker: no ticked box means none.
+    assert (
+        await admin.post(f"/jobs/{job_id}", form | {"skip_mounts_sent": "1"})
+    ).status_code == 303
+    assert skips(admin, job_id) == []
+    page = (await admin.get(f"/jobs/{job_id}")).text
+    assert "none: every mount is backed up" in page
+
+
+@pytest.mark.parametrize("bad", ["bind:relative", "bind:/opt/../etc", "volume:a/b", "cache"])
+async def test_invalid_skipped_mounts_are_refused(admin: Browser, bad: str) -> None:
+    host_id = add_host(admin)
+    storage_id = await add_storage(admin)
+    form = {
+        "name": "bad",
+        "host_id": str(host_id),
+        "target": "web",
+        "storage_target_id": str(storage_id),
+        "scope": "config",
+        "skip_mounts_sent": "1",
+        "skip_mounts": bad,
+    }
+    response = await admin.post("/jobs", form)
+    assert response.status_code == 422
+    assert not admin.sql("SELECT id FROM jobs WHERE name = 'bad'")
+
+
+async def test_mount_options_need_a_host_and_target(admin: Browser) -> None:
+    response = await admin.get("/jobs/mount-options", params={"skip_mounts": "bind:/opt/c"})
+    assert response.status_code == 200
+    assert "Choose the host and the target first." in response.text
+    # A ticked key stays listed, so saving never drops it silently.
+    assert 'value="bind:/opt/c" checked' in response.text

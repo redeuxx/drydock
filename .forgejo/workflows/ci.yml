@@ -175,8 +175,9 @@ jobs:
       # safely. It needs --privileged, like the sshhost the tests run.
       - name: Set up arm64 emulation and a builder
         run: |
-          docker ps -a --format '{{.Names}}' | grep '^buildx_buildkit_drydock-ci-' | grep -v "drydock-ci-${{ github.run_id }}-" | xargs -r docker rm -f
-          docker volume ls -q | grep '^buildx_buildkit_drydock-ci-' | grep -v "drydock-ci-${{ github.run_id }}-" | xargs -r docker volume rm
+          # grep exits 1 when nothing is left over, and steps run with pipefail.
+          docker ps -a --format '{{.Names}}' | grep '^buildx_buildkit_drydock-ci-' | grep -v "drydock-ci-${{ github.run_id }}-" | xargs -r docker rm -f || true
+          docker volume ls -q | grep '^buildx_buildkit_drydock-ci-' | grep -v "drydock-ci-${{ github.run_id }}-" | xargs -r docker volume rm || true
           docker run --rm --privileged "$BINFMT" --install arm64
           docker buildx create --name "$BUILDER" --driver docker-container --driver-opt "image=$BUILDKIT"
       - name: Build both platforms

@@ -92,6 +92,7 @@ class CaptureJob:
     encrypted: bool = False
     target_type: str = "container"
     project: str | None = None
+    skip_mounts: frozenset[str] = frozenset()  # "bind:<host path>" or "volume:<name>"
 
 
 @dataclass(frozen=True)
@@ -116,6 +117,7 @@ class Plan:
     volume_mounts: dict[str, list[m.MountRef]] = field(default_factory=dict)
     binds: dict[str, list[m.MountRef]] = field(default_factory=dict)  # by host path
     refused_binds: dict[str, str] = field(default_factory=dict)  # host path: reason
+    skipped_volumes: dict[str, str] = field(default_factory=dict)  # name: reason
     tmpfs: list[m.TmpfsMount] = field(default_factory=list)
     compose: list[compose_files.CapturedFile] = field(default_factory=list)
     compose_skipped: list[compose_files.SkippedFile] = field(default_factory=list)
@@ -198,6 +200,20 @@ def add_networks(api, plan: Plan, container: dict[str, Any], log: Log) -> None:
             log(f"Skipped network {name}: it no longer exists on the host.")
             continue
         plan.networks.setdefault(network["Id"], network)
+
+
+SKIPPED_BY_JOB = "the job skips it"
+
+
+def skip_mounts(plan: Plan, keys: frozenset[str]) -> None:
+    """Marks the mounts the job skips. A system path keeps its own reason; a key that
+    names no mount of these containers does nothing."""
+    for source in plan.binds:
+        if f"bind:{source}" in keys and source not in plan.refused_binds:
+            plan.refused_binds[source] = SKIPPED_BY_JOB
+    for name in plan.volumes:
+        if f"volume:{name}" in keys:
+            plan.skipped_volumes[name] = SKIPPED_BY_JOB
 
 
 def add_mounts(api, plan: Plan, container: dict[str, Any], log: Log) -> None:
@@ -420,7 +436,10 @@ def build_manifest(
             driver=volume.get("Driver") or "local",
             mounts=plan.volume_mounts[name],
             config_member=f"config/volumes/{stem(name)}.json" if config else None,
-            data_member=f"volumes/{stem(name)}.tar" if data else None,
+            data_member=f"volumes/{stem(name)}.tar"
+            if data and name not in plan.skipped_volumes
+            else None,
+            skipped=plan.skipped_volumes.get(name),
         )
         for name, volume in plan.volumes.items()
     ]
@@ -507,7 +526,9 @@ def compose_basename(host_path: str) -> str:
 
 def data_mounts(plan: Plan) -> list[Mount]:
     mounts = [
-        Mount(f"/v{n}", name, type="volume", read_only=True) for n, name in enumerate(plan.volumes)
+        Mount(f"/v{n}", name, type="volume", read_only=True)
+        for n, name in enumerate(plan.volumes)
+        if name not in plan.skipped_volumes
     ]
     mounts += [
         Mount(f"/b{n}", source, type="bind", read_only=True)
@@ -590,8 +611,14 @@ def capture(
     if secrets is not None:
         secrets(plan.secret_values)
     if "data" in parts:
-        for source in plan.refused_binds:
-            log(f"Skipped the data of bind mount {source}: drydock never backs up a system path.")
+        skip_mounts(plan, job.skip_mounts)
+        for source, reason in plan.refused_binds.items():
+            if reason == SKIPPED_BY_JOB:
+                log(f"Skipped the data of bind mount {source}: the job skips it.")
+            else:
+                log(f"Skipped the data of bind mount {source}: a system path is never backed up.")
+        for name in plan.skipped_volumes:
+            log(f"Skipped the data of volume {name}: the job skips it.")
     images = image_entries(client.api, plan, parts, job, cancel, log)
     if cancel.is_set():
         raise Cancelled("The run was cancelled.")
@@ -599,7 +626,9 @@ def capture(
         before_data()
         if cancel.is_set():
             raise Cancelled("The run was cancelled.")
-    needs_helper = "data" in parts and (plan.volumes or set(plan.binds) - set(plan.refused_binds))
+    needs_helper = "data" in parts and bool(
+        set(plan.volumes) - set(plan.skipped_volumes) or set(plan.binds) - set(plan.refused_binds)
+    )
     with contextlib.ExitStack() as stack:
         box = None
         if needs_helper:

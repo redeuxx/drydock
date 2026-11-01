@@ -31,7 +31,7 @@ from drydock.config import known_zones
 from drydock.db import get_db
 from drydock.engine import stacks
 from drydock.hosts import inventory
-from drydock.jobs import retention, scheduler
+from drydock.jobs import mounts, retention, scheduler
 from drydock.jobs.dispatcher import Dispatcher, DispatchError
 from drydock.jobs.hooks import MAX_HOOKS_PER_PHASE, HookError, check_binding
 from drydock.models import (
@@ -123,6 +123,12 @@ def preset_of(cron: str) -> str:
     return cron if cron in SCHEDULE_PRESETS and cron != "manual" else "custom"
 
 
+def schedule_label(cron: str | None) -> str:
+    """How the job list names a schedule: the preset's words, else the cron itself."""
+    preset = preset_of(cron or "")
+    return SCHEDULE_PRESETS[preset] if preset != "custom" else f"cron {cron}"
+
+
 def scheduled(cron: str, preset: str | None) -> str:
     """The cron a form means: a known preset, or the typed one for "custom" and for clients
     that send no preset (older forms and scripts)."""
@@ -162,6 +168,10 @@ class JobForm:
     notify_success: list[str] = dataclass_field(default_factory=list)
     notify_failure: list[str] = dataclass_field(default_factory=list)
     notifications_sent: bool = True
+    # Mounts whose data the job leaves out ("bind:<path>", "volume:<name>"); False: a
+    # client that predates them, keep the stored list.
+    skip_mounts: list[str] = dataclass_field(default_factory=list)
+    skip_mounts_sent: bool = True
 
     @classmethod
     def from_job(cls, job: Job, db: Session) -> JobForm:
@@ -190,6 +200,7 @@ class JobForm:
             timezone=job.timezone or "",
             notify_success=[str(n.target_id) for n in attachments(db, job.id) if n.on_success],
             notify_failure=[str(n.target_id) for n in attachments(db, job.id) if n.on_failure],
+            skip_mounts=sorted(mounts.stored(job.skip_mounts)),
         )
 
 
@@ -197,6 +208,7 @@ def submitted(
     notify_success: list[str] | None = None,
     notify_failure: list[str] | None = None,
     cron_preset: str | None = None,
+    skip_mounts: list[str] | None = None,
     **values: str,
 ) -> JobForm:
     cron = scheduled(values["cron"], cron_preset)
@@ -232,6 +244,8 @@ def submitted(
         notify_success=[v.strip() for v in notify_success or []],
         notify_failure=[v.strip() for v in notify_failure or []],
         notifications_sent=values["notifications"] == "1",
+        skip_mounts=[v.strip() for v in skip_mounts or []],
+        skip_mounts_sent=values["skip_mounts_sent"] == "1",
     )
 
 
@@ -438,6 +452,8 @@ def validate(
         errors.append(str(exc))
     if schedule_error := check_schedule(form, default_tz):
         errors.append(schedule_error)
+    if form.skip_mounts_sent and (skip_error := mounts.check(form.skip_mounts)[1]):
+        errors.append(skip_error)
     if form.notifications_sent and (notify_error := notification_ids(db, form)[0]):
         errors.append(notify_error)
     pre_errors, pre = lookup_hooks(db, form.pre_hooks)
@@ -474,6 +490,8 @@ def apply(job: Job, form: JobForm, pre_ids: list[int], post_ids: list[int]) -> N
     if form.schedule_sent:
         job.cron = form.cron or None
         job.timezone = form.timezone or None
+    if form.skip_mounts_sent:
+        job.skip_mounts = json.dumps(mounts.check(form.skip_mounts)[0])
     job.updated_at = utcnow()
 
 
@@ -495,6 +513,7 @@ def summary(job: Job, db: Session) -> dict[str, Any]:
         "retention": job.retention,
         "cron": job.cron,
         "timezone": job.timezone,
+        "skip_mounts": sorted(mounts.stored(job.skip_mounts)),
         "notifications": notification_names(db, job.id) if job.id is not None else [],
     }
 
@@ -503,7 +522,8 @@ def summary(job: Job, db: Session) -> dict[str, Any]:
 
 
 def fire_text(fire: datetime) -> str:
-    return f"{fire:%a %Y-%m-%d %H:%M %Z} ({fire.astimezone(UTC):%H:%M} UTC)"
+    local = f"{fire:%a %Y-%m-%d %H:%M %Z}"
+    return local if not fire.utcoffset() else f"{local} ({fire.astimezone(UTC):%H:%M} UTC)"
 
 
 def upcoming(cron: str, tz: str, count: int) -> tuple[list[str], str | None]:
@@ -566,6 +586,7 @@ def choices(request: Request, db: Session) -> dict[str, Any]:
         "default_tz": request.app.state.settings.tz,
         "zones": sorted(known_zones()),
         "schedule_presets": SCHEDULE_PRESETS,
+        "mount_label": mounts.label,
         "notification_targets": db.scalars(
             select(NotificationTarget).order_by(NotificationTarget.name)
         ).all(),
@@ -593,6 +614,7 @@ def job_page(
     **context: Any,
 ) -> Response:
     context.setdefault("form", JobForm.from_job(job, db))
+    context.setdefault("skip_mounts", sorted(mounts.stored(job.skip_mounts)))
     context.setdefault("errors", [])
     context.setdefault("error", None)
     context.setdefault("passphrases", None)
@@ -637,7 +659,14 @@ def list_jobs(request: Request, auth: Viewer, db: Session = Depends(get_db)) -> 
         (j, hosts.get(j.host_id), targets.get(j.storage_target_id), last_runs.get(j.id))
         for j in jobs
     ]
-    return render(request, "jobs/list.html", auth=auth, rows=rows, scope_labels=SCOPE_LABELS)
+    return render(
+        request,
+        "jobs/list.html",
+        auth=auth,
+        rows=rows,
+        scope_labels=SCOPE_LABELS,
+        schedule_label=schedule_label,
+    )
 
 
 @router.get("/new")
@@ -653,6 +682,24 @@ def new_job_form(request: Request, auth: Admin, db: Session = Depends(get_db)) -
     )
 
 
+def host_inventory(
+    request: Request, db: Session, host_id: str, wanted: bool
+) -> tuple[Host | None, list[inventory.ProjectGroup] | None, str | None]:
+    """The host the form names and, when wanted, its inventory (None if not read) and the
+    error that stopped it. Reads the host like its inventory page does; the session's
+    lock is released first."""
+    ident = as_id(host_id)
+    host = db.get(Host, ident) if ident is not None else None
+    if host is None or not wanted:
+        return host, None, None
+    host = release(db, host)  # no lock while waiting on the network
+    try:
+        with open_host(request, host, INVENTORY_TIMEOUT) as handle:
+            return host, inventory.list_inventory(handle.client, manager(request).instance_id), None
+    except DOCKER_ERRORS as exc:
+        return host, None, str(exc) or type(exc).__name__
+
+
 @router.get("/target-options")
 def target_options(
     request: Request,
@@ -665,23 +712,46 @@ def target_options(
     job form's target field as the host and type change. Also a page of its own. Reads
     the host like its inventory does and writes nothing."""
     names: list[str] = []
-    error = None
-    ident = as_id(host_id)
-    host = db.get(Host, ident) if ident is not None else None
-    if host is not None and target_type in TARGET_TYPES:
-        host = release(db, host)  # no lock while waiting on the network
-        try:
-            with open_host(request, host, INVENTORY_TIMEOUT) as handle:
-                groups = inventory.list_inventory(handle.client, manager(request).instance_id)
-        except DOCKER_ERRORS as exc:
-            error = str(exc) or type(exc).__name__
-        else:
-            if target_type == "stack":
-                names = sorted({g.project for g in groups if g.project})
-            else:
-                names = sorted(c.name for g in groups for c in g.containers)
+    host, groups, error = host_inventory(request, db, host_id, target_type in TARGET_TYPES)
+    if groups is not None and target_type == "stack":
+        names = sorted({g.project for g in groups if g.project})
+    elif groups is not None:
+        names = sorted(c.name for g in groups for c in g.containers)
     return render(
         request, "jobs/target_options.html", auth=auth, host=host, names=names, error=error
+    )
+
+
+@router.get("/mount-options")
+def mount_options(
+    request: Request,
+    auth: Admin,
+    host_id: str = Query("", max_length=20),
+    target_type: str = Query("container", max_length=16),
+    target: str = Query("", max_length=255),
+    skip_mounts: Annotated[list[str], Query()] = [],  # noqa: B006 (sliced and checked below)
+    db: Session = Depends(get_db),
+) -> Response:
+    """The target's bind mounts and volumes (#mount-options) as tick boxes, the ones in
+    skip_mounts ticked. Ticked keys the host no longer shows stay listed, so saving never
+    drops them silently. Reads the host like its inventory does and writes nothing."""
+    skipped = sorted({k for k in skip_mounts[: mounts.MAX_SKIPS] if mounts.key_error(k) is None})
+    found: list[mounts.Choice] | None = None
+    wanted = target_type in TARGET_TYPES and bool(target.strip())
+    host, groups, error = host_inventory(request, db, host_id, wanted)
+    if groups is not None:
+        found = mounts.choices(groups, target_type, target.strip())
+    known = {c.key for c in found or []}
+    return render(
+        request,
+        "jobs/mount_options.html",
+        auth=auth,
+        host=host,
+        found=found,
+        others=[k for k in skipped if k not in known],
+        skipped=set(skipped),
+        error=error,
+        label=mounts.label,
     )
 
 
@@ -737,6 +807,8 @@ def create_job(
     notify_success: Annotated[list[str] | None, Form()] = None,
     notify_failure: Annotated[list[str] | None, Form()] = None,
     notifications: FormStr = "",
+    skip_mounts: Annotated[list[str] | None, Form()] = None,
+    skip_mounts_sent: FormStr = "",
     db: Session = Depends(get_db),
 ) -> Response:
     form = submitted(
@@ -766,6 +838,8 @@ def create_job(
         notify_success=notify_success,
         notify_failure=notify_failure,
         notifications=notifications,
+        skip_mounts=skip_mounts,
+        skip_mounts_sent=skip_mounts_sent,
     )
     if not form.retention_mode:
         form.retention_mode, form.keep_last = "last", str(retention.DEFAULT_KEEP_LAST)
@@ -843,6 +917,8 @@ def update_job(
     notify_success: Annotated[list[str] | None, Form()] = None,
     notify_failure: Annotated[list[str] | None, Form()] = None,
     notifications: FormStr = "",
+    skip_mounts: Annotated[list[str] | None, Form()] = None,
+    skip_mounts_sent: FormStr = "",
     db: Session = Depends(get_db),
 ) -> Response:
     job = get_job(db, job_id)
@@ -873,6 +949,8 @@ def update_job(
         notify_success=notify_success,
         notify_failure=notify_failure,
         notifications=notifications,
+        skip_mounts=skip_mounts,
+        skip_mounts_sent=skip_mounts_sent,
     )
     errors, pre_ids, post_ids = validate(db, form, request.app.state.settings.tz, job.id)
     if errors:

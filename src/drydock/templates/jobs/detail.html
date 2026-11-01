@@ -5,7 +5,7 @@
 {% block content %}
 <div class="mb-4 flex flex-wrap items-center gap-3">
   <h1 class="text-3xl font-bold break-all">Job {{ job.name }}</h1>
-  {% if not job.enabled %}<span class="badge badge-soft badge-neutral">disabled</span>{% endif %}
+  {% if not job.enabled %}<span class="badge badge-soft badge-error">disabled</span>{% endif %}
   {% if auth.user.role >= Role.operator and job.enabled %}
   <form method="post" action="/jobs/{{ job.id }}/run" hx-post="/jobs/{{ job.id }}/run" hx-nonce="{{ csp_nonce }}" class="ml-auto">
     <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
@@ -32,8 +32,10 @@
     <div class="card-body">
       <h2 id="summary-heading" class="card-title">Summary</h2>
       <dl class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
+        <dt class="opacity-70">Status</dt><dd>{% if job.enabled %}<span class="badge badge-success">enabled</span> Runs on its schedule and with Run now.{% else %}<span class="badge badge-error">disabled</span> No scheduled runs, and Run now is refused.{% endif %}</dd>
         <dt class="opacity-70">Host</dt><dd>{{ host.name if host else "?" }}</dd>
         <dt class="opacity-70">Backs up</dt><dd class="break-all">{{ "Compose project" if job.target_type == "stack" else "Container" }} <span class="font-mono">{{ job.target }}</span></dd>
+        <dt class="opacity-70">Skipped mounts</dt><dd class="break-all">{% if skip_mounts %}{% for key in skip_mounts %}<span class="font-mono">{{ mount_label(key) }}</span>{% if not loop.last %}, {% endif %}{% endfor %}{% else %}none: every mount is backed up{% endif %}</dd>
         <dt class="opacity-70">Scope</dt><dd>{{ scope_labels.get(job.scope, job.scope) }}</dd>
         <dt class="opacity-70">Consistency</dt><dd>{{ mode_labels.get(job.consistency_mode, job.consistency_mode) }}</dd>
         {% for phase, label in (("before", "Hooks before"), ("after", "Hooks after")) %}
@@ -89,7 +91,7 @@
       {% endif %}
       <form method="post" action="/jobs/{{ job.id }}" hx-post="/jobs/{{ job.id }}" hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-1">
         <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
-        {{ job_fields(form, "edit", hosts, targets, scope_labels, mode_labels, target_labels, available_hooks, live_warning, retention_labels, default_tz, csp_nonce, notification_targets, zones, schedule_presets) }}
+        {{ job_fields(form, "edit", hosts, targets, scope_labels, mode_labels, target_labels, available_hooks, live_warning, retention_labels, default_tz, csp_nonce, notification_targets, zones, schedule_presets, mount_label) }}
         <div class="mt-2">{{ submit("Save") }}</div>
       </form>
     </div>

@@ -1883,6 +1883,11 @@ def plan_binds(draft: Draft) -> dict[str, str]:
                 )
             else:
                 draft.warnings.append(f"Bind mount {source} is shared with the original container.")
+        if entry.data_member is None and entry.skipped and entry.skipped != "a system path":
+            draft.warnings.append(
+                f"Bind mount {source} is not in the archive ({entry.skipped}). The container "
+                "still binds it: create the directory on the target first if it is missing."
+            )
         has_data = (
             entry.data_member is not None and n not in choice.skip_binds and (overwrite or remapped)
         )

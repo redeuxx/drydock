@@ -2137,3 +2137,36 @@ def test_own_container_is_found_without_an_id_hostname(
             return []
 
     assert inventory.own_container(Remote()) is None
+
+
+def test_mounts_the_job_skipped_get_no_wipe_and_no_data() -> None:
+    """An archive whose job skipped a volume and a bind: the containers still mount both,
+    an overwrite neither wipes nor writes them, and the plan warns about the bind."""
+    info = with_binds(web_info(), [("/srv/cache", "/cache", True)])
+    manifest, configs = make_archive([info])
+    reason = "the job skips it"
+    skipped_volumes = [
+        v.model_copy(update={"data_member": None, "skipped": reason})
+        if v.name == "shop_content"
+        else v
+        for v in manifest.volumes
+    ]
+    skipped_binds = [
+        b.model_copy(update={"data_member": None, "skipped": reason}) for b in manifest.binds
+    ]
+    members = [
+        member
+        for member in manifest.members
+        if member not in {b.data_member for b in manifest.binds} | {"volumes/shop_content.tar"}
+    ]
+    manifest = manifest.model_copy(
+        update={"volumes": skipped_volumes, "binds": skipped_binds, "members": members}
+    )
+
+    plan = build((manifest, configs), target(), choice("overwrite"))
+    assert ("volume", "shop_content") not in {(w.kind, w.target) for w in plan.wipes}
+    assert not [d for d in plan.data if d.target in ("shop_content", "/srv/cache")]
+    assert any(v.name == "shop_content" for v in plan.volumes)  # still created or reused
+    assert any(
+        "Bind mount /srv/cache is not in the archive (the job skips it)" in w for w in plan.warnings
+    )

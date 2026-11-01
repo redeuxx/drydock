@@ -46,6 +46,8 @@
       {% if stack %}<dt class="opacity-70">Stack</dt><dd class="break-all">Compose project <span class="font-mono">{{ manifest.job.project }}</span>, {{ manifest.containers|length }} containers</dd>{% endif %}
       <dt class="opacity-70">Containers</dt><dd class="font-mono break-all">{{ manifest.containers|map(attribute="name")|join(", ") or "none" }}</dd>
       <dt class="opacity-70">Volumes</dt><dd class="font-mono break-all">{{ manifest.volumes|map(attribute="name")|join(", ") or "none" }}</dd>
+      {% set skipped_volumes = manifest.volumes|selectattr("skipped")|list %}
+      {% if skipped_volumes %}<dt class="opacity-70">Not in the archive</dt><dd class="break-all">{% for volume in skipped_volumes %}volume <span class="font-mono">{{ volume.name }}</span> ({{ volume.skipped }}; created empty if missing){% if not loop.last %}, {% endif %}{% endfor %}</dd>{% endif %}
       <dt class="opacity-70">Bind mounts</dt><dd class="font-mono break-all">{{ manifest.binds|map(attribute="source")|join(", ") or "none" }}</dd>
       <dt class="opacity-70">Images</dt><dd class="font-mono break-all">{% for image in manifest.images %}{{ image.refs|join(", ") or image.id[:19] }}{% if not image.saved %} (by reference){% endif %}{% if not loop.last %}; {% endif %}{% else %}none{% endfor %}</dd>
       {% if manifest.compose_files %}

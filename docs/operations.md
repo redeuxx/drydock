@@ -1,5 +1,26 @@
 # Running drydock
 
+## Backing up drydock itself
+
+Drydock never backs up its own deployment: stopping itself or its socket proxy would leave nothing to start them again, and a live archive would hold its own secret key. Protect these yourself:
+
+| What | Why |
+|---|---|
+| `secrets/drydock_secret_key` | The only key to every encrypted archive. Losing it cannot be undone. Copy it once into a password manager or offline, never next to the archives. |
+| `.env` and `compose.override.yaml` | The address and the mounts. Small; keep them with the key. |
+| The `drydock-data` volume | Users, hosts, storage, jobs and history. Losing it loses no archive: a new drydock with the same key restores them all, after hosts and storage are added again. |
+
+To copy the volume (the paths are examples):
+
+```sh
+cd /opt/drydock
+docker compose stop drydock     # up to 90 s: it starts anything it had stopped first
+docker run --rm -v drydock_drydock-data:/data:ro -v /srv/drydock:/out busybox tar czf /out/drydock-data-$(date +%F).tgz -C /data .
+docker compose start drydock
+```
+
+To restore it, stop drydock, unpack the copy into an empty `drydock_drydock-data` volume, put the same key file back and start drydock.
+
 ## Upgrading
 
 Drydock migrates its database at startup, and a migration is one-way: an older image refuses to start on a database a newer one has migrated, and archives a newer build writes may not verify in an older one. Archives from older builds restore in newer ones. To upgrade:

@@ -367,6 +367,23 @@ def test_each_scope_produces_exactly_its_members(local_target, tmp_path: Path) -
 
 
 @needs_docker
+def test_a_skipped_volume_is_mounted_but_not_saved(local_target, tmp_path: Path) -> None:
+    handle, target = local_target
+    container, volume = target["container"], target["volume"]
+    env = make_env(handle, tmp_path, Crypto((os.urandom(32),)), "local")
+    skips = frozenset({f"volume:{volume.name}", "bind:/not/mounted/here"})
+    out = tmp_path / "skip.tar.zst"
+    manifest, _, lines = run(env, job("all", skip_mounts=skips), [container.id], out)
+    (entry,) = manifest.volumes
+    assert entry.name == volume.name and entry.mounts  # the container still mounts it
+    assert entry.data_member is None and entry.skipped == capture.SKIPPED_BY_JOB
+    assert entry.config_member is not None
+    assert not [name for name in members_of(out) if name.startswith("volumes/")]
+    assert f"Skipped the data of volume {volume.name}: the job skips it." in lines
+    assert helpers_left(handle.client, TEST_INSTANCE) == []
+
+
+@needs_docker
 def test_encrypted_capture(local_target, tmp_path: Path) -> None:
     if not (AGE_DIR / "age").is_file():
         pytest.skip("needs the age CLI")

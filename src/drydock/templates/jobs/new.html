@@ -12,7 +12,7 @@
     {% endif %}
     <form method="post" action="/jobs" hx-post="/jobs" hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-1">
       <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
-      {{ job_fields(form, "new", hosts, targets, scope_labels, mode_labels, target_labels, available_hooks, live_warning, retention_labels, default_tz, csp_nonce, notification_targets, zones, schedule_presets) }}
+      {{ job_fields(form, "new", hosts, targets, scope_labels, mode_labels, target_labels, available_hooks, live_warning, retention_labels, default_tz, csp_nonce, notification_targets, zones, schedule_presets, mount_label) }}
       <div class="mt-2">{{ submit("Add job") }}</div>
     </form>
   </div>

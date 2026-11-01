@@ -556,3 +556,39 @@ async def test_the_job_form_suggests_the_hosts_containers_and_projects(admin: Br
     assert f'<option value="{project}-web-1">' in containers.text
     assert f'<option value="{project}">' in stacks.text
     assert f'<option value="{project}-web-1">' not in stacks.text
+
+
+@needs_docker
+async def test_the_job_form_lists_the_targets_mounts_to_skip(admin: Browser) -> None:
+    with admin.app.state.sessionmaker() as db, db.begin():
+        host = Host(name="local", kind="local", docker_url=DOCKER_URL, enabled=True)
+        db.add(host)
+        db.flush()
+        host_id = host.id
+    project = f"drydock-test-mounts-{uuid.uuid4().hex[:8]}"
+    with host_docker() as handle:
+        volume = handle.client.volumes.create(f"{project}_data", labels={TEST_LABEL: "1"})
+        box = handle.client.containers.create(
+            IMAGE,
+            ["sleep", "60"],
+            name=f"{project}-db-1",
+            labels={TEST_LABEL: "1", "com.docker.compose.project": project},
+            mounts=[docker.types.Mount("/data", volume.name, type="volume")],
+        )
+        try:
+            listed = await admin.get(
+                "/jobs/mount-options",
+                params={
+                    "host_id": host_id,
+                    "target_type": "stack",
+                    "target": project,
+                    "skip_mounts": ["bind:/gone/elsewhere"],
+                },
+            )
+        finally:
+            box.remove(force=True)
+            volume.remove(force=True)
+    assert f'value="volume:{volume.name}">' in listed.text  # offered, not ticked
+    assert f"{project}-db-1:/data" in listed.text
+    assert 'value="bind:/gone/elsewhere" checked' in listed.text
+    assert "not a mount of this target now" in listed.text

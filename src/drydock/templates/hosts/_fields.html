@@ -40,6 +40,7 @@
   <input type="checkbox" class="checkbox checkbox-sm" name="enabled" value="1"{% if form.enabled %} checked{% endif %}>
   Enabled
 </label>
+<p class="label whitespace-normal">Drydock connects to it, its jobs run and restores can go to it. Untick to pause it without losing its settings: drydock disconnects and its jobs fail until it is enabled again.</p>
 {%- endmacro %}
 
 {% macro key_fields(prefix, key_source) -%}

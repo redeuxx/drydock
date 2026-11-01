@@ -137,6 +137,9 @@ async def populate(browser: Browser) -> None:
                 "cron": "0 3 * * 0",
                 "timezone": "Europe/Berlin",
                 "notifications": "1",
+                # Ignored by versions before 0011.
+                "skip_mounts_sent": "1",
+                "skip_mounts": "bind:/srv/web-cache",
                 "notify_success": str(ops),
                 "notify_failure": str(ops),
             },

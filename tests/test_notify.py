@@ -587,7 +587,7 @@ def test_migration_0008_creates_and_drops_the_tables(tmp_path: Path) -> None:
             conn.commit()
         alembic_to(engine, "head")
         with closing(sqlite3.connect(path)) as conn:
-            assert version(conn) == [("0010",)]
+            assert version(conn) == [("0011",)]
             assert "kind IN ('webhook', 'email', 'ntfy', 'gotify', 'url')" in (
                 table_sql(conn, "notification_targets") or ""
             )

@@ -551,7 +551,7 @@ def test_migration_0009_widens_the_storage_kinds(tmp_path: Path) -> None:
             conn.commit()
         alembic_to(engine, "head")
         with closing(sqlite3.connect(path)) as conn:
-            assert version(conn) == [("0010",)]
+            assert version(conn) == [("0011",)]
             assert "AUTOINCREMENT" in (table_sql(conn, "storage_targets") or "")
             for kind in ("sftp", "smb", "webdav", "drive"):
                 conn.execute(insert, (kind, kind))

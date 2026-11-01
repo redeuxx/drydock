@@ -16,6 +16,7 @@
   <input type="checkbox" class="checkbox checkbox-sm" name="enabled" value="1"{% if form.enabled %} checked{% endif %}>
   Enabled
 </label>
+<p class="label whitespace-normal">Jobs back up to it. Untick to pause it without losing its settings; jobs that use it fail until it is enabled again.</p>
 {%- endmacro %}
 
 {# Remote storage options, one macro per option type. The help text is rclone's own unless
@@ -202,4 +203,5 @@
   <input type="checkbox" class="checkbox checkbox-sm" name="enabled" value="1"{% if form.enabled %} checked{% endif %}>
   Enabled
 </label>
+<p class="label whitespace-normal">Jobs back up to it. Untick to pause it without losing its settings; jobs that use it fail until it is enabled again.</p>
 {%- endmacro %}

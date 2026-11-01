@@ -204,6 +204,9 @@ class Job(Base):
     # JSON lists of hooks.id in run order. Admins attach hooks; only superadmins edit them.
     pre_hooks: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
     post_hooks: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
+    # JSON list of mounts whose data the job leaves out: "bind:<host path>" or
+    # "volume:<name>" (jobs.mounts). The containers still mount them on restore.
+    skip_mounts: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
     # JSON policy, see jobs.retention. Applied after each successful backup.
     retention: Mapped[str] = mapped_column(
         Text,

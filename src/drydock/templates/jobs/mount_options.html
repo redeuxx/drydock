@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Mounts{% endblock %}
+{% block content %}
+<h1 class="mb-4 text-3xl font-bold">Mounts{% if host %} on {{ host.name }}{% endif %}</h1>
+{# The job form loads this element alone (hx-select="#mount-options") when the target or
+   host changes, or on "List the mounts". Ticked boxes are the mounts the job skips. #}
+<div id="mount-options" class="flex flex-col gap-1">
+  {% if error %}
+  <p class="label whitespace-normal text-warning">Could not list the host ({{ error }}). The mounts already skipped stay as they are.</p>
+  {% elif found is none %}
+  <p class="label whitespace-normal">{% if host %}Choose the target first: nothing by that name is on {{ host.name }}.{% else %}Choose the host and the target first.{% endif %}</p>
+  {% elif not found %}
+  <p class="label whitespace-normal">The target has no volumes or bind mounts.</p>
+  {% endif %}
+  {% for choice in found or [] %}
+  <label class="label gap-2 whitespace-normal">
+    <input type="checkbox" class="checkbox checkbox-sm" name="skip_mounts" value="{{ choice.key }}"{% if choice.key in skipped %} checked{% endif %}>
+    <span><span class="font-mono">{{ choice.source }}</span> <span class="opacity-70">({{ choice.kind }}, used by {{ choice.used_by|join(", ") }})</span></span>
+  </label>
+  {% endfor %}
+  {% for key in others %}
+  <label class="label gap-2 whitespace-normal">
+    <input type="checkbox" class="checkbox checkbox-sm" name="skip_mounts" value="{{ key }}" checked>
+    <span><span class="font-mono">{{ label(key) }}</span> <span class="opacity-70">(not a mount of this target now; untick to drop it)</span></span>
+  </label>
+  {% endfor %}
+</div>
+{% endblock %}

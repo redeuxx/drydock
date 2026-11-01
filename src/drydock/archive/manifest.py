@@ -97,6 +97,7 @@ class VolumeEntry(Strict):
     mounts: list[MountRef]
     config_member: str | None = None
     data_member: str | None = None  # volumes/<name>.tar, members named "./..."
+    skipped: str | None = None  # why the data was not captured (the job skips it)
 
 
 class BindEntry(Strict):
@@ -106,7 +107,7 @@ class BindEntry(Strict):
     mounts: list[MountRef]
     # binds/<n>.tar. A dir bind's members are "./..."; a file bind holds one member "b<n>".
     data_member: str | None = None
-    skipped: str | None = None  # why the data was not captured (a system path)
+    skipped: str | None = None  # why the data was not captured (a system path, or the job)
 
 
 class ImageEntry(Strict):

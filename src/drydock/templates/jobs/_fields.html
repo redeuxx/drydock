@@ -1,5 +1,12 @@
 {# Job settings, shared by the add form and the job page. #}
-{% macro job_fields(form, prefix, hosts, targets, scope_labels, mode_labels, target_labels, available_hooks, live_warning, retention_labels, default_tz, csp_nonce, notification_targets, zones, schedule_presets) -%}
+{% macro job_fields(form, prefix, hosts, targets, scope_labels, mode_labels, target_labels, available_hooks, live_warning, retention_labels, default_tz, csp_nonce, notification_targets, zones, schedule_presets, mount_label) -%}
+<div class="fieldset">
+  <label class="label gap-2 text-base font-semibold">
+    <input type="checkbox" class="checkbox" name="enabled" value="1"{% if form.enabled %} checked{% endif %}>
+    Enabled
+  </label>
+  <p class="label whitespace-normal">Runs on its schedule and with Run now. Untick to pause the job without deleting it; its archives stay.</p>
+</div>
 <div class="fieldset">
   <label class="fieldset-legend" for="{{ prefix }}-name">Name</label>
   <input id="{{ prefix }}-name" class="input w-full" name="name" value="{{ form.name }}" autocomplete="off" required maxlength="64">
@@ -43,6 +50,20 @@
     <option value="{{ value }}"{% if form.scope == value %} selected{% endif %}>{{ label }}</option>
     {% endfor %}
   </select>
+</div>
+<div class="fieldset">
+  <span class="fieldset-legend">Skip mounts</span>
+  <input type="hidden" name="skip_mounts_sent" value="1">
+  <p class="label whitespace-normal">Tick a volume or bind mount whose data can be rebuilt, such as a cache, to leave it out of every backup. The container still mounts it. A restore creates a missing volume empty; a missing host directory has to be created first.</p>
+  <div id="{{ prefix }}-mount-list" aria-live="polite" hx-get="/jobs/mount-options" hx-trigger="change from:#{{ prefix }}-target" hx-include="#{{ prefix }}-host, #{{ prefix }}-target-type, #{{ prefix }}-target, #{{ prefix }}-mount-list" hx-target="this" hx-select="#mount-options" hx-swap="innerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}">
+    {% for key in form.skip_mounts %}
+    <label class="label gap-2 whitespace-normal">
+      <input type="checkbox" class="checkbox checkbox-sm" name="skip_mounts" value="{{ key }}" checked>
+      <span class="font-mono">{{ mount_label(key) }}</span>
+    </label>
+    {% endfor %}
+  </div>
+  <div><button type="button" class="btn btn-outline btn-sm mt-1" hx-get="/jobs/mount-options" hx-include="#{{ prefix }}-host, #{{ prefix }}-target-type, #{{ prefix }}-target, #{{ prefix }}-mount-list" hx-target="#{{ prefix }}-mount-list" hx-select="#mount-options" hx-swap="innerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}">List the mounts</button></div>
 </div>
 <div class="fieldset">
   <label class="fieldset-legend" for="{{ prefix }}-mode">Consistency</label>
@@ -128,7 +149,7 @@
   </table>
   <p class="label whitespace-normal">Failure includes runs that were cancelled or interrupted by a restart of drydock.</p>
   {% else %}
-  <p class="label whitespace-normal">No notification targets yet. An admin adds them under Notifications.</p>
+  <p class="label whitespace-normal">No notification targets yet. A superadmin adds them under <a class="link" href="/notifications">Notifications</a>.</p>
   {% endif %}
 </fieldset>
 <label class="label mt-2 gap-2 whitespace-normal">
@@ -141,8 +162,4 @@
   With scope "Everything", store images the registry still serves by reference only
 </label>
 <p id="{{ prefix }}-images-hint" class="label whitespace-normal">Saves space, but a restore then has to pull the image. Drydock asks the image's registry to confirm its exact digest at backup time; locally built images, private registries drydock cannot read, and any lookup error mean the image is saved in full. The run log says which images were saved.</p>
-<label class="label mt-2 gap-2">
-  <input type="checkbox" class="checkbox checkbox-sm" name="enabled" value="1"{% if form.enabled %} checked{% endif %}>
-  Enabled
-</label>
 {%- endmacro %}

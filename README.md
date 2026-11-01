@@ -71,6 +71,6 @@ Port 8000 is open to every network that can reach the host; Docker's published p
 - [Hosts](docs/hosts.md): the local socket proxy, remote hosts over SSH and helper containers.
 - [Backups](docs/backups.md): storage, jobs, consistency modes, stacks, hooks, schedules, retention, notifications and the archive format.
 - [Restore](docs/restore.md): restore modes, what needs a superadmin, and the host-path denylist.
-- [Running drydock](docs/operations.md): upgrading and container hardening.
+- [Running drydock](docs/operations.md): backing up drydock itself, upgrading and container hardening.
 - [Threat model](docs/threat-model.md), [SECURITY.md](SECURITY.md) and [CHANGELOG.md](CHANGELOG.md).
 - [Development](docs/development.md): dev loop, tests, CI and releases. [Measurements](docs/measurements.md): Phase 1 and 2 results.

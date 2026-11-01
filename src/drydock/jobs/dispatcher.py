@@ -137,7 +137,7 @@ from drydock.hosts.inventory import (
     stop_timeout,
 )
 from drydock.hosts.manager import HostManager, HostUnavailable
-from drydock.jobs import hooks, retention
+from drydock.jobs import hooks, mounts, retention
 from drydock.jobs.runlog import RunLog, env_values, log_dir, log_path
 from drydock.models import Backup, Host, Job, Run, StorageTarget, Upload, utcnow
 from drydock.models import Hook as HookRow
@@ -2156,6 +2156,7 @@ class Dispatcher:
                     encrypted=job.encrypted,
                     target_type=job.target_type,
                     project=project,
+                    skip_mounts=mounts.stored(job.skip_mounts),
                 ),
                 host=host,
                 storage_target_id=target.id,
