@@ -33,6 +33,11 @@ The first release.
 - Job pages show the summary and recent runs; editing has a page of its own.
 - Times show in drydock's time zone (`TZ`), with UTC beside them.
 
+### Fixed during release validation
+- Backups over SSH no longer buffer without bound when the link is faster than drydock writes (asyncssh's channel window ignored buffered data); a 100 GB run now stays at about 155 MiB.
+- A new-name restore onto another host than the original's keeps published ports and writes bind mount data.
+- Run logs no longer mask values that are part of names drydock shows anyway, such as `POSTGRES_DB=<project>`.
+
 ### Security
 - Roles (viewer, operator, admin, superadmin), Argon2id passwords, sessions with idle and absolute limits, re-authentication for sensitive actions, CSRF protection, a strict CSP and an audit log.
 - Secrets in the database are encrypted with the secret key, which supports rotation.

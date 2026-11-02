@@ -1,6 +1,6 @@
 # Measurements
 
-Results of the Phase 1 spikes and the Phase 2 checks, with the commands to repeat them.
+Results of the Phase 1 spikes, the Phase 2 checks and the Phase 8 release runs, with the commands to repeat them.
 
 ## Phase 1 measurements and decisions
 
@@ -70,4 +70,25 @@ Same machine as above, local host through the socket proxy (`tests/test_runs_doc
 
 ```sh
 docker compose -f compose.test.yaml run --rm tests uv run --no-sync pytest -s tests/test_runs_docker.py
+```
+
+## Phase 8 release runs
+
+Measured on 2026-11-01 on the release-validation VM: Ubuntu 26.04, 4 vCPUs, 3.3 GiB of RAM, Docker 29.9.2, with staging and local storage on one 250 GB virtual disk. All data was random (incompressible) and every archive encrypted.
+
+| Run | Result |
+|---|---|
+| 100 GB over SSH: five bind mounts (23, 23, 18, 18 and 18 GB) of one container on the VM itself, added as an SSH host, stop mode, into local storage | 18 min 16 s, 91 MB/s (87 MiB/s) end to end; drydock RSS 145 MiB at the start, peak 155 MiB; age peak 4.7 MiB; `/healthz` median 1.4 ms, p99 21 ms, max 55 ms (one sample every 5 s) |
+| 46 GB upload: the first two bind mounts of the run above as one archive, PUT from a Windows PC on the LAN the way the browser sends it | 81 s, 567 MB/s (541 MiB/s); drydock RSS peak 63 MiB; `/healthz` max 8 ms. Verifying the uploaded archive (decrypt, decompress, every member's checksum and the signature) took 3 min 21 s, 229 MB/s |
+| SSH across a VPN to a remote server (115 ms round trip) | The link limits it, and it varied during the day: scp moved 10 MB/s at 16:54 and 2.6 MB/s at 19:46. At the fast time drydock received 9.2 MB/s (a 100 GB run, cancelled after the link was measured); a 5 GB run averaged 3.9 MB/s (21 min 8 s) while the link was slower. drydock stayed at 155 to 185 MiB throughout |
+
+The 100 GB run is bound by the one disk: each byte is read from the bind mount, written to staging, read back and written into the archive, so the disk moves about four times the data.
+
+**Found by these runs: unbounded buffering over SSH.** The first 100 GB attempt grew drydock from 150 MiB to 3 GiB in 20 seconds until the kernel killed it (the run was then marked interrupted, the container started again and the partial archive removed, as recovery should). asyncssh 2.24.1 grants a full channel window again on the first delivery after reading resumes, although up to a window of earlier data still waits in its buffer, so each pause and resume lets the server send another window: a reader slower than the link buffers the whole stream. Over the slow VPN link it never showed. `drydock.hosts.ssh` now counts the buffered data in the window it grants, and `tests/test_ssh_memory.py` reads 256 MiB slowly over the test SSH host and fails if drydock grows by 64 MiB or more (it grew by 227 MiB without the fix). The Phase 1 throughput is unchanged: SSH reaches 94% of plain TCP for export and 88% for import.
+
+**Staging needs room for the largest member.** The VM's staging directory was first left on its 30 GB root disk; a 23 GB member fits there only once. Mount a larger disk at `DRYDOCK_STAGING_DIR` (see [configuration](configuration.md)) before backing up big volumes.
+
+```sh
+# The memory check and the SSH throughput probe
+docker compose -f compose.test.yaml run --rm tests uv run --no-sync pytest -s tests/test_ssh_memory.py tests/test_stream_probe.py
 ```

@@ -25,11 +25,47 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import asyncssh
+from asyncssh.channel import SSHChannel
+from asyncssh.constants import MSG_CHANNEL_WINDOW_ADJUST
+from asyncssh.packet import UInt32
 
 from drydock.crypto import Crypto
 from drydock.models import Host
 
 log = logging.getLogger("drydock.hosts.ssh")
+
+
+# CHANNEL WINDOW
+
+
+def _deliver_data(self: SSHChannel, data: bytes, datatype: int | None) -> None:
+    """asyncssh's SSHChannel._deliver_data (2.24.1), with the window grant counting the data
+    still buffered. asyncssh resets the window to its full size on the first delivery after
+    reading resumes, while up to a window of earlier data waits in _recv_buf: each pause
+    and resume then lets the server send another window, and a reader slower than the
+    link (a backup writing to a slow disk) made drydock buffer gigabytes until the kernel
+    killed it. Here the sender may only ever have one window outstanding."""
+    pending = sum(len(chunk) for chunk, _ in self._recv_buf)
+    if self._recv_window + pending < self._init_recv_window / 2:
+        adjust = self._init_recv_window - self._recv_window - pending
+        self.send_packet(MSG_CHANNEL_WINDOW_ADJUST, UInt32(adjust))
+        self._recv_window += adjust
+    if self._encoding:
+        try:
+            decoded = self._decoder.decode(data)
+        except UnicodeDecodeError as exc:
+            raise asyncssh.ProtocolError(str(exc)) from None
+    else:
+        decoded = data
+    if self._session is not None:
+        self._session.data_received(decoded, datatype)
+
+
+# ponytail: patches a private method; asyncssh is pinned in uv.lock and
+# tests/test_ssh_memory.py fails if an upgrade changes what this relies on.
+if asyncssh.__version__ != "2.24.1":
+    raise RuntimeError("Recheck the SSH channel window patch for this asyncssh version.")
+SSHChannel._deliver_data = _deliver_data  # type: ignore[method-assign]
 
 DEFAULT_PORT = 22
 DEFAULT_REMOTE_SOCKET = "/var/run/docker.sock"
