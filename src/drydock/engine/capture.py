@@ -27,6 +27,16 @@ and the helper keeps CapDrop=ALL. Volumes and directory binds are requested as
 "<mount>/.", so members are named "./..." relative to the root. A file bind holds one
 member named after its mount point, b<n>.
 
+With copy_first (stop and pause mode), the containers stay down only while their data is
+copied on their own host: a started helper with exactly STAGE_CAPS runs the fixed
+STAGE_SCRIPT, tar into an anonymous volume of its own at /s, then after_data runs and the
+copy is read from /s while the containers run again. Removing the helper removes the
+copy, and the reaper removes both after a crash. Before anything is stopped, a helper with
+exactly MEASURE_CAPS measures the data and the free space where the copy would go, and the
+run fails if it does not fit. A busybox tar copy keeps owners, modes, file and directory
+mtimes, hard links, symlinks and device files, but not extended attributes (Docker's own
+reader keeps file capabilities), a symlink's own mtime or holes in sparse files.
+
 Images are exported with the raw /images/get endpoint, with ?platform= on API 1.48 and
 later (docker-py has no public parameter for it), once per image ID.
 
@@ -41,6 +51,7 @@ import json
 import re
 import tarfile
 import threading
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -96,6 +107,12 @@ class CaptureJob:
     target_type: str = "container"
     project: str | None = None
     skip_mounts: frozenset[str] = frozenset()  # "bind:<host path>" or "volume:<name>"
+    copy_first: bool = False  # copy the data on the host, then let the containers run
+
+    @property
+    def stages(self) -> bool:
+        """Live mode holds nothing, so a copy would only add work."""
+        return self.copy_first and self.consistency_mode != "live" and self.scope in ("data", "all")
 
 
 @dataclass(frozen=True)
@@ -596,10 +613,10 @@ def bind_owner(box, n: int) -> tuple[int, int, int] | None:
     return first.uid, first.gid, first.mode & 0o3777
 
 
-def bind_kind(box, n: int) -> str:
+def bind_kind(box, n: int, root: str = "") -> str:
     """dir or file, from the daemon's stat header (the body is never read)."""
     try:
-        with helper.open_archive(box, f"/b{n}", DATA_CHUNK) as (_, stat):
+        with helper.open_archive(box, f"{root}/b{n}", DATA_CHUNK) as (_, stat):
             return "dir" if int(stat.get("mode", 0)) & GO_MODE_DIR else "file"
     except docker.errors.NotFound:
         raise CaptureError(f"Bind mount {n} cannot be read on the host.") from None
@@ -632,6 +649,145 @@ def image_stream(api, entry: m.ImageEntry, api_version: str) -> Iterator[bytes]:
         response.close()
 
 
+# COPY ON THE HOST
+
+STAGE_ROOT = "/s"
+# Read every file whatever its owner and recreate owners, modes, setuid bits and device
+# files in the copy. The helper has no network, and /s is its only writable mount.
+STAGE_CAPS = ["CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "MKNOD"]
+MEASURE_CAPS = ["DAC_OVERRIDE"]  # du lists directories of any owner
+STAGE_MARGIN = 1.1  # directories and tar's own rounding
+STAGE_RESERVE_KIB = 256 * 1024  # left free for everything else on that filesystem
+WAIT_POLL = 1.0  # seconds between checks while a helper runs
+STDERR_TAIL = 1024
+SMALL_FILE = 64 * 1024  # the most read back of a file a helper wrote
+# "$@" are the helper's own mount points (/v<n>, /b<n>), never a user's text. A directory
+# is copied into /s/<mount point>, a file bind to /s/<mount point>. busybox tar sets a
+# directory's mtime before writing into it, so a second pass extracts the directories
+# alone again. It only touches metadata, and it leaves out any path with a newline, which
+# would split its -T list (busybox tar has no --null): those keep the copy's time.
+STAGE_SCRIPT = (
+    "set -euo pipefail\n"
+    "nl='\n'\n"
+    'for src in "$@"; do\n'
+    '  name="${src#/}"\n'
+    '  if [ -d "$src" ]; then\n'
+    '    mkdir "/s/$name"\n'
+    '    tar -C "$src" -cf - . | tar -C "/s/$name" -xpf -\n'
+    '    (cd "$src" && find . -type d ! -path "*$nl*" | tar -cf - --no-recursion -T - |'
+    ' tar -C "/s/$name" -xpf -)'
+    ' || echo "Some directories keep the time of the copy." >&2\n'
+    "  else\n"
+    '    tar -C / -cf - "$name" | tar -C /s -xpf -\n'
+    "  fi\n"
+    "done\n"
+)
+MEASURE_SCRIPT = (
+    "set -euo pipefail\n"
+    "used=0\n"
+    'for src in "$@"; do\n'
+    '  kib=$(du -sk "$src" | cut -f1)\n'
+    '  bytes=$(du -sb "$src" | cut -f1)\n'
+    "  apparent=$(((bytes + 1023) / 1024))\n"
+    '  if [ "$apparent" -gt "$kib" ]; then kib=$apparent; fi\n'
+    "  used=$((used + kib))\n"
+    "done\n"
+    "free=$(df -kP /s | awk 'NR == 2 {print $4}')\n"
+    'echo "$used $free" > /s/measure\n'
+)
+
+
+def gib(kib: int) -> str:
+    return f"{kib / 1024 / 1024:.1f} GiB"
+
+
+def script_command(script: str, paths: list[str]) -> list[str]:
+    """A helper's command. The end of its standard error goes to /s/stderr: the socket
+    proxy in front of the local daemon refuses container logs, so drydock reads files
+    back instead. The exit status is the script's."""
+    tail = f"tail -c {STDERR_TAIL} > /s/stderr"
+    wrapped = f"set -o pipefail\n{{\n{script}\n}} 2>&1 >/dev/null | {tail}"
+    return ["sh", "-c", wrapped, "sh", *paths]
+
+
+def read_small(box, path: str) -> bytes:
+    """The first SMALL_FILE bytes of a file a helper wrote, through the archive endpoint;
+    empty when it is missing or unreadable."""
+    head = b""
+    try:
+        with helper.open_archive(box, path, DATA_CHUNK) as (chunks, _stat):
+            for chunk in chunks:
+                head += chunk
+                if len(head) > SMALL_FILE + OWNER_HEAD:
+                    break
+    except docker.errors.NotFound:
+        return b""
+    try:
+        with tarfile.open(fileobj=io.BytesIO(head), mode="r|") as tar:
+            member = tar.next()
+            if member is None or not member.isreg():
+                return b""
+            data = tar.extractfile(member)
+            return data.read(min(member.size, SMALL_FILE)) if data is not None else b""
+    except tarfile.TarError:
+        return b""
+
+
+def stage_mounts(plan: Plan) -> tuple[list[Mount], list[str]]:
+    """The data mounts plus an anonymous volume at /s, and the data mount points."""
+    mounts = data_mounts(plan)
+    return [*mounts, Mount(STAGE_ROOT, None, type="volume")], [mount["Target"] for mount in mounts]
+
+
+def wait_for(box, cancel: threading.Event, what: str) -> None:
+    """Waits until a started helper exits. Raises Cancelled on a cancel (the helper is
+    removed by its context), or CaptureError with the end of its standard error."""
+    api = box.client.api
+    while True:
+        state = api.inspect_container(box.id)["State"]
+        if state.get("Status") in ("exited", "dead"):
+            break
+        if cancel.wait(WAIT_POLL):
+            raise Cancelled("The run was cancelled.")
+    code = state.get("ExitCode")
+    if code == 0:
+        return
+    raw = read_small(box, f"{STAGE_ROOT}/stderr")[-STDERR_TAIL:]
+    tail = "".join(c if c.isprintable() else " " for c in raw.decode(errors="replace")).strip()
+    tail = tail or "no output, which a full disk also causes"
+    raise CaptureError(f"{what} on the host failed (exit status {code}): {tail}")
+
+
+def check_room(env: CaptureEnv, plan: Plan, cancel: threading.Event, log: Log) -> None:
+    """Fails the run before anything is stopped when the copy would not fit where Docker
+    keeps the host's volumes."""
+    mounts, paths = stage_mounts(plan)
+    command = script_command(MEASURE_SCRIPT, paths)
+    client = env.handle.client
+    with helper.helper(
+        client,
+        env.helper_image,
+        env.instance_id,
+        command=command,
+        mounts=mounts,
+        start=True,
+        cap_add=MEASURE_CAPS,
+    ) as box:
+        wait_for(box, cancel, "Measuring the data")
+        words = read_small(box, f"{STAGE_ROOT}/measure").decode(errors="replace").split()
+    if len(words) != 2 or not all(w.isascii() and w.isdigit() for w in words):
+        raise CaptureError("Could not measure the data on the host.")
+    used, free = int(words[0]), int(words[1])
+    need = int(used * STAGE_MARGIN) + STAGE_RESERVE_KIB
+    log(f"Copy on the host first: {gib(used)} of data, {gib(free)} free for the copy.")
+    if need > free:
+        raise CaptureError(
+            f"Not enough free space on {env.host_name} to copy the data there first: it needs "
+            f"about {gib(need)} where Docker keeps its volumes, and {gib(free)} is free. "
+            "Nothing was stopped. Free some space, or turn off copying on the host first."
+        )
+
+
 # CAPTURE
 
 
@@ -655,7 +811,7 @@ def capture(
 
     before_data runs once everything else is known, just before the data is read, and
     after_data once the last volume and bind mount are written, before the images (which
-    need nothing stopped or paused).
+    need nothing stopped or paused); with job.stages, once the copy on the host is done.
     secrets receives the values of captured env files, so the caller can redact them.
 
     On failure on_abort runs after the output is gone but before the helper is removed:
@@ -683,24 +839,50 @@ def capture(
     images = image_entries(client.api, plan, parts, job, cancel, log)
     if cancel.is_set():
         raise Cancelled("The run was cancelled.")
+    needs_helper = "data" in parts and bool(
+        set(plan.volumes) - set(plan.skipped_volumes) or set(plan.binds) - set(plan.refused_binds)
+    )
+    staged = needs_helper and job.stages
+    if staged:
+        check_room(env, plan, cancel, log)
+    bind_owners = skipped_bind_owners(env, plan, log) if "data" in parts else {}
     if before_data is not None:
         before_data()
         if cancel.is_set():
             raise Cancelled("The run was cancelled.")
-    needs_helper = "data" in parts and bool(
-        set(plan.volumes) - set(plan.skipped_volumes) or set(plan.binds) - set(plan.refused_binds)
-    )
-    bind_owners = skipped_bind_owners(env, plan, log) if "data" in parts else {}
     with contextlib.ExitStack() as stack:
         box = None
-        if needs_helper:
+        if staged:
+            mounts, paths = stage_mounts(plan)
+            log("Copying the data on the host.")
+            box = stack.enter_context(
+                helper.helper(
+                    client,
+                    env.helper_image,
+                    env.instance_id,
+                    command=script_command(STAGE_SCRIPT, paths),
+                    mounts=mounts,
+                    start=True,
+                    cap_add=STAGE_CAPS,
+                )
+            )
+        elif needs_helper:
             box = stack.enter_context(
                 helper.helper(client, env.helper_image, env.instance_id, mounts=data_mounts(plan))
             )
         try:
+            root = ""
+            if staged:
+                started = time.monotonic()
+                wait_for(box, cancel, "Copying the data")
+                log(f"Copied the data on the host in {time.monotonic() - started:.0f} s.")
+                root = STAGE_ROOT
+                if after_data is not None:
+                    after_data()  # the copy is read while the containers run
+                    after_data = None
             bind_kinds = (
                 {
-                    source: bind_kind(box, n)
+                    source: bind_kind(box, n, root)
                     for n, source in enumerate(plan.binds)
                     if source not in plan.refused_binds
                 }
@@ -727,9 +909,13 @@ def capture(
                 cancel=cancel,
             ) as writer:
                 writer.add_manifest(manifest)
-                write_members(writer, env, plan, manifest, images, box, log, after_data)
+                write_members(writer, env, plan, manifest, images, box, log, after_data, root)
                 result = writer.close()
         except BaseException:
+            if staged:
+                # Removing the copy is quick (its helper has exited, or is killed), and the
+                # containers should not start again on a disk it filled.
+                stack.close()
             if on_abort is not None:
                 on_abort()
             raise
@@ -746,6 +932,7 @@ def write_members(
     box,
     log: Log,
     after_data: Callable[[], None] | None = None,
+    root: str = "",  # STAGE_ROOT when the data was copied on the host first
 ) -> None:
     by_id = {c["Id"]: c for c in plan.containers}
     for entry in manifest.containers:
@@ -765,12 +952,12 @@ def write_members(
     for n, entry in enumerate(manifest.volumes):
         if entry.data_member:
             log(f"Saving volume {entry.name}.")
-            with contextlib.closing(archive_stream(box, f"/v{n}/.")) as chunks:
+            with contextlib.closing(archive_stream(box, f"{root}/v{n}/.")) as chunks:
                 writer.add_stream(entry.data_member, chunks)
     for entry in manifest.binds:
         if entry.data_member:
             log(f"Saving bind mount {entry.source}.")
-            path = f"/b{entry.n}/." if entry.kind == "dir" else f"/b{entry.n}"
+            path = f"{root}/b{entry.n}/." if entry.kind == "dir" else f"{root}/b{entry.n}"
             with contextlib.closing(archive_stream(box, path)) as chunks:
                 writer.add_stream(entry.data_member, chunks)
     if after_data is not None:

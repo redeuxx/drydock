@@ -364,9 +364,10 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 ### T24. Over-privileged helper containers
 
 **Threat:** the short-lived helper containers drydock creates to read and write data have more privileges than they need, run an image that can change, or are left behind.
-**Defence:** helpers drop all capabilities except the two or three each needs, use an image pinned by digest, carry an installation label, and are removed after use and at startup.
+**Defence:** helpers drop all capabilities except the few each needs, use an image pinned by digest, carry an installation label, and are removed after use and at startup. The two helpers of a backup that copies on the host first run fixed scripts with the data mounted read-only and an anonymous volume of their own as the only writable mount: one measures the data with exactly DAC_OVERRIDE, the other copies it with exactly CHOWN, DAC_OVERRIDE, FOWNER, FSETID and MKNOD. Their copy goes with them.
 **Tests:**
 - `tests/test_hosts_docker.py::test_helper_is_hardened_and_removed`
+- `tests/test_capture.py::test_copy_first_helpers_get_exactly_the_capabilities_they_need`
 - `tests/test_restore_apply_docker.py::test_wipe_helper_has_exactly_dac_override_and_fowner`
 - `tests/test_restore_apply_docker.py::test_data_helper_has_exactly_chown_fowner_and_fsetid`
 - `tests/test_hosts.py::test_helper_image_must_be_pinned_by_digest`

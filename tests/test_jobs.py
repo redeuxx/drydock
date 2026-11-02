@@ -6,6 +6,7 @@ against real daemons are in test_runs_docker.py.
 """
 
 import json
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -477,9 +478,10 @@ async def test_a_run_waits_for_startup_recovery_of_its_container(
                 Run(job_id=job_id, status="running", stopped_containers_json=json.dumps(stopped))
             )
     events: list[str] = []
+    release = threading.Event()  # recovery's restart holds until the test lets it go
 
     def slow_restart(api, targets, run_log) -> list[str]:
-        time.sleep(1.5)
+        release.wait(30)
         events.append("restarted")
         return []
 
@@ -492,6 +494,7 @@ async def test_a_run_waits_for_startup_recovery_of_its_container(
         assert run_status(browser, run_id) == "queued"
         log = runlog.log_path(settings.data_dir, run_id).read_text()
         assert "Waiting for startup recovery to finish" in log
+        release.set()
         await wait_until(lambda: run_status(browser, run_id) == "running", 10, "the run")
         assert events == ["restarted"]
         await browser.post(f"/runs/{run_id}/cancel")
@@ -813,6 +816,75 @@ async def test_a_jobs_targets_run_one_after_another(admin: Browser, fake_docker:
     for run_id in (again, again + 1, again + 2):
         await admin.app.state.dispatcher.wait(run_id)
         assert run_status(admin, run_id) == "cancelled"
+
+
+def resuming_backup(self, plan, handle, targets, cancel, run_log) -> None:
+    """A copy-first backup: its containers run again at once, then it uploads until
+    cancelled."""
+    if plan.job.stages:
+        plan.on_resumed()
+    blocking_backup(self, plan, handle, targets, cancel, run_log)
+
+
+async def test_a_copy_first_target_lets_the_next_start_during_its_upload(
+    admin: Browser, fake_docker: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Dispatcher, "_backup", resuming_backup)
+    monkeypatch.setattr(
+        Dispatcher,
+        "_resolve",
+        lambda self, handle, plan, refs, log: [Target(f"id-{plan.target}", plan.target, False)],
+    )
+    rows = extra_rows(("container", "worker"))
+    plain = await add_job(admin, "plain", scope="data", **rows)
+    copied = await add_job(
+        admin, "copied", scope="data", copy_first="1", copy_first_sent="1", **rows
+    )
+    # Without copying first, the next target waits for the whole run.
+    first = await start_run(admin, plain)
+    await wait_until(lambda: run_status(admin, first) == "running", 5, "first run starts")
+    await anyio.sleep(0.3)
+    assert run_status(admin, first + 1) == "queued"
+    await admin.post(f"/runs/{first}/cancel")
+    for run_id in (first, first + 1):
+        await admin.app.state.dispatcher.wait(run_id)
+    first = await start_run(admin, copied)
+    await wait_until(lambda: run_status(admin, first + 1) == "running", 5, "second target starts")
+    assert run_status(admin, first) == "running"
+    await admin.post(f"/runs/{first}/cancel")
+    for run_id in (first, first + 1):
+        await admin.app.state.dispatcher.wait(run_id)
+        assert run_status(admin, run_id) == "cancelled"
+
+
+async def test_copy_first_is_saved_shown_kept_and_needs_stop_or_pause(admin: Browser) -> None:
+    job_id = await add_job(admin, "copied", scope="data", copy_first="1", copy_first_sent="1")
+    assert admin.sql("SELECT copy_first FROM jobs") == [(1,)]
+    assert "start them again, copied on the host first" in (await admin.get(f"/jobs/{job_id}")).text
+    form = {
+        "name": "copied",
+        "host_id": str(admin.sql("SELECT host_id FROM jobs")[0][0]),
+        "target": "web",
+        "storage_target_id": str(admin.sql("SELECT storage_target_id FROM jobs")[0][0]),
+        "scope": "data",
+        "enabled": "1",
+    }
+    # A client that predates the option keeps the stored choice.
+    response = await admin.post(f"/jobs/{job_id}", form)
+    assert response.status_code == 303, response.text
+    assert admin.sql("SELECT copy_first FROM jobs") == [(1,)]
+    response = await admin.post(
+        f"/jobs/{job_id}",
+        form | {"consistency_mode": "live", "copy_first": "1", "copy_first_sent": "1"},
+    )
+    assert response.status_code == 422
+    assert "Copying the data on the host first needs stop or pause mode." in response.text
+    response = await admin.post(f"/jobs/{job_id}", form | {"copy_first_sent": "1"})
+    assert response.status_code == 303, response.text
+    assert admin.sql("SELECT copy_first FROM jobs") == [(0,)]
+    audit = admin.sql("SELECT details FROM audit_events WHERE action = 'job.update'")
+    changes = [json.loads(row[0]).get("copy_first") for row in audit]
+    assert {"from": True, "to": False} in changes
 
 
 async def test_the_job_list_shows_the_worst_run_of_the_newest_sequence(admin: Browser) -> None:

@@ -160,6 +160,9 @@ async def populate(browser: Browser) -> None:
                 "post_hooks": "app-flush",
                 "retention_mode": "last",
                 "keep_last": "3",
+                # Ignored by versions before 0014.
+                "copy_first": "1",
+                "copy_first_sent": "1",
                 # Ignored by versions before 0013.
                 "extra_targets_sent": "1",
                 "extra_target_type": "container",

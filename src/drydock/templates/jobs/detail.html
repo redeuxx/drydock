@@ -39,7 +39,7 @@
         <dt class="opacity-70">Backs up</dt><dd class="break-all">{% for spec in specs %}<span class="block">{% if specs|length > 1 %}{{ loop.index }}. {% endif %}{{ "Compose project" if spec.target_type == "stack" else "Container" }} <span class="font-mono">{{ spec.target }}</span></span>{% endfor %}{% if specs|length > 1 %}<span class="block text-xs opacity-70">One after another, each into its own archive.</span>{% endif %}</dd>
         <dt class="opacity-70">Skipped mounts</dt><dd class="break-all">{% if skip_mounts %}{% for key in skip_mounts %}<span class="font-mono">{{ mount_label(key) }}</span>{% if not loop.last %}, {% endif %}{% endfor %}{% else %}none: every mount is backed up{% endif %}</dd>
         <dt class="opacity-70">Scope</dt><dd>{{ scope_labels.get(job.scope, job.scope) }}</dd>
-        <dt class="opacity-70">Consistency</dt><dd>{{ mode_labels.get(job.consistency_mode, job.consistency_mode) }}</dd>
+        <dt class="opacity-70">Consistency</dt><dd>{{ mode_labels.get(job.consistency_mode, job.consistency_mode) }}{% if job.copy_first and job.consistency_mode != "live" and job.scope in ("data", "all") %}, copied on the host first{% endif %}</dd>
         {% for phase, label in (("before", "Hooks before"), ("after", "Hooks after")) %}
         {% set names = hooks|selectattr(0, "equalto", phase)|map(attribute=1)|list %}
         <dt class="opacity-70">{{ label }}</dt>

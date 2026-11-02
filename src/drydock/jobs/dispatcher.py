@@ -254,6 +254,9 @@ class RunPlan:
     storage_kind: str = "local"
     # A remote target's decrypted settings, secrets included: never in a repr or a log.
     storage_config: dict[str, Any] | None = field(default=None, repr=False, compare=False)
+    # Called from the worker thread once a copy-first run's containers run again and its
+    # post-hooks ran: the job's next target may start while this one uploads.
+    on_resumed: Callable[[], None] | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -293,6 +296,9 @@ class ActiveRun:
     task: asyncio.Task[None] | None = None
     started: bool = False  # holds its container locks; cancel no longer interrupts the task
     abandoned: bool = False  # shutdown gave up waiting for it (see _abandon)
+    # Set when a copy-first run's containers run again, so the next target need not wait
+    # for its upload (RunPlan.on_resumed).
+    resumed: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 def binds(hook: hooks.Hook, host_id: int, target_type: str, target: str) -> bool:
@@ -613,17 +619,18 @@ class Dispatcher:
             self._jobs.discard(job_id)
             raise
         # One run per target, each waiting for the one before: a target's containers run
-        # again (its run ends that way, whatever happened) before the next is touched.
+        # again (its run ends that way, whatever happened, or a copy-first run resumes
+        # them before its upload) before the next is touched.
         self._chains[job_id] = len(run_ids)
         # Every earlier one, not just the one before: a cancelled queued run ends at once.
-        earlier: list[tuple[int, asyncio.Task[None]]] = []
+        earlier: list[ActiveRun] = []
         for run_id in run_ids:
             active = ActiveRun(run_id, job_id)
             self._active[run_id] = active
             active.task = asyncio.create_task(
                 self._execute(active, job_id, tuple(earlier)), name=f"run-{run_id}"
             )
-            earlier.append((run_id, active.task))
+            earlier.append(active)
         return run_ids[0]
 
     async def submit_restore(
@@ -996,17 +1003,24 @@ class Dispatcher:
         self,
         active: ActiveRun,
         job_id: int,
-        after: tuple[tuple[int, asyncio.Task[None]], ...] = (),
+        after: tuple[ActiveRun, ...] = (),
     ) -> None:
         run_id = active.run_id
         run_log = RunLog(log_path(self.settings.data_dir, run_id))
         held: list[str] = []
         try:
-            waiting = [(other, task) for other, task in after if not task.done()]
+            waiting = [
+                (other.run_id, other.task, other.resumed)
+                for other in after
+                if other.task is not None and not other.task.done() and not other.resumed.is_set()
+            ]
             if waiting:
                 run_log(f"Waiting for run {waiting[-1][0]}, the job's previous target, to finish.")
-                await asyncio.wait({task for _, task in waiting})
+                for _, task, resumed in waiting:
+                    await until_resumed(task, resumed)
+            loop = asyncio.get_running_loop()
             plan = await run_blocking(self._load_plan, run_id, job_id)
+            plan = replace(plan, on_resumed=lambda: resumed_soon(loop, active.resumed))
             run_log.add_public([plan.job.name, plan.host.name, *plan.targets, plan.project or ""])
             if plan.job.encrypted:
                 run_log.add_secrets(self._crypto.job_passphrases(uuid.UUID(plan.job.uuid)))
@@ -1030,7 +1044,6 @@ class Dispatcher:
                 targets, held = await self._lock_targets(handle, plan, scope, run_log)
                 active.started = True
                 await run_blocking(self._mark_running, run_id)
-                loop = asyncio.get_running_loop()
                 failure: Exception | None = None
                 stored_problem: str | None = None
                 try:
@@ -1473,7 +1486,11 @@ class Dispatcher:
             try:
                 start_again()
             finally:
-                after_hooks()
+                try:
+                    after_hooks()
+                finally:
+                    if plan.job.stages and plan.on_resumed is not None:
+                        plan.on_resumed()
 
         try:
             try:
@@ -2250,6 +2267,7 @@ class Dispatcher:
                     name=job.name if spec.primary else f"{job.name} {spec.target}",
                     scope=job.scope,  # type: ignore[arg-type]
                     consistency_mode=job.consistency_mode,
+                    copy_first=job.copy_first,
                     images_reference_only_if_pullable=job.images_reference_only_if_pullable,
                     encrypted=job.encrypted,
                     target_type=spec.target_type,
@@ -2723,6 +2741,21 @@ class Dispatcher:
 
 
 # HELPERS
+
+
+async def until_resumed(task: asyncio.Task[None], event: asyncio.Event) -> None:
+    """Until a run's task ends or, copying on the host first, it resumes its containers."""
+    resumed = asyncio.ensure_future(event.wait())
+    try:
+        await asyncio.wait({task, resumed}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        resumed.cancel()
+
+
+def resumed_soon(loop: asyncio.AbstractEventLoop, event: asyncio.Event) -> None:
+    """Sets event from a worker thread; a loop already closed by shutdown is ignored."""
+    with contextlib.suppress(RuntimeError):
+        loop.call_soon_threadsafe(event.set)
 
 
 def by_run(items: list[tuple[int, dict[str, Any]]]) -> dict[int, list[dict[str, Any]]]:

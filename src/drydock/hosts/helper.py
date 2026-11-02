@@ -1,9 +1,13 @@
 """Helper containers: short-lived, locked-down containers that mount volumes for transfers.
 
 A helper has no network, a read-only root filesystem, no capabilities and
-no-new-privileges. Only three restore helpers add capabilities, each a fixed command: the
-wipe helper exactly DAC_OVERRIDE and FOWNER (restore.apply.WIPE_CAPS), so find -delete can
-empty directories owned by other uids, sticky ones included; a data helper, started after
+no-new-privileges. Two backup helpers add capabilities, each a fixed script over read-only
+data mounts that writes only to an anonymous volume of its own: the measure helper exactly
+DAC_OVERRIDE and the copy helper exactly CHOWN, DAC_OVERRIDE, FOWNER, FSETID and MKNOD
+(engine.capture.MEASURE_CAPS and STAGE_CAPS). Three restore helpers add capabilities, each
+a fixed command: the wipe helper exactly DAC_OVERRIDE and FOWNER (restore.apply.WIPE_CAPS),
+so find -delete can empty directories owned by other uids, sticky ones included; a data
+helper, started after
 its put, exactly CHOWN, FOWNER and FSETID (restore.apply.ROOT_CAPS), to give the top
 directory it wrote the archived owner and mode; and the compose directory helper exactly
 DAC_OVERRIDE (restore.apply.MKDIR_CAPS), whose fixed script (restore.apply.COMPOSE_SCRIPT)

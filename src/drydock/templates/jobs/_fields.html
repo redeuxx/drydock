@@ -88,6 +88,12 @@
     {% endfor %}
   </select>
   <p id="{{ prefix }}-mode-hint" role="note" class="label whitespace-normal{% if form.consistency_mode == 'live' %} alert alert-warning alert-soft{% endif %}">{{ live_warning }}</p>
+  <input type="hidden" name="copy_first_sent" value="1">
+  <label class="label mt-2 gap-2 whitespace-normal">
+    <input type="checkbox" class="checkbox checkbox-sm" name="copy_first" value="1"{% if form.copy_first %} checked{% endif %} aria-describedby="{{ prefix }}-copy-hint">
+    Copy the data on the host first
+  </label>
+  <p id="{{ prefix }}-copy-hint" class="label whitespace-normal">Stop and pause mode: the containers are down only while their data is copied on their own host, not while it travels to drydock, and the job's next target starts during the upload. Needs free space on the host where Docker keeps its volumes; the run fails before stopping anything if the copy would not fit. The copy keeps owners, modes and links, but not extended attributes.</p>
 </div>
 <input type="hidden" name="schedule" value="1">
 <div class="fieldset" data-schedule>

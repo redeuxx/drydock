@@ -153,6 +153,10 @@ class JobForm:
     enabled: bool = True
     target_type: str = "container"
     consistency_mode: str = "stop"
+    # Copy the data on the host first; False in copy_first_sent: a client that predates it,
+    # keep the stored choice.
+    copy_first: bool = False
+    copy_first_sent: bool = True
     pre_hooks: str = ""  # hook names, one per line, as typed
     post_hooks: str = ""
     # The retention policy: its mode and every mode's numbers, as typed. Only the chosen
@@ -199,6 +203,7 @@ class JobForm:
             enabled=job.enabled,
             target_type=job.target_type,
             consistency_mode=job.consistency_mode,
+            copy_first=job.copy_first,
             pre_hooks="\n".join(hook_names(db, hook_ids(job.pre_hooks))),
             post_hooks="\n".join(hook_names(db, hook_ids(job.post_hooks))),
             retention_mode=policy.get("mode", "last"),
@@ -235,6 +240,8 @@ def submitted(
         # Empty means the default, so clients that predate stacks keep working.
         target_type=values["target_type"].strip() or "container",
         consistency_mode=values["consistency_mode"].strip() or "stop",
+        copy_first=values["copy_first"] == "1",
+        copy_first_sent=values["copy_first_sent"] == "1",
         pre_hooks=values["pre_hooks"],
         post_hooks=values["post_hooks"],
         # Empty: a client that predates retention. A new job gets the default policy and
@@ -478,6 +485,8 @@ def validate(
         errors.append("Choose a scope.")
     if form.consistency_mode not in CONSISTENCY_MODES:
         errors.append("Choose a consistency mode.")
+    elif form.copy_first_sent and form.copy_first and form.consistency_mode == "live":
+        errors.append("Copying the data on the host first needs stop or pause mode.")
     try:
         if form.retention_mode:
             form_policy(form)
@@ -522,6 +531,8 @@ def apply(job: Job, form: JobForm, pre_ids: list[int], post_ids: list[int]) -> N
     job.storage_target_id = int(form.storage_target_id)
     job.scope = form.scope
     job.consistency_mode = form.consistency_mode
+    if form.copy_first_sent:
+        job.copy_first = form.copy_first
     job.images_reference_only_if_pullable = form.images_reference_only_if_pullable
     job.encrypted = form.encrypted
     job.enabled = form.enabled
@@ -547,6 +558,7 @@ def summary(job: Job, db: Session) -> dict[str, Any]:
         "storage_target_id": job.storage_target_id,
         "scope": job.scope,
         "consistency_mode": job.consistency_mode,
+        "copy_first": job.copy_first,
         "images_reference_only_if_pullable": job.images_reference_only_if_pullable,
         "encrypted": job.encrypted,
         "enabled": job.enabled,
@@ -883,6 +895,8 @@ def create_job(
     enabled: FormStr = "",
     target_type: FormStr = "",
     consistency_mode: FormStr = "",
+    copy_first: FormStr = "",
+    copy_first_sent: FormStr = "",
     pre_hooks: FormStr = "",
     post_hooks: FormStr = "",
     retention_mode: FormStr = "",
@@ -918,6 +932,8 @@ def create_job(
         enabled=enabled,
         target_type=target_type,
         consistency_mode=consistency_mode,
+        copy_first=copy_first,
+        copy_first_sent=copy_first_sent,
         pre_hooks=pre_hooks,
         post_hooks=post_hooks,
         retention_mode=retention_mode,
@@ -1020,6 +1036,8 @@ def update_job(
     enabled: FormStr = "",
     target_type: FormStr = "",
     consistency_mode: FormStr = "",
+    copy_first: FormStr = "",
+    copy_first_sent: FormStr = "",
     pre_hooks: FormStr = "",
     post_hooks: FormStr = "",
     retention_mode: FormStr = "",
@@ -1056,6 +1074,8 @@ def update_job(
         enabled=enabled,
         target_type=target_type,
         consistency_mode=consistency_mode,
+        copy_first=copy_first,
+        copy_first_sent=copy_first_sent,
         pre_hooks=pre_hooks,
         post_hooks=post_hooks,
         retention_mode=retention_mode,

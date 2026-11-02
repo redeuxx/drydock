@@ -42,6 +42,7 @@ from drydock.hosts import helper
 from drydock.jobs import dispatcher as dispatcher_module
 from drydock.jobs import runlog
 from drydock.models import Host
+from drydock.storage.local import LocalStorage
 from tests.conftest import Browser, make_settings, running
 from tests.docker_support import (
     DOCKER_URL,
@@ -555,6 +556,54 @@ async def test_each_target_runs_again_before_the_next_is_touched(
     assert job_uuid in one["archive_name"] and target_uuid[0][0] in two["archive_name"]
     assert two["target_label"] == f"container {second.name}"
     assert targets.running(first) and targets.running(second)
+
+
+async def test_copy_first_starts_the_next_target_while_the_first_uploads(
+    settings: Settings, targets: Targets, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = targets.container(volume=targets.volume())
+    second = targets.container(volume=targets.volume())
+    held: list[str] = []
+    publish = LocalStorage.publish
+
+    def slow_publish(self, partial, name):
+        # The first archive is held back until the second target's run has started.
+        if not held:
+            held.append(name)
+            deadline = time.monotonic() + 30
+            while app.status(second_run) == "queued" and time.monotonic() < deadline:
+                time.sleep(0.1)
+        return publish(self, partial, name)
+
+    monkeypatch.setattr(LocalStorage, "publish", slow_publish)
+    async with running(settings) as browser:
+        app = await setup_app(browser)
+        job_id = await app.add_job(
+            first.name,
+            "data",
+            copy_first="1",
+            copy_first_sent="1",
+            extra_targets_sent="1",
+            extra_target_type="container",
+            extra_target=second.name,
+        )
+        first_run = await app.start(job_id)
+        second_run = first_run + 1
+        for run_id in (first_run, second_run):
+            await browser.app.state.dispatcher.wait(run_id)
+            assert app.status(run_id) == "done", app.log(run_id)
+        one, two = app.run_row(first_run), app.run_row(second_run)
+        first_log = app.log(first_run)
+    assert (
+        first_log.index("Copy on the host first:")
+        < first_log.index("Stopping container")
+        < first_log.index("Copied the data on the host in")
+        < first_log.index("Started container")
+        < first_log.index("Saving volume")
+    )
+    assert two["started_at"] < one["finished_at"]
+    assert targets.running(first) and targets.running(second)
+    assert helpers_left(targets.client, app.instance_id) == []
 
 
 # A REAL DRYDOCK PROCESS, KILLED OR STOPPED MID-BACKUP

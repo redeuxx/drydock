@@ -791,3 +791,226 @@ def test_a_missing_skipped_bind_only_loses_its_owner(dind, tmp_path: Path) -> No
     assert by_source[gone].data_member is None and by_source[gone].uid is None
     assert any(f"Could not read the owner of skipped bind mount {gone}" in line for line in lines)
     assert helpers_left(handle.client, TEST_INSTANCE) == []
+
+
+# COPY ON THE HOST FIRST
+
+# Owners, modes (setuid included), an old mtime, a hard link, a symlink, a FIFO and an
+# empty directory, in a directory bind; and a file bind with its own owner.
+STAGE_TREE = (
+    'mkdir -p "$1/d/sub" "$1/d/empty" && echo hello > "$1/d/sub/f"'
+    ' && ln "$1/d/sub/f" "$1/d/hard" && ln -s sub/f "$1/d/link" && mkfifo "$1/d/fifo"'
+    ' && printf x > "$1/d/suid" && chmod 4755 "$1/d/suid" && chmod 0600 "$1/d/sub/f"'
+    ' && touch -d "2020-01-02 03:04:05" "$1/d/sub/f" && chown -R 101:102 "$1/d/sub"'
+    ' && chown 103:104 "$1/d" && chmod 0750 "$1/d"'
+    ' && echo single > "$1/file" && chown 105:106 "$1/file" && chmod 0640 "$1/file"'
+    ' && mkdir "$1/d/new\nline"'
+)
+
+
+def listing(data: bytes) -> dict[str, tuple]:
+    """What a restore gets from a data member, entry by entry. A symlink's own mtime and
+    that of a directory with a newline in its name are left out: a copy on the host gives
+    them the time of the copy."""
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        return {
+            i.name: (
+                i.type,
+                i.uid,
+                i.gid,
+                i.mode,
+                None if i.issym() or "\n" in i.name else i.mtime,
+                i.size,
+                i.linkname,
+                tar.extractfile(i).read() if i.isreg() else None,  # type: ignore[union-attr]
+            )
+            for i in tar.getmembers()
+        }
+
+
+def dangling(handle) -> set[str]:
+    return {v.name for v in handle.client.volumes.list(filters={"dangling": True})}
+
+
+def test_copy_first_applies_to_stop_and_pause_with_data_only() -> None:
+    assert job("data", copy_first=True).stages
+    assert job("all", consistency_mode="pause", copy_first=True).stages
+    assert not job("all", consistency_mode="live", copy_first=True).stages
+    assert not job("config", copy_first=True).stages
+    assert not job("all").stages
+
+
+@needs_dind
+def test_copy_first_archives_the_same_data_and_resumes_before_reading_it(
+    dind, tmp_path: Path
+) -> None:
+    handle, box, root = dind
+    sh(box, STAGE_TREE, root)
+    volume = handle.client.volumes.create(f"drydock-test-{uuid.uuid4().hex[:8]}")
+    container = None
+    try:
+        handle.client.containers.run(
+            IMAGE, ["sh", "-c", POPULATE], volumes=[f"{volume.name}:/v"], remove=True
+        )
+        container = handle.client.containers.create(
+            IMAGE,
+            ["true"],
+            labels={TEST_LABEL: "1"},
+            volumes=[f"{root}/d:/d", f"{root}/file:/file", f"{volume.name}:/v"],
+        )
+        env = make_env(handle, tmp_path, Crypto((os.urandom(32),)), "sshhost")
+        before = dangling(handle)
+        direct = tmp_path / "direct.tar.zst"
+        run(env, job("data"), [container.id], direct)
+        staged = tmp_path / "staged.tar.zst"
+        lines, log = collect()
+        capture.capture(
+            env,
+            job("data", copy_first=True),
+            [container.id],
+            staged,
+            cancel=threading.Event(),
+            log=log,
+            before_data=lambda: lines.append("BEFORE DATA"),
+            after_data=lambda: lines.append("AFTER DATA"),
+        )
+    finally:
+        if container is not None:
+            container.remove(force=True)
+        volume.remove(force=True)
+    plain, copied = members_of(direct), members_of(staged)
+    data = sorted(name for name in plain if name.startswith(("binds/", "volumes/")))
+    assert len(data) == 3
+    assert data == sorted(n for n in copied if n.startswith(("binds/", "volumes/")))
+    for name in data:
+        assert listing(copied[name]) == listing(plain[name]), name
+    tree = listing(plain["binds/0.tar"])
+    assert {tree["./hard"][0], tree["./sub/f"][0]} == {tarfile.REGTYPE, tarfile.LNKTYPE}
+    assert tree["./fifo"][0] == tarfile.FIFOTYPE
+    assert tree["./suid"][3] == 0o4755 and tree["./sub/f"][1:3] == (101, 102)
+    # Measured before anything stopped; the containers run again before the data is read.
+    order = [line for line in lines if not line.startswith(("Skipped", "Archive"))]
+    assert order.index("BEFORE DATA") > next(
+        i for i, line in enumerate(order) if line.startswith("Copy on the host first:")
+    )
+    after = order.index("AFTER DATA")
+    assert order[after - 2] == "Copying the data on the host."
+    assert order[after - 1].startswith("Copied the data on the host in ")
+    assert any(line.startswith("Saving bind mount") for line in order[after:])
+    # The copy went with its helper.
+    assert helpers_left(handle.client, TEST_INSTANCE) == []
+    assert dangling(handle) == before
+
+
+@needs_dind
+def test_copy_first_refuses_before_anything_stops_when_the_copy_would_not_fit(
+    dind, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handle, box, root = dind
+    sh(box, STAGE_TREE, root)
+    monkeypatch.setattr(capture, "STAGE_RESERVE_KIB", 1 << 50)
+    container = handle.client.containers.create(
+        IMAGE, ["true"], labels={TEST_LABEL: "1"}, volumes=[f"{root}/d:/d"]
+    )
+    stopped = []
+    before = dangling(handle)
+    try:
+        env = make_env(handle, tmp_path, Crypto((os.urandom(32),)), "sshhost")
+        with pytest.raises(capture.CaptureError, match="Not enough free space on sshhost"):
+            capture.capture(
+                env,
+                job("data", copy_first=True),
+                [container.id],
+                tmp_path / "full.tar.zst",
+                cancel=threading.Event(),
+                log=lambda _: None,
+                before_data=lambda: stopped.append(True),
+            )
+    finally:
+        container.remove(force=True)
+    assert stopped == []
+    assert not (tmp_path / "full.tar.zst").exists()
+    assert helpers_left(handle.client, TEST_INSTANCE) == []
+    assert dangling(handle) == before
+
+
+@needs_dind
+def test_a_failed_copy_on_the_host_fails_the_run_with_its_error(
+    dind, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handle, box, root = dind
+    sh(box, STAGE_TREE, root)
+    monkeypatch.setattr(capture, "STAGE_SCRIPT", "echo 'tar: write error' >&2; exit 3")
+    container = handle.client.containers.create(
+        IMAGE, ["true"], labels={TEST_LABEL: "1"}, volumes=[f"{root}/d:/d"]
+    )
+    aborted = []
+    try:
+        env = make_env(handle, tmp_path, Crypto((os.urandom(32),)), "sshhost")
+        with pytest.raises(capture.CaptureError, match=r"exit status 3\): tar: write error"):
+            capture.capture(
+                env,
+                job("data", copy_first=True),
+                [container.id],
+                tmp_path / "failed.tar.zst",
+                cancel=threading.Event(),
+                log=lambda _: None,
+                on_abort=lambda: aborted.append(helpers_left(handle.client, TEST_INSTANCE)),
+            )
+    finally:
+        container.remove(force=True)
+    # The containers start again once the copy is gone, not on a disk it may have filled.
+    assert aborted == [[]]
+
+
+@needs_dind
+def test_copy_first_helpers_get_exactly_the_capabilities_they_need(
+    dind, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handle, box, root = dind
+    sh(box, STAGE_TREE, root)
+    made: list[dict] = []
+    real = helper.helper
+
+    def recording(client, image, instance_id, **options):
+        made.append(options)
+        return real(client, image, instance_id, **options)
+
+    monkeypatch.setattr(helper, "helper", recording)
+    container = handle.client.containers.create(
+        IMAGE, ["true"], labels={TEST_LABEL: "1"}, volumes=[f"{root}/d:/d"]
+    )
+    try:
+        env = make_env(handle, tmp_path, Crypto((os.urandom(32),)), "sshhost")
+        run(env, job("data", copy_first=True), [container.id], tmp_path / "caps.tar.zst")
+    finally:
+        container.remove(force=True)
+    started = [options for options in made if options.get("start")]
+    assert [options["cap_add"] for options in started] == [["DAC_OVERRIDE"], capture.STAGE_CAPS]
+    assert capture.STAGE_CAPS == ["CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "MKNOD"]
+    for options in started:
+        data, stage = options["mounts"][:-1], options["mounts"][-1]
+        assert data and all(mount["ReadOnly"] for mount in data)
+        assert stage["Target"] == "/s" and stage["Source"] is None and not stage["ReadOnly"]
+
+
+@needs_dind
+def test_the_space_check_counts_a_sparse_file_at_its_full_size(dind, tmp_path: Path) -> None:
+    """The copy fills a sparse file's holes, so it needs room for its full size."""
+    handle, box, root = dind
+    sh(box, 'mkdir -p "$1/d" && truncate -s 3G "$1/d/disk.img"', root)
+    container = handle.client.containers.create(
+        IMAGE, ["true"], labels={TEST_LABEL: "1"}, volumes=[f"{root}/d:/d"]
+    )
+    lines, log = collect()
+    try:
+        env = make_env(handle, tmp_path, Crypto((os.urandom(32),)), "sshhost")
+        plan = capture.inspect_targets(env, [container.id], {"data"}, log)
+        # A small test disk may refuse; the measured size is what counts here.
+        with contextlib.suppress(capture.CaptureError):
+            capture.check_room(env, plan, threading.Event(), log)
+    finally:
+        container.remove(force=True)
+    (measured,) = [line for line in lines if line.startswith("Copy on the host first:")]
+    assert measured.startswith("Copy on the host first: 3.0 GiB of data"), measured
+    assert helpers_left(handle.client, TEST_INSTANCE) == []

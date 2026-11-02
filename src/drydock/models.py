@@ -12,6 +12,7 @@ from sqlalchemy import (
     Text,
     TypeDecorator,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -203,6 +204,8 @@ class Job(Base):
     target: Mapped[str] = mapped_column(String(255))  # container ref or Compose project
     scope: Mapped[str] = mapped_column(String(16))
     consistency_mode: Mapped[str] = mapped_column(String(16), default="stop")
+    # Stop and pause mode: copy the data on the host, then let the containers run again.
+    copy_first: Mapped[bool] = mapped_column(default=False, server_default=false())
     images_reference_only_if_pullable: Mapped[bool] = mapped_column(default=False)
     encrypted: Mapped[bool] = mapped_column(default=False)
     enabled: Mapped[bool] = mapped_column(default=True)
