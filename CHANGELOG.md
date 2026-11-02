@@ -2,7 +2,7 @@
 
 Notable changes to drydock. Versions follow [semantic versioning](https://semver.org/); release images are tagged `X.Y.Z` and `X.Y` (see [docs/development.md](docs/development.md#releases)).
 
-## Unreleased
+## 0.2.0 (2026-11-01)
 
 ### Backups
 - Copy the data on the host first: in stop and pause mode the containers are down only while their data is copied on their own host, not while it travels to drydock, and a job's next target starts during the upload. The run fails before stopping anything when the copy would not fit.

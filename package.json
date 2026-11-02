@@ -1,6 +1,6 @@
 {
   "name": "drydock-frontend",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Client code and stylesheet build for drydock. Only htmx.org ships (vendored into the image); everything else is build tooling.",
   "license": "UNLICENSED",
