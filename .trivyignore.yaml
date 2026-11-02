@@ -44,6 +44,12 @@ vulnerabilities:
   - id: CVE-2026-9538
     statement: perl Archive::Tar; drydock never runs perl
     expired_at: 2027-01-31
+  # sqlite: a heap overflow in FTS5 prefix queries on a detail=none table with negative
+  # rowids (fixed in SQLite 3.54.0). Drydock opens only its own database, has no FTS5
+  # tables, never runs MATCH, and binds every user value as a parameter.
+  - id: CVE-2026-119373
+    statement: sqlite FTS5 detail=none prefix MATCH; drydock has no FTS5 tables and runs no MATCH
+    expired_at: 2027-01-31
 
   # GO STANDARD LIBRARY IN UPSTREAM RELEASE BINARIES, NO FIXED RELEASE YET
 

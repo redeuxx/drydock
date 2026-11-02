@@ -1224,8 +1224,15 @@ async def test_a_dropped_connection_is_tried_again_while_the_run_holds_its_locks
     assert run_status(admin, run_id) == "running"
     assert [e["name"] for e in run_row(admin, run_id)["paused"]] == ["db", "redis", "app"]
     assert dispatcher(admin)._locks[name_key(str(host_id), "project", "app")].locked()
-    daemon.errors.clear()
-    daemon.down = False
+
+    # The host comes back as a pass begins: set between a failed unpause and its ping,
+    # the ping would answer and the containers be left to the user.
+    def back(op: str, name: str) -> None:
+        if (op, name) == ("unpause", "db"):
+            daemon.errors.clear()
+            daemon.down = False
+
+    daemon.on_call = back
     await dispatcher(admin).wait(run_id)
     row = run_row(admin, run_id)
     # Nothing is left paused, so the error is the capture's own.
