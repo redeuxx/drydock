@@ -2,7 +2,7 @@
 
 Notable changes to drydock. Versions follow [semantic versioning](https://semver.org/); release images are tagged `X.Y.Z` and `X.Y` (see [docs/development.md](docs/development.md#releases)).
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-11-01)
 
 The first release.
 
