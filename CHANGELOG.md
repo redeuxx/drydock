@@ -2,6 +2,13 @@
 
 Notable changes to drydock. Versions follow [semantic versioning](https://semver.org/); release images are tagged `X.Y.Z` and `X.Y` (see [docs/development.md](docs/development.md#releases)).
 
+## Unreleased
+
+### Dashboard
+- Dismiss a failed or interrupted run from "Needs attention" (operators and up). The run, its log and the failure count stay.
+- Filter the run list by status. The "Failed" and "Running or queued" tiles open the list filtered to their runs.
+- A job's runs, one per target, are one entry in the notifications and in "Recent backups": how many targets ended how, total size, how long it took, who started it and the first error. "Recent backups" lists the targets, and a run's page lists the other targets of its job run.
+
 ## 0.2.0 (2026-11-01)
 
 ### Backups

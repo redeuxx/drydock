@@ -2,7 +2,7 @@
 
 import logging
 import re
-from datetime import UTC, datetime, tzinfo
+from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -91,11 +91,23 @@ def ago(value: datetime | None) -> str:
     return "just now"
 
 
+def duration(value: timedelta | None) -> str:
+    """How long something took: "45 s", "4 min 12 s", "2 h 5 min"."""
+    if value is None:
+        return ""
+    hours, rest = divmod(max(int(value.total_seconds()), 0), 3600)
+    minutes, seconds = divmod(rest, 60)
+    if hours:
+        return f"{hours} h {minutes} min"
+    return f"{minutes} min {seconds} s" if minutes else f"{seconds} s"
+
+
 env.globals.update(Role=Role, htmx_config=HTMX_CONFIG)
 env.filters["filesize"] = filesize
 env.filters["ago"] = ago
 env.filters["stamp"] = stamp
 env.filters["logtimes"] = logtimes
+env.filters["duration"] = duration
 templates = Jinja2Templates(env=env)
 
 

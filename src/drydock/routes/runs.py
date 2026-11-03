@@ -1,4 +1,4 @@
-"""Runs: list, detail with a live log, and cancel.
+"""Runs: list (filtered by status), detail with a live log, and cancel.
 
 The run page polls GET /runs/{id}/log?offset=N every two seconds while the run is queued
 or running. An answer with new complete lines holds them and a fresh poller for the next
@@ -7,6 +7,8 @@ offset. Once the run has ended the answer is HX-Refresh, so the page reloads onc
 shows the final state without a poller. A finished run's page shows the end of its log.
 Logs are redacted when written (jobs.runlog).
 
+A run that ended can be dismissed from the dashboard (operators and up).
+
 Restore runs (kind "restore") are cancelled by admins only; one awaiting confirmation is
 discarded through the same route. Their page warns, from the restore journal, about data
 a failed restore may have left partial, about anything drydock could not remove and about
@@ -14,6 +16,7 @@ compose files it did not, or may not, have written.
 """
 
 from typing import Annotated, Any
+from urllib.parse import urlencode
 
 import anyio.from_thread
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -23,9 +26,9 @@ from sqlalchemy.orm import Session
 
 from drydock import audit
 from drydock.db import get_db
-from drydock.jobs.dispatcher import ACTIVE_STATUSES, journal_entries, json_object
+from drydock.jobs.dispatcher import ACTIVE_STATUSES, OPEN_STATUSES, journal_entries, json_object
 from drydock.jobs.runlog import log_path, read_log, read_tail
-from drydock.models import Job, Run
+from drydock.models import RUN_STATUSES, Job, Run, utcnow
 from drydock.routes.auth import client_ip
 from drydock.security.rbac import Role, require_role
 from drydock.security.sessions import Auth
@@ -136,11 +139,16 @@ def list_runs(
     request: Request,
     auth: Viewer,
     before: int | None = Query(default=None, ge=1),
+    status: list[str] = Query(default=[]),
     db: Session = Depends(get_db),
 ) -> Response:
+    """Newest first, optionally only some statuses (?status=failed&status=interrupted)."""
+    chosen = [s for s in RUN_STATUSES if s in status]
     query = select(Run).order_by(Run.id.desc()).limit(PAGE_SIZE)
     if before is not None:
         query = query.where(Run.id < before)
+    if chosen:
+        query = query.where(Run.status.in_(chosen))
     runs = list(db.scalars(query))
     next_before = runs[-1].id if len(runs) == PAGE_SIZE else None
     return render(
@@ -150,6 +158,9 @@ def list_runs(
         runs=runs,
         jobs=job_names(db, runs),
         next_before=next_before,
+        statuses=RUN_STATUSES,
+        chosen=chosen,
+        filter_query=urlencode([("status", s) for s in chosen]),
     )
 
 
@@ -179,6 +190,11 @@ def run_page(
         job=db.get(Job, run.job_id) if run.job_id is not None else None,
         restore_doc=json_object(run.plan) if run.kind == "restore" else None,
         restore_warning=restore_warning(run),
+        siblings=list(
+            db.scalars(select(Run).where(Run.first_run_id == run.first_run_id).order_by(Run.id))
+        )
+        if run.first_run_id is not None
+        else [],
         log_text=text,
         offset=offset,
         active=active,
@@ -263,3 +279,25 @@ def cancel_run(
         db.refresh(run)
         return run_page(request, db, auth, run, 409, error="This run is not in progress.")
     return see_other(request, f"/runs/{run.id}")
+
+
+@router.post("/{run_id}/dismiss")
+def dismiss_run(
+    request: Request, run_id: int, auth: Operator, db: Session = Depends(get_db)
+) -> Response:
+    """Takes an ended run off the dashboard's "Needs attention". The run and its log stay."""
+    run = get_run(db, run_id)
+    if run.status in OPEN_STATUSES:
+        raise HTTPException(status_code=409, detail="This run has not ended.")
+    if run.dismissed_at is None:
+        run.dismissed_at = utcnow()
+    audit.record(
+        db,
+        actor=auth.user.username,
+        action="run.dismiss",
+        target=f"run:{run.id}",
+        ip=client_ip(request),
+        details={"job_id": run.job_id, "status": run.status},
+    )
+    db.commit()
+    return see_other(request, "/")

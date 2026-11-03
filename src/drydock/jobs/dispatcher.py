@@ -2225,6 +2225,8 @@ class Dispatcher:
             ]
             db.add_all(runs)
             db.flush()
+            for run in runs:
+                run.first_run_id = runs[0].id
             return [run.id for run in runs]
 
     def _load_plan(self, run_id: int, job_id: int) -> RunPlan:

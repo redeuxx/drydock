@@ -3,6 +3,14 @@
 {% block title %}Runs{% endblock %}
 {% block content %}
 <h1 class="mb-4 text-3xl font-bold">Runs</h1>
+<form method="get" action="/runs" class="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2" aria-label="Filter runs by status">
+  <span class="text-sm opacity-70">Status</span>
+  {% for status in statuses %}
+  <label class="flex items-center gap-1 text-sm"><input type="checkbox" class="checkbox checkbox-sm" name="status" value="{{ status }}"{% if status in chosen %} checked{% endif %}> {{ status|replace("_", " ") }}</label>
+  {% endfor %}
+  <button type="submit" class="btn btn-sm">Filter</button>
+  {% if chosen %}<a class="link text-sm" href="/runs">Show all</a>{% endif %}
+</form>
 <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
   <table class="table table-zebra">
     <thead><tr><th scope="col">Run</th><th scope="col">Job</th><th scope="col">Status</th><th scope="col">Triggered by</th><th scope="col">Created</th><th scope="col">Finished</th><th scope="col">Size</th></tr></thead>
@@ -25,10 +33,10 @@
         <td class="whitespace-nowrap">{{ run.size|filesize }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="7">No runs yet.</td></tr>
+      <tr><td colspan="7">{% if chosen %}No run has these statuses.{% else %}No runs yet.{% endif %}</td></tr>
       {% endfor %}
     </tbody>
   </table>
 </div>
-{% if next_before %}<p class="mt-4"><a class="btn btn-outline btn-sm" href="/runs?before={{ next_before }}">Older runs</a></p>{% endif %}
+{% if next_before %}<p class="mt-4"><a class="btn btn-outline btn-sm" href="/runs?{% if filter_query %}{{ filter_query }}&{% endif %}before={{ next_before }}">Older runs</a></p>{% endif %}
 {% endblock %}

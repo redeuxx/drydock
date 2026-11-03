@@ -235,8 +235,42 @@ def test_upgrade_keeps_job_links_and_ids(tmp_path: Path) -> None:
             assert sequence(conn, "runs") == runs_sequence
             assert conn.execute(INSERT_RUN, (1,)).lastrowid == 3
             conn.commit()
-            assert version(conn) == [("0014",)]
+            assert version(conn) == [("0015",)]
         assert foreign_keys(engine) == 1
+    finally:
+        engine.dispose()
+
+
+def test_upgrade_to_0015_groups_each_jobs_target_runs(tmp_path: Path) -> None:
+    path = tmp_path / "schema.db"
+    engine = make_engine(path)
+    try:
+        alembic_to(engine, "0014")
+        with closing(sqlite3.connect(path)) as conn:
+            add_parents(conn)
+            job_a, job_b = add_job(conn, 1), add_job(conn, 2)
+            insert = (
+                "INSERT INTO runs (job_id, kind, status, stopped_containers_json, target_uuid,"
+                " created_at) VALUES (?, ?, 'done', '[]', ?, '2026-11-01 00:00:00')"
+            )
+            for job_id, kind, target in (
+                (job_a, "backup", None),  # 1: job a, its own target
+                (job_a, "backup", "t2"),  # 2: job a, a second target
+                (job_b, "backup", None),  # 3: job b
+                (job_a, "backup", None),  # 4: job a again
+                (job_a, "backup", "t2"),  # 5
+                (None, "restore", None),  # 6
+                (None, "backup", "t2"),  # 7: of a deleted job
+            ):
+                conn.execute(insert, (job_id, kind, target))
+            conn.commit()
+
+        alembic_to(engine, "head")
+
+        with closing(sqlite3.connect(path)) as conn:
+            found = conn.execute("SELECT id, first_run_id FROM runs ORDER BY id").fetchall()
+            assert found == [(1, 1), (2, 1), (3, 3), (4, 4), (5, 4), (6, None), (7, None)]
+            assert "ix_runs_first_run_id" in index_names(conn, "runs")
     finally:
         engine.dispose()
 
@@ -425,7 +459,7 @@ def test_downgrade_refuses_while_a_run_lists_paused_containers(tmp_path: Path) -
             alembic_to(engine, "0004", down=True)
 
         with closing(sqlite3.connect(path)) as conn:
-            assert version(conn) == [("0014",)]
+            assert version(conn) == [("0015",)]
             runs = table_sql(conn, "runs")
             assert runs is not None
             assert "paused_containers_json" in runs

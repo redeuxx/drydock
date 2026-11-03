@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import job_run_facts %}
 {% block title %}Notifications{% endblock %}
 {% block content %}
 <div class="mb-4 flex flex-wrap items-center gap-3">
@@ -18,7 +19,13 @@
     <tbody>
       {% for item in entries %}
       <tr>
-        <td><a class="link" href="{{ item.link }}">{{ item.title }}</a></td>
+        <td>
+          <a class="link" href="{{ item.link }}">{{ item.title }}</a>
+          {% if item.job_run %}
+          {% set facts = job_run_facts(item.job_run) %}{% if facts %}<div class="text-xs opacity-70">{{ facts }}</div>{% endif %}
+          {% if item.job_run.error %}<div class="text-xs text-error">{{ item.job_run.error|truncate(200) }}</div>{% endif %}
+          {% endif %}
+        </td>
         <td class="whitespace-nowrap text-sm">{{ item.when|stamp(False) }} <span class="opacity-60">({{ item.when|ago }})</span></td>
         <td>{% if item.unread %}<span class="badge badge-soft badge-warning">unread</span>{% endif %}</td>
       </tr>

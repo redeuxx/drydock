@@ -56,6 +56,15 @@
 <span class="badge badge-soft {{ tone }}">{{ label }}</span>
 {%- endmacro %}
 
+{# One line on a job run (feed.JobRun): how big, how long, who started it. #}
+{% macro job_run_facts(job_run) -%}
+{%- set facts = [] %}
+{%- if job_run.size %}{% set _ = facts.append(job_run.size|filesize) %}{% endif %}
+{%- if job_run.took %}{% set _ = facts.append("took " ~ job_run.took|duration) %}{% endif %}
+{%- if job_run.first.triggered_by %}{% set _ = facts.append("by " ~ job_run.first.triggered_by) %}{% endif %}
+{{- facts|join(" · ") }}
+{%- endmacro %}
+
 {% macro run_status_badge(status) -%}
 {% set tone = {
   "queued": "badge-neutral",

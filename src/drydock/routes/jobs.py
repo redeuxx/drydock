@@ -31,6 +31,7 @@ from drydock import audit
 from drydock.config import known_zones
 from drydock.db import get_db
 from drydock.engine import stacks
+from drydock.feed import WORST  # a sequence's row shows its first run found in this order
 from drydock.hosts import inventory
 from drydock.jobs import mounts, retention, scheduler
 from drydock.jobs import targets as job_targets
@@ -713,9 +714,6 @@ def job_page(
 
 
 # LIST AND CREATE
-
-# The order a sequence's runs are shown in the job list: the first found wins.
-WORST = ("failed", "interrupted", "running", "queued", "cancelled", "done")
 
 
 @router.get("")

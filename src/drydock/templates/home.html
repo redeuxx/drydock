@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import run_status_badge, host_status_badge with context %}
+{% from "_macros.html" import run_status_badge, host_status_badge, job_run_facts, submit with context %}
 {% block title %}Dashboard{% endblock %}
 {% block content %}
 <h1 class="mb-4 text-3xl font-bold">Dashboard</h1>
@@ -7,10 +7,10 @@
   <a href="/jobs" class="card bg-base-100 shadow-sm hover:shadow">
     <div class="card-body p-4"><p class="text-sm opacity-70">Jobs</p><p class="text-2xl font-bold">{{ jobs|length }}</p><p class="text-xs opacity-70">{{ enabled }} enabled</p></div>
   </a>
-  <a href="/runs" class="card bg-base-100 shadow-sm hover:shadow">
+  <a href="/runs?status=queued&amp;status=running" class="card bg-base-100 shadow-sm hover:shadow">
     <div class="card-body p-4"><p class="text-sm opacity-70">Running or queued</p><p class="text-2xl font-bold">{{ active }}</p><p class="text-xs opacity-70">runs now</p></div>
   </a>
-  <a href="/runs" class="card bg-base-100 shadow-sm hover:shadow">
+  <a href="/runs?status=failed&amp;status=interrupted" class="card bg-base-100 shadow-sm hover:shadow">
     <div class="card-body p-4"><p class="text-sm opacity-70">Failed, last {{ failure_days }} days</p><p class="text-2xl font-bold{% if failed_count %} text-error{% endif %}">{{ failed_count }}</p><p class="text-xs opacity-70">backups that failed or were interrupted</p></div>
   </a>
   <a href="/backups" class="card bg-base-100 shadow-sm hover:shadow">
@@ -24,7 +24,13 @@
       <h2 id="failed-heading" class="card-title">Needs attention</h2>
       <ul class="flex flex-col gap-1 text-sm">
         {% for run in failed %}
-        <li><a class="link" href="/runs/{{ run.id }}">Run #{{ run.id }}</a> of {{ names.get(run.job_id, "a deleted job") }} {{ run_status_badge(run.status) }} <span class="opacity-70">{{ run.created_at|ago }}{% if run.error %}: {{ run.error|truncate(120) }}{% endif %}</span></li>
+        <li class="flex flex-wrap items-center gap-x-2"><span><a class="link" href="/runs/{{ run.id }}">Run #{{ run.id }}</a> of {{ names.get(run.job_id, "a deleted job") }}{% if run.target_label %} ({{ run.target_label }}){% endif %} {{ run_status_badge(run.status) }} <span class="opacity-70">{{ run.created_at|ago }}{% if run.error %}: {{ run.error|truncate(120) }}{% endif %}</span></span>
+          {%- if auth.user.role >= Role.operator %}
+          <form method="post" action="/runs/{{ run.id }}/dismiss" hx-post="/runs/{{ run.id }}/dismiss" hx-nonce="{{ csp_nonce }}" class="ml-auto">
+            <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+            {{ submit("Dismiss", "btn-ghost btn-xs", "run #" ~ run.id) }}
+          </form>
+          {%- endif %}</li>
         {% endfor %}
       </ul>
     </div>
@@ -35,8 +41,27 @@
       <h2 id="recent-heading" class="card-title">Recent backups</h2>
       {% if recent %}
       <ul class="flex flex-col gap-1 text-sm">
-        {% for run in recent %}
-        <li class="flex flex-wrap items-center gap-2"><a class="link" href="/runs/{{ run.id }}">#{{ run.id }}</a> {{ names.get(run.job_id, "a deleted job") }} {{ run_status_badge(run.status) }} <span class="opacity-70">{{ run.created_at|ago }}{% if run.size %}, {{ run.size|filesize }}{% endif %}</span></li>
+        {% for job_run in recent %}
+        {% set facts = job_run_facts(job_run) %}
+        <li>
+          <div class="flex flex-wrap items-center gap-x-2">
+            <a class="link" href="/runs/{{ job_run.first.id }}">#{{ job_run.first.id }}</a>
+            {% if job_run.first.job_id in names %}<a class="link" href="/jobs/{{ job_run.first.job_id }}">{{ job_run.job_name }}</a>{% else %}<span>a deleted job</span>{% endif %}
+            {{ run_status_badge(job_run.worst.status) }}
+            <span class="opacity-70">{{ job_run.first.created_at|ago }}{% if facts %} &middot; {{ facts }}{% endif %}</span>
+          </div>
+          {% if job_run.error %}<p class="text-xs text-error">{{ job_run.error|truncate(160) }}</p>{% endif %}
+          {% if job_run.runs|length > 1 %}
+          <details class="text-xs">
+            <summary class="cursor-pointer opacity-70">{{ job_run.runs|length }} targets: {% for status, count in job_run.counts %}{{ count }} {{ status }}{% if not loop.last %}, {% endif %}{% endfor %}</summary>
+            <ul class="mt-1 ml-4 flex flex-col gap-1">
+              {% for run in job_run.runs %}
+              <li class="flex flex-wrap items-center gap-x-2"><a class="link" href="/runs/{{ run.id }}">#{{ run.id }}</a> {{ run.target_label or "" }} {{ run_status_badge(run.status) }}{% if run.size %} <span class="opacity-70">{{ run.size|filesize }}</span>{% endif %}</li>
+              {% endfor %}
+            </ul>
+          </details>
+          {% endif %}
+        </li>
         {% endfor %}
       </ul>
       {% else %}

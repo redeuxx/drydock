@@ -351,6 +351,11 @@ class Run(Base):
     # own; the label stays readable after the target is removed.
     target_uuid: Mapped[str | None] = mapped_column(String(36), default=None)
     target_label: Mapped[str | None] = mapped_column(String(300), default=None)
+    # Set when someone takes a failed run off the dashboard's "Needs attention".
+    dismissed_at: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
+    # The first of the runs a job started together, one per target (its own target's
+    # run, so the same as id for a job with one target). None for restores.
+    first_run_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
 
 
 UPLOAD_STATUSES = ("receiving", "complete")

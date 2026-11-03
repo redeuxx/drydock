@@ -56,6 +56,29 @@
     </dl>
   </div>
 </section>
+{% if siblings|length > 1 %}
+<section class="card mb-4 bg-base-100 shadow-sm" aria-labelledby="targets-heading">
+  <div class="card-body">
+    <h2 id="targets-heading" class="card-title">All targets of this job run</h2>
+    <div class="overflow-x-auto">
+      <table class="table table-sm">
+        <thead><tr><th scope="col">Run</th><th scope="col">Target</th><th scope="col">Status</th><th scope="col">Size</th><th scope="col">Took</th></tr></thead>
+        <tbody>
+          {% for other in siblings %}
+          <tr{% if other.id == run.id %} class="bg-base-200" aria-current="page"{% endif %}>
+            <td><a class="link" href="/runs/{{ other.id }}">#{{ other.id }}</a></td>
+            <td class="break-all">{{ other.target_label or "" }}</td>
+            <td>{{ run_status_badge(other.status) }}</td>
+            <td class="whitespace-nowrap">{{ other.size|filesize }}</td>
+            <td class="whitespace-nowrap">{% if other.started_at and other.finished_at %}{{ (other.finished_at - other.started_at)|duration }}{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+{% endif %}
 <section class="card bg-base-100 shadow-sm" aria-labelledby="log-heading">
   <div class="card-body">
     <h2 id="log-heading" class="card-title">Log{% if active %} <span class="text-sm font-normal opacity-70">(updates every 2 seconds)</span>{% endif %}</h2>

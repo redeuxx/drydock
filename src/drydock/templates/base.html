@@ -1,3 +1,4 @@
+{% from "_macros.html" import job_run_facts -%}
 <!doctype html>
 <html lang="en">
 <head>
@@ -89,10 +90,11 @@
             {% for item in feed["items"] %}
             <li>
               <a href="{{ item.link }}" class="flex items-start gap-3 px-4 py-2 hover:bg-base-200">
-                <span aria-hidden="true" class="mt-1.5 size-2.5 shrink-0 rounded-full {{ {'success': 'bg-success', 'warning': 'bg-warning', 'error': 'bg-error'}[item.level] }}"></span>
+                <span aria-hidden="true" class="mt-1.5 size-2.5 shrink-0 rounded-full {{ {'success': 'bg-success', 'info': 'bg-info', 'warning': 'bg-warning', 'error': 'bg-error'}[item.level] }}"></span>
                 <span class="min-w-0 flex-1">
-                  <span class="block truncate text-sm">{{ item.title }}</span>
-                  <span class="block text-xs opacity-60">{{ item.when|ago }}</span>
+                  <span class="block text-sm">{{ item.title }}</span>
+                  {% if item.job_run and item.job_run.error %}<span class="block truncate text-xs text-error">{{ item.job_run.error }}</span>{% endif %}
+                  <span class="block text-xs opacity-60">{{ item.when|ago }}{% if item.job_run %}{% set facts = job_run_facts(item.job_run) %}{% if facts %} &middot; {{ facts }}{% endif %}{% endif %}</span>
                 </span>
                 {% if item.unread %}<span class="mt-1.5 size-2 shrink-0 rounded-full bg-warning"><span class="sr-only">unread</span></span>{% endif %}
               </a>

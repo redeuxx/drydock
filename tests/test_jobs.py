@@ -924,6 +924,69 @@ async def test_the_dashboard_shows_failures_recent_runs_and_hosts(admin: Browser
     assert "Recent backups" in page and "nightly" in page and "Hosts" in page
 
 
+async def test_a_dismissed_failure_leaves_the_dashboard(admin: Browser) -> None:
+    admin.sql(
+        "INSERT INTO runs (job_id, kind, status, stopped_containers_json, error, created_at,"
+        " finished_at) VALUES (NULL, 'backup', 'interrupted', '[]', 'Drydock stopped.',"
+        " datetime('now'), datetime('now'))"
+    )
+    run_id = admin.sql("SELECT max(id) FROM runs")[0][0]
+    assert f'action="/runs/{run_id}/dismiss"' in (await admin.get("/")).text
+    response = await admin.post(f"/runs/{run_id}/dismiss", {})
+    assert response.status_code == 303 and response.headers["location"] == "/"
+    page = (await admin.get("/")).text
+    assert "Needs attention" not in page and f"/runs/{run_id}" in page  # still a recent run
+    admin.sql("UPDATE runs SET status = 'running' WHERE id = ?", (run_id,))
+    assert (await admin.post(f"/runs/{run_id}/dismiss", {})).status_code == 409
+
+
+async def test_the_run_list_filters_by_status(admin: Browser) -> None:
+    for status in ("done", "failed", "interrupted"):
+        admin.sql(
+            "INSERT INTO runs (job_id, kind, status, stopped_containers_json, created_at)"
+            " VALUES (NULL, 'backup', ?, '[]', datetime('now'))",
+            (status,),
+        )
+    ids = dict(admin.sql("SELECT status, id FROM runs"))
+    assert 'href="/runs?status=failed&amp;status=interrupted"' in (await admin.get("/")).text
+    page = (await admin.get("/runs?status=failed&status=interrupted&status=bogus")).text
+    assert f'href="/runs/{ids["failed"]}"' in page and f'href="/runs/{ids["interrupted"]}"' in page
+    assert f'href="/runs/{ids["done"]}"' not in page
+    assert 'value="failed" checked' in page and 'value="done" checked' not in page
+    page = (await admin.get("/runs")).text
+    assert all(f'href="/runs/{run_id}"' in page for run_id in ids.values())
+
+
+async def test_a_jobs_target_runs_are_one_job_run(admin: Browser) -> None:
+    job_id = await add_job(admin, "rigel")
+    for status, label, size, error in (
+        ("done", "container web", 2048, None),
+        ("failed", "container db", None, "The disk is full."),
+        ("done", "container cache", 1024, None),
+    ):
+        admin.sql(
+            "INSERT INTO runs (job_id, kind, status, stopped_containers_json, target_label,"
+            " size, error, triggered_by, created_at, started_at, finished_at)"
+            " VALUES (?, 'backup', ?, '[]', ?, ?, ?, 'ops', datetime('now', '+1 minute'),"
+            " datetime('now', '+1 minute'), datetime('now', '+3 minutes'))",
+            (job_id, status, label, size, error),
+        )
+    first, failed, last = (row[0] for row in admin.sql("SELECT id FROM runs ORDER BY id"))
+    admin.sql("UPDATE runs SET first_run_id = ?", (first,))
+    page = (await admin.get("/jobs")).text
+    assert "Notifications, 1 unread" in page
+    assert "Backup of rigel, 3 targets: 1 failed, 2 done" in page
+    assert "The disk is full." in page and "3.0 KiB" in page and "took 2 min 0 s" in page
+    assert f'href="/runs/{failed}"' in page and "by ops" in page
+    home = (await admin.get("/")).text
+    recent = home[home.index("Recent backups") :]
+    assert recent.count(f'href="/runs/{first}">#{first}</a>') == 2  # the row and its target
+    assert "3 targets: 1 failed, 2 done" in recent and "container cache" in recent
+    run_page = (await admin.get(f"/runs/{last}")).text
+    assert "All targets of this job run" in run_page
+    assert all(f'href="/runs/{i}"' in run_page for i in (first, failed, last))
+
+
 async def test_the_bell_counts_unread_runs_until_marked_read(admin: Browser) -> None:
     job_id = await add_job(admin, "belled")
     admin.sql(

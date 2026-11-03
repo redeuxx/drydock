@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from drydock import audit, feed
 from drydock.archive.writer import AGE_DIR
 from drydock.db import get_db
+from drydock.jobs.targets import MAX_TARGETS
 from drydock.models import AuditEvent, Backup, Host, Job, Run, StorageTarget, User, utcnow
 from drydock.routes.auth import client_ip, safe_next
 from drydock.security.rbac import Role, require_role
@@ -41,13 +42,22 @@ def home(request: Request, auth: Viewer, db: Session = Depends(get_db)) -> Respo
     since = utcnow() - timedelta(days=FAILURE_DAYS)
     jobs = db.scalars(select(Job).order_by(Job.name)).all()
     names = {j.id: j.name for j in jobs}
-    recent = db.scalars(
-        select(Run).where(Run.kind == "backup").order_by(Run.id.desc()).limit(RECENT)
-    ).all()
+    recent = feed.job_runs(
+        db,
+        list(
+            db.scalars(
+                select(Run)
+                .where(Run.kind == "backup")
+                .order_by(Run.id.desc())
+                .limit(RECENT * MAX_TARGETS)
+            )
+        ),
+        RECENT,
+    )
     failed = db.scalars(
         select(Run)
         .where(Run.kind == "backup", Run.status.in_(("failed", "interrupted")))
-        .where(Run.created_at >= since)
+        .where(Run.created_at >= since, Run.dismissed_at.is_(None))
         .order_by(Run.id.desc())
         .limit(RECENT)
     ).all()
