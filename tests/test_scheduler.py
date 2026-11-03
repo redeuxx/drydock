@@ -493,3 +493,35 @@ async def test_a_zone_no_longer_listed_stays_selected(admin: Browser) -> None:
     admin.sql("UPDATE jobs SET timezone = 'Mars/Olympus' WHERE id = ?", (job_id,))
     page = (await admin.get(f"/jobs/{job_id}/edit")).text
     assert '<option value="Mars/Olympus" selected>Mars/Olympus (no longer listed)</option>' in page
+
+
+@pytest.mark.parametrize(
+    ("expr", "words"),
+    [
+        ("0 1 * * 0", "Every Sunday at 01:00"),
+        ("0 3 * * *", "Every day at 03:00"),
+        ("0 3 1 * *", "On the 1st of every month at 03:00"),
+        ("0 */6 * * *", "Every 6 hours"),
+        ("0 * * * *", "Every hour"),
+        ("30 * * * 6,0", "Every hour at :30 on Saturday and Sunday"),
+        ("*/15 * * * *", "Every 15 minutes"),
+        ("* * * * *", "Every minute"),
+        ("15 2 * * 1-5", "Every Monday to Friday at 02:15"),
+        ("0 22 * * mon,wed,fri", "Every Monday, Wednesday and Friday at 22:00"),
+        ("0 0,12 * * *", "Every day at 00:00 and 12:00"),
+        ("0 9-17 * * 1-5", "Every hour from 09:00 to 17:00 on Monday to Friday"),
+        ("0 4 1,15 * *", "On the 1st and 15th of every month at 04:00"),
+        ("0 4 22 jan,jul *", "On the 22nd of January and July at 04:00"),
+        ("0 4 * 6-8 7", "Every Sunday in June to August at 04:00"),
+        ("0 4 * * 0-6", "Every day at 04:00"),
+    ],
+)
+def test_a_cron_is_described_in_words(expr: str, words: str) -> None:
+    assert scheduler.describe(expr) == words
+
+
+@pytest.mark.parametrize(
+    "expr", ["*/7 * * * *", "0 */5 * * *", "5/10 * * * *", "0 3 */2 * *", "0 3 1 * 1", "nonsense"]
+)
+def test_an_unusual_or_bad_cron_has_no_description(expr: str) -> None:
+    assert scheduler.describe(expr) is None

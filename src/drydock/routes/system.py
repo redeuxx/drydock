@@ -5,7 +5,7 @@ import json
 import platform
 import re
 import subprocess
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -187,6 +187,10 @@ FRONTEND = (
     ("daisyui", "daisyUI", "components", "https://github.com/saadeghi/daisyui/releases/tag/v{v}"),
 )
 FRONTEND_VERSIONS = Path(__file__).resolve().parent.parent / "static" / "vendor" / "versions.json"
+# "<commit> <UTC build time>", written by the Dockerfile; the commit is missing when the build
+# was not given DRYDOCK_COMMIT.
+BUILD_INFO = Path("/app/build-info")
+COMMIT_RE = re.compile(r"[0-9a-f]{7,64}")
 
 
 def package_version(name: str) -> str | None:
@@ -200,6 +204,17 @@ def short_version(full: str | None) -> str:
     """The release line drydock shows: 0.1.0 is 0.1."""
     parts = (full or "").split(".")
     return ".".join(parts[:2]) if len(parts) >= 2 else (full or "unknown")
+
+
+def build_info() -> tuple[str | None, datetime | None]:
+    """The image's commit and build time, each None when unknown or malformed."""
+    try:
+        *commit, built = BUILD_INFO.read_text().split()
+        when = datetime.strptime(built, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    except OSError, ValueError:
+        return None, None
+    sha = commit[0] if len(commit) == 1 and COMMIT_RE.fullmatch(commit[0]) else None
+    return sha, when
 
 
 def binary_version(binary: Path, args: list[str]) -> str | None:
@@ -226,6 +241,7 @@ def frontend_versions() -> dict[str, str]:
 def about(request: Request, auth: Viewer) -> Response:
     python = platform.python_version()
     built = frontend_versions()
+    commit, built_at = build_info()
     components: list[dict[str, str | None]] = [
         {
             "name": "Python",
@@ -270,6 +286,8 @@ def about(request: Request, auth: Viewer) -> Response:
         auth=auth,
         version=short_version(package_version("drydock")),
         project_url=PROJECT_URL,
+        commit=commit,
+        built_at=built_at,
         components=components,
         helper_image=request.app.state.settings.helper_image,
     )

@@ -103,6 +103,10 @@ ENV PATH=/app/.venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     TMPDIR=/data/tmp
+# The About page shows the commit the image was built from (empty when the build was given
+# none) and when this layer ran, which is when anything in the image last changed.
+ARG DRYDOCK_COMMIT=""
+RUN echo "$DRYDOCK_COMMIT $(date -u +%Y-%m-%dT%H:%M:%SZ)" > /app/build-info
 USER 10001:10001
 # Not /data: uvicorn puts its working directory on sys.path, which must not be writable.
 WORKDIR /app

@@ -219,7 +219,7 @@ jobs:
           registry=${GITHUB_SERVER_URL#https://}
           image="$registry/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           echo "$REGISTRY_TOKEN" | docker login "$registry" -u "$GITHUB_REPOSITORY_OWNER" --password-stdin
-          docker buildx build --builder "$BUILDER" --platform linux/amd64,linux/arm64 --sbom=true --provenance=mode=max -t "$image:$version" -t "$image:${version%.*}" --push .
+          docker buildx build --builder "$BUILDER" --platform linux/amd64,linux/arm64 --sbom=true --provenance=mode=max --build-arg "DRYDOCK_COMMIT=$GITHUB_SHA" -t "$image:$version" -t "$image:${version%.*}" --push .
           docker buildx imagetools inspect "$image:$version"
       - if: always()
         run: |

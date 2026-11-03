@@ -7,7 +7,12 @@ name: drydock
 
 services:
   drydock:
-    build: .
+    # DRYDOCK_COMMIT=$(git rev-parse HEAD) docker compose up -d --build names the commit
+    # on the About page.
+    build:
+      context: .
+      args:
+        DRYDOCK_COMMIT: ${DRYDOCK_COMMIT:-}
     image: drydock:local
     restart: unless-stopped
     # Every interface. Docker publishes ports past ufw, so only a firewall in front of this

@@ -32,6 +32,7 @@ import contextlib
 import logging
 import re
 import zoneinfo
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -172,6 +173,110 @@ def first_fire(cron: CronTrigger, after: datetime, until: datetime) -> datetime 
     """The first fire time later than after and not later than until."""
     fire = cron.get_next_fire_time(None, after + timedelta(microseconds=1))
     return fire if fire is not None and fire <= until else None
+
+
+# DESCRIPTIONS
+
+MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+MONTH_NAMES = (
+    "January", "February", "March", "April", "May", "June", "July", "August", "September",
+    "October", "November", "December",
+)  # fmt: skip
+WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
+def describe(expr: str) -> str | None:
+    """A cron expression in the words the schedule presets use ("Every Sunday at 03:00"),
+    or None for one that is not valid or too unusual to say plainly."""
+    try:
+        normalize(expr)
+        minute, hour, dom, month, dow = expr.split()
+        return times(minute, hour, *on_days(dom, month, dow))
+    except ValueError:  # CronError too
+        return None
+
+
+def on_days(dom: str, month: str, dow: str) -> tuple[str, str]:
+    """The days as a sentence start ("Every Sunday") and as a tail (" on Sunday")."""
+    months = "" if month == "*" else spoken(values(month, 1, 12, MONTHS), month_name)
+    if dom != "*":
+        dates = f"the {spoken(values(dom, 1, 31), ordinal)} of {months or 'every month'}"
+        return f"On {dates}", f" on {dates}"
+    within = f" in {months}" if months else ""
+    days = weekdays(dow) if dow != "*" else set()
+    if len(days) in (0, 7):
+        return f"Every day{within}", within
+    # Monday first, so the working week reads as one range.
+    names = spoken(sorted((day - 1) % 7 for day in days), WEEKDAY_NAMES.__getitem__)
+    return f"Every {names}{within}", f" on {names}{within}"
+
+
+def times(minute: str, hour: str, start: str, tail: str) -> str:
+    """The whole description: the times of day, joined to the days. ValueError for
+    combinations without a plain wording."""
+    every_minutes, every_hours = step(minute, 60), step(hour, 24)
+    if hour == "*" and (minute == "*" or every_minutes):
+        return f"Every {f'{every_minutes} minutes' if every_minutes else 'minute'}{tail}"
+    minutes = values(minute, 0, 59)
+    past = "" if minutes == [0] else " at " + spoken(minutes, lambda m: f":{m:02d}", ranges=False)
+    if hour == "*" or every_hours:
+        return f"Every {f'{every_hours} hours' if every_hours else 'hour'}{past}{tail}"
+    hours = values(hour, 0, 23)
+    clock = [f"{h:02d}:{m:02d}" for h in hours for m in minutes]
+    if len(clock) <= 4:
+        return f"{start} at {spoken(clock, str, ranges=False)}"
+    if len(minutes) == 1 and hours == list(range(hours[0], hours[-1] + 1)):
+        return f"Every hour from {clock[0]} to {clock[-1]}{tail}"
+    raise ValueError(hour)
+
+
+def step(field: str, cycle: int) -> int | None:
+    """n for a "*/n" that divides the cycle evenly (so it repeats the same across midnight or
+    the hour), None for no step. ValueError for any other step."""
+    if "/" not in field:
+        return None
+    base, _, n = field.partition("/")
+    if base != "*" or not n.isdigit() or not 1 < int(n) < cycle or cycle % int(n):
+        raise ValueError(field)
+    return int(n)
+
+
+def values(field: str, low: int, high: int, names: tuple[str, ...] = ()) -> list[int]:
+    """The numbers a field of values and ranges names. ValueError for steps and wildcards."""
+    found: set[int] = set()
+    for part in field.lower().split(","):
+        first, _, last = part.partition("-")
+        a, b = (names.index(x) + low if x in names else int(x) for x in (first, last or first))
+        if not low <= a <= b <= high:
+            raise ValueError(field)
+        found.update(range(a, b + 1))
+    return sorted(found)
+
+
+def spoken(items: list, word: Callable[[Any], str], ranges: bool = True) -> str:
+    """Words for sorted values: runs of three or more as "a to c", the rest listed."""
+    groups: list[list] = []
+    for item in items:
+        if ranges and groups and item == groups[-1][-1] + 1:
+            groups[-1].append(item)
+        else:
+            groups.append([item])
+    words: list[str] = []
+    for group in groups:
+        if len(group) >= 3:
+            words.append(f"{word(group[0])} to {word(group[-1])}")
+        else:
+            words.extend(map(word, group))
+    return words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1]
+
+
+def month_name(n: int) -> str:
+    return MONTH_NAMES[n - 1]
+
+
+def ordinal(n: int) -> str:
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
 
 
 # THE SCHEDULER

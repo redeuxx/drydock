@@ -50,8 +50,10 @@ On the Docker host, over SSH. You need Docker Engine 25 or later with the Compos
 4. Start drydock:
 
    ```sh
-   docker compose up -d --build
+   DRYDOCK_COMMIT=$(git rev-parse HEAD) docker compose up -d --build
    ```
+
+   `DRYDOCK_COMMIT` only names the build's commit on the About page.
 
 5. Browse to that address right away and create the superadmin account.
 

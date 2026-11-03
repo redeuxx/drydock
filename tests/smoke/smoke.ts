@@ -250,6 +250,30 @@ for (const target of PAGES) {
   check(status === expected, `GET ${target} renders (${status})`);
 }
 
+// THE RUNS AND AUDIT TABLES FIT THE PAGE, AND AN AUDIT ROW OPENS ITS DIALOG
+
+for (const width of [375, 1280]) {
+  await page.setViewportSize({ width, height: 800 });
+  for (const target of ["/runs", "/audit"]) {
+    await page.goto(target);
+    const fits = await page.evaluate(() => {
+      const table = document.querySelector("main table");
+      const box = table?.parentElement;
+      const root = document.documentElement;
+      return !!box && table!.scrollWidth <= box.clientWidth && root.scrollWidth <= root.clientWidth;
+    });
+    check(fits, `${target} fits a ${width}px window without scrolling sideways`);
+  }
+}
+const row = page.locator("main tbody tr").first();
+const box = await row.boundingBox();
+await page.mouse.click(box!.x + box!.width - 40, box!.y + box!.height / 2);
+check(
+  await page.locator("dialog.modal[open]").isVisible(),
+  "clicking an audit row opens its dialog",
+);
+await page.keyboard.press("Escape");
+
 // 422 SWAPS INTO MAIN AND THE CSRF HEADER IS INHERITED
 
 await page.goto("/users/new");

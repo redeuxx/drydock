@@ -129,9 +129,12 @@ def preset_of(cron: str) -> str:
 
 
 def schedule_label(cron: str | None) -> str:
-    """How the job list names a schedule: the preset's words, else the cron itself."""
+    """How the job list names a schedule: the preset's words, else the cron in words, else
+    the cron itself."""
     preset = preset_of(cron or "")
-    return SCHEDULE_PRESETS[preset] if preset != "custom" else f"cron {cron}"
+    if preset != "custom":
+        return SCHEDULE_PRESETS[preset]
+    return scheduler.describe(cron or "") or f"cron {cron}"
 
 
 def scheduled(cron: str, preset: str | None) -> str:

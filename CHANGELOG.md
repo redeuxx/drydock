@@ -9,6 +9,13 @@ Notable changes to drydock. Versions follow [semantic versioning](https://semver
 - Filter the run list by status. The "Failed" and "Running or queued" tiles open the list filtered to their runs.
 - A job's runs, one per target, are one entry in the notifications and in "Recent backups": how many targets ended how, total size, how long it took, who started it and the first error. "Recent backups" lists the targets, and a run's page lists the other targets of its job run.
 
+### Interface
+- The run list and the audit log fit the window: rows keep one line and long values are cut short, with the full text on hover. Clicking an audit event opens every field, details included.
+- Custom schedules read like the presets in the job list ("Every Monday to Friday at 02:15").
+- The job list shows "encrypted" beside the job's status and a stack target's badge on its own line.
+- Adding a user explains what each role can do.
+- The About page shows when the image was built and links the commit it was built from (`DRYDOCK_COMMIT`).
+
 ## 0.2.0 (2026-11-01)
 
 ### Backups

@@ -3,27 +3,54 @@
 {% block title %}Audit log{% endblock %}
 {% block content %}
 <h1 class="mb-4 text-3xl font-bold">Audit log</h1>
-<div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
-  <table class="table table-zebra table-sm">
+{# One truncated line per cell keeps the table inside the page. Each row's time is a button
+   stretched over the row that opens the event's dialog (below the table) with every field. #}
+<div class="overflow-hidden rounded-box border border-base-300 bg-base-100">
+  <table class="table table-zebra table-sm table-fixed w-full">
     <thead>
-      <tr><th scope="col">Time</th><th scope="col">Actor</th><th scope="col">IP</th><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Outcome</th><th scope="col">Details</th></tr>
+      <tr>
+        <th scope="col" class="w-44">Time</th>
+        <th scope="col" class="w-28 max-sm:hidden">Actor</th>
+        <th scope="col" class="w-32 max-md:hidden">IP</th>
+        <th scope="col">Action</th>
+        <th scope="col" class="max-sm:hidden">Target</th>
+        <th scope="col" class="w-24">Outcome</th>
+      </tr>
     </thead>
     <tbody>
       {% for event, details in rows %}
-      <tr>
-        <td class="whitespace-nowrap">{{ event.ts|stamp }}</td>
-        <td>{{ event.actor or "" }}</td>
-        <td>{{ event.ip or "" }}</td>
-        <td><code>{{ event.action }}</code></td>
-        <td>{{ event.target or "" }}</td>
-        <td>{{ outcome_badge(event.outcome) }}</td>
-        <td class="font-mono text-xs">{% for key, value in details.items() %}{{ key }}={{ value }} {% endfor %}</td>
+      <tr class="relative hover:bg-base-200">
+        <td class="truncate"><button type="button" class="cursor-pointer after:absolute after:inset-0" commandfor="audit-{{ event.id }}" command="show-modal" aria-haspopup="dialog">{{ event.ts|stamp(false) }}</button></td>
+        <td class="truncate max-sm:hidden">{{ event.actor or "" }}</td>
+        <td class="truncate max-md:hidden">{{ event.ip or "" }}</td>
+        <td class="truncate"><code>{{ event.action }}</code></td>
+        <td class="truncate max-sm:hidden">{{ event.target or "" }}</td>
+        <td class="truncate">{{ outcome_badge(event.outcome) }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="7">No events yet.</td></tr>
+      <tr><td colspan="6">No events yet.</td></tr>
       {% endfor %}
     </tbody>
   </table>
 </div>
+{% for event, details in rows %}
+<dialog id="audit-{{ event.id }}" class="modal" aria-labelledby="audit-{{ event.id }}-title">
+  <div class="modal-box">
+    <h2 id="audit-{{ event.id }}-title" class="mb-3 text-lg font-bold"><code>{{ event.action }}</code></h2>
+    <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+      <dt class="font-semibold">Time</dt><dd>{{ event.ts|stamp }}</dd>
+      <dt class="font-semibold">Actor</dt><dd class="break-all">{{ event.actor or "" }}</dd>
+      <dt class="font-semibold">IP</dt><dd class="break-all">{{ event.ip or "" }}</dd>
+      <dt class="font-semibold">Target</dt><dd class="break-all">{{ event.target or "" }}</dd>
+      <dt class="font-semibold">Outcome</dt><dd>{{ outcome_badge(event.outcome) }}</dd>
+      {% for key, value in details.items() %}
+      <dt class="font-mono text-xs">{{ key }}</dt><dd class="font-mono text-xs break-all whitespace-pre-wrap">{{ value if value is string else value|tojson }}</dd>
+      {% endfor %}
+    </dl>
+    <div class="modal-action"><form method="dialog"><button class="btn btn-sm">Close</button></form></div>
+  </div>
+  <form method="dialog" class="modal-backdrop"><button>Close</button></form>
+</dialog>
+{% endfor %}
 {% if next_before %}<p class="mt-4"><a class="btn btn-outline btn-sm" href="/audit?before={{ next_before }}">Older events</a></p>{% endif %}
 {% endblock %}

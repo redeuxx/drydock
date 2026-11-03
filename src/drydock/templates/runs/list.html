@@ -11,26 +11,39 @@
   <button type="submit" class="btn btn-sm">Filter</button>
   {% if chosen %}<a class="link text-sm" href="/runs">Show all</a>{% endif %}
 </form>
-<div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
-  <table class="table table-zebra">
-    <thead><tr><th scope="col">Run</th><th scope="col">Job</th><th scope="col">Status</th><th scope="col">Triggered by</th><th scope="col">Created</th><th scope="col">Finished</th><th scope="col">Size</th></tr></thead>
+{# Fixed layout and one truncated line per cell keep every row the same height and the
+   table inside the page; the full text is in each cell's title. Narrow screens drop the
+   least needed columns. #}
+<div class="overflow-hidden rounded-box border border-base-300 bg-base-100">
+  <table class="table table-zebra table-fixed w-full">
+    <thead><tr>
+      <th scope="col" class="w-16">Run</th>
+      <th scope="col">Job</th>
+      <th scope="col" class="w-40 sm:w-52">Status</th>
+      <th scope="col" class="w-24 max-lg:hidden">Triggered by</th>
+      <th scope="col" class="w-47 max-sm:hidden">Created</th>
+      <th scope="col" class="w-47 max-lg:hidden">Finished</th>
+      <th scope="col" class="w-24 max-md:hidden">Size</th>
+    </tr></thead>
     <tbody>
       {% for run in runs %}
       <tr>
-        <td><a class="link" href="/runs/{{ run.id }}">#{{ run.id }}</a></td>
-        <td>
-          {%- if run.kind == "restore" %}Restore of
-          {%- if run.status == "awaiting_confirmation" and auth.user.role >= Role.admin %} <a class="link font-mono text-xs break-all" href="/restore/runs/{{ run.id }}/plan">{{ run.archive_name }}</a>
-          {%- else %} <span class="font-mono text-xs break-all">{{ run.archive_name }}</span>{% endif %}
-          {%- elif run.job_id in jobs %}<a class="link" href="/jobs/{{ run.job_id }}">{{ jobs[run.job_id] }}</a>
+        <td class="truncate"><a class="link" href="/runs/{{ run.id }}">#{{ run.id }}</a></td>
+        {% if run.kind == "restore" %}
+        <td class="truncate" title="Restore of {{ run.archive_name }}">Restore of
+          {%- if run.status == "awaiting_confirmation" and auth.user.role >= Role.admin %} <a class="link font-mono text-xs" href="/restore/runs/{{ run.id }}/plan">{{ run.archive_name }}</a>
+          {%- else %} <span class="font-mono text-xs">{{ run.archive_name }}</span>{% endif %}</td>
+        {% else %}
+        <td class="truncate" title="{{ jobs.get(run.job_id, 'deleted job') }}{% if run.kind == "backup" and run.target_label %}: {{ run.target_label }}{% endif %}">
+          {%- if run.job_id in jobs %}<a class="link" href="/jobs/{{ run.job_id }}">{{ jobs[run.job_id] }}</a>
           {%- else %}<span class="opacity-70">deleted job</span>{% endif -%}
-          {%- if run.kind == "backup" and run.target_label %}<br><span class="text-xs opacity-70">{{ run.target_label }}</span>{% endif %}
-        </td>
-        <td>{{ run_status_badge(run.status) }}</td>
-        <td>{{ run.triggered_by or "" }}</td>
-        <td class="whitespace-nowrap">{{ when(run.created_at) }}</td>
-        <td class="whitespace-nowrap">{{ when(run.finished_at) }}</td>
-        <td class="whitespace-nowrap">{{ run.size|filesize }}</td>
+          {%- if run.kind == "backup" and run.target_label %} <span class="text-xs opacity-70">{{ run.target_label }}</span>{% endif %}</td>
+        {% endif %}
+        <td class="truncate">{{ run_status_badge(run.status) }}</td>
+        <td class="truncate max-lg:hidden" title="{{ run.triggered_by or '' }}">{{ run.triggered_by or "" }}</td>
+        <td class="truncate max-sm:hidden" title="{{ when(run.created_at) }}">{{ run.created_at|stamp(false) }}</td>
+        <td class="truncate max-lg:hidden" title="{{ when(run.finished_at) }}">{{ run.finished_at|stamp(false) }}</td>
+        <td class="truncate max-md:hidden">{{ run.size|filesize }}</td>
       </tr>
       {% else %}
       <tr><td colspan="7">{% if chosen %}No run has these statuses.{% else %}No runs yet.{% endif %}</td></tr>

@@ -7,6 +7,8 @@
     <dl class="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-1">
       <dt class="opacity-70">Project</dt><dd>Drydock: backup and restore for Docker containers, volumes and Compose stacks</dd>
       <dt class="opacity-70">Version</dt><dd class="font-mono">{{ version }}</dd>
+      <dt class="opacity-70">Built</dt><dd>{{ built_at|stamp if built_at else "unknown" }}</dd>
+      <dt class="opacity-70">Commit</dt><dd class="font-mono">{% if commit %}<a class="link" href="{{ project_url }}/commit/{{ commit }}" rel="noopener noreferrer">{{ commit[:12] }}</a>{% else %}unknown{% endif %}</dd>
       <dt class="opacity-70">Source</dt><dd><a class="link" href="{{ project_url }}" rel="noopener noreferrer">{{ project_url }}</a></dd>
       <dt class="opacity-70">Helper image</dt><dd class="font-mono text-sm break-all">{{ helper_image }}</dd>
     </dl>

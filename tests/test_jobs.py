@@ -24,6 +24,7 @@ from drydock.jobs import runlog
 from drydock.jobs.dispatcher import Dispatcher, DispatchError, Target, for_target
 from drydock.jobs.hooks import Hook
 from drydock.models import Host, Run
+from drydock.routes import system
 from tests.conftest import Browser, add_user, running
 from tests.docker_support import wait_until
 from tests.test_routes import FakeDocker
@@ -568,10 +569,10 @@ async def test_the_job_list_and_page_say_whether_a_job_is_enabled(admin: Browser
     on = await add_job(admin, "on", schedule="1", cron_preset="0 3 * * *")
     off = await add_job(admin, "off", enabled="", schedule="1", cron_preset="manual")
     listing = (await admin.get("/jobs")).text
-    assert '>enabled</span><br><span class="text-xs opacity-70">Every day at 03:00<' in listing
-    assert (
-        '>disabled</span><br><span class="text-xs opacity-70">Only when started by hand<' in listing
-    )
+    badge = ' <span class="badge badge-soft badge-success">encrypted</span>'
+    note = '<br><span class="text-xs opacity-70">'
+    assert f">enabled</span>{badge}{note}Every day at 03:00<" in listing
+    assert f">disabled</span>{badge}{note}Only when started by hand<" in listing
     on_page = (await admin.get(f"/jobs/{on}")).text
     assert '<span class="badge badge-success">enabled</span> Runs on its schedule' in on_page
     off_page = (await admin.get(f"/jobs/{off}")).text
@@ -1027,3 +1028,19 @@ async def test_the_about_page_names_the_version_and_the_stack(admin: Browser) ->
     assert '<dd class="font-mono">0.2</dd>' in page
     assert "https://pypi.org/project/fastapi/" in page and "rclone" in page
     assert "https://github.com/rclone/rclone/releases/tag/v1.75.2" in page
+
+
+async def test_the_about_page_links_the_build_commit(
+    admin: Browser, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unknown = (await admin.get("/about")).text
+    assert '<dt class="opacity-70">Built</dt><dd>unknown</dd>' in unknown
+    sha = "3e9918a" + "0" * 33
+    info = tmp_path / "build-info"
+    monkeypatch.setattr(system, "BUILD_INFO", info)
+    info.write_text(f"{sha} 2026-11-03T16:30:00Z\n")
+    page = (await admin.get("/about")).text
+    assert f'href="https://github.com/redeuxx/drydock/commit/{sha}"' in page
+    assert ">3e9918a00000</a>" in page and "2026-11-03" in page
+    info.write_text('"><script> 2026-11-03T16:30:00Z\n')
+    assert "/commit/" not in (await admin.get("/about")).text

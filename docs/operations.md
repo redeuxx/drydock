@@ -26,7 +26,7 @@ To restore it, stop drydock, unpack the copy into an empty `drydock_drydock-data
 Drydock migrates its database at startup, and a migration is one-way: an older image refuses to start on a database a newer one has migrated, and archives a newer build writes may not verify in an older one. Archives from older builds restore in newer ones. To upgrade:
 
 1. Stop drydock (`docker compose stop`, which gives it 90 seconds to start any containers it stopped) and copy the `drydock-data` volume.
-2. Change the image tag (or pull the checkout and rebuild) and start it again.
+2. Change the image tag (or pull the checkout and rebuild with `DRYDOCK_COMMIT=$(git rev-parse HEAD) docker compose up -d --build`) and start it again.
 
 To go back, restore that copy with the older image, which loses everything done since. `docker compose down` keeps the volume and every setting; `down --volumes` deletes the database.
 
