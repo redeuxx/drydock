@@ -1051,6 +1051,14 @@ async def test_startup_rollback_gives_up_on_a_deleted_host_and_skips_stale_journ
         )
         assert fakes.rolled[0]["run_id"] == ids[1]
         assert gone in log_text(browser, ids[0])
+        # Stored, not only called: a shutdown before the store leaves it for the next start.
+        await wait_until(
+            lambda: json.loads(run_row(browser, ids[1])["restore_originals_json"]).get(
+                "rolled_back"
+            ),
+            5,
+            "the stored rollback",
+        )
     async with running(settings) as browser:
         await asyncio.sleep(0.5)
         assert len(fakes.rolled) == 1
