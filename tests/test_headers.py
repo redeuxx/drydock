@@ -117,8 +117,9 @@ def test_templates_load_only_the_bundled_assets() -> None:
         "/static/js/upload.js",
     }
     for name, text in template_sources():
-        stylesheets = re.findall(r"<link\b[^>]*>", text)
-        assert all('href="/static/css/app.css"' in tag for tag in stylesheets), name
+        links = re.findall(r"<link\b[^>]*>", text)
+        bundled = ('href="/static/css/app.css"', 'rel="icon" href="/static/logo.svg"')
+        assert all(any(href in tag for href in bundled) for tag in links), name
         for tag in re.findall(r"<script\b[^>]*>", text):
             src = re.search(r'src="([^"]+)"', tag)
             assert src and src.group(1) in allowed_scripts, f"{name}: {tag}"

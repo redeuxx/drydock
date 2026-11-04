@@ -1,6 +1,8 @@
 {% extends "base.html" %}
+{% from "_macros.html" import logo %}
 {% block title %}Setup{% endblock %}
 {% block content %}
+<div class="mb-6 flex justify-center">{{ logo("size-20") }}</div>
 <section class="card mx-auto max-w-md bg-base-100 shadow-sm">
   <div class="card-body">
     <h1 class="card-title text-2xl">Create the superadmin account</h1>
