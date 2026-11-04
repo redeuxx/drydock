@@ -1,8 +1,12 @@
 {% extends "base.html" %}
-{% from "_macros.html" import run_status_badge, host_status_badge, job_run_facts, submit with context %}
+{% from "_macros.html" import run_status_badge, job_run_facts, submit with context %}
 {% block title %}Dashboard{% endblock %}
 {% block content %}
 <h1 class="mb-4 text-3xl font-bold">Dashboard</h1>
+<section class="mb-4" aria-labelledby="environments-heading">
+  <h2 id="environments-heading" class="mb-2 text-xl font-bold">Environments</h2>
+  {% include "status/_hosts.html" %}
+</section>
 <div class="mb-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
   <a href="/jobs" class="card bg-base-100 shadow-sm hover:shadow">
     <div class="card-body p-4"><p class="text-sm opacity-70">Jobs</p><p class="text-2xl font-bold">{{ jobs|length }}</p><p class="text-xs opacity-70">{{ enabled }} enabled</p></div>
@@ -83,18 +87,6 @@
       {% endif %}
     </div>
   </section>
-  {% if hosts %}
-  <section class="card bg-base-100 shadow-sm" aria-labelledby="hosts-heading">
-    <div class="card-body">
-      <h2 id="hosts-heading" class="card-title">Hosts</h2>
-      <ul class="flex flex-col gap-1 text-sm">
-        {% for host, status in hosts %}
-        <li class="flex items-center gap-2"><a class="link" href="/hosts/{{ host.id }}">{{ host.name }}</a> {{ host_status_badge(status) }}</li>
-        {% endfor %}
-      </ul>
-    </div>
-  </section>
-  {% endif %}
   {% if storage %}
   <section class="card bg-base-100 shadow-sm" aria-labelledby="storage-heading">
     <div class="card-body">

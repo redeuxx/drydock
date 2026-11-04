@@ -15,6 +15,7 @@ from drydock.db import get_db
 from drydock.models import User, UserSession, utcnow
 
 IDLE_TIMEOUT = timedelta(hours=1)
+POLL_HEADER = "x-drydock-poll"  # set by frontend/app.ts on every background poll
 ABSOLUTE_TIMEOUT = timedelta(hours=12)
 TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{43}")
 
@@ -117,7 +118,11 @@ def load_auth(request: Request, db: Session = Depends(get_db)) -> Auth:
     if user.disabled or session.expires_at <= now or session.last_seen_at <= now - IDLE_TIMEOUT:
         db.rollback()  # stale rows are purged at the next login, keeping GETs write-free
         raise LoginRequired
-    session.last_seen_at = now
+    # A page polling in the background (live status, a run's log) is not the user being
+    # active: it must not keep an idle session alive. Sending the header can only shorten
+    # one's own session.
+    if request.headers.get(POLL_HEADER) != "1":
+        session.last_seen_at = now
     db.commit()
     auth = Auth(user=user, session=session)
     request.state.auth = auth  # lets error pages keep the logged-in header

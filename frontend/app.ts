@@ -58,25 +58,48 @@ function isFieldRegion(target: unknown): target is HTMLElement {
   return target instanceof HTMLElement && target.hasAttribute("data-field-region");
 }
 
-// THE RUN LOG POLLER
+// POLLERS
 //
-// The run page polls for new log lines every 2 seconds (routes/runs.py). Polls are
-// background traffic: they never hide an error left by a user action, a failing poll
-// shows its error once instead of re-announcing it every 2 seconds, and an error answer
-// never replaces the poller, which keeps retrying. New lines scroll the log to the bottom
-// only if the reader was already there.
+// Elements that refresh themselves with hx-trigger "every Ns": the run page's log poller
+// (new log lines every 2 seconds, routes/runs.py) and every [data-poller] region, such as
+// the dashboard's environment cards, whose attribute names them in error messages. Polls
+// are background traffic: they never hide an error left by a user action, a failing poll
+// shows its error once instead of re-announcing it on every poll, and an error answer
+// never replaces the poller, which keeps retrying. They carry X-Drydock-Poll, so they
+// never keep an idle session alive (security/sessions.py), and they skip their turn
+// while the tab is hidden. New log lines scroll the log to the bottom only if the reader
+// was already there.
 
 const POLLER_ID = "log-poller";
+const POLL_HEADER = "X-Drydock-Poll";
 let followLog = true;
 let pollErrorShown = false;
 
-function isPoller(element: unknown): boolean {
+function isLogPoller(element: unknown): boolean {
   return element instanceof Element && element.id === POLLER_ID;
+}
+
+function isPoller(element: unknown): boolean {
+  return element instanceof Element && (element.id === POLLER_ID || element.hasAttribute("data-poller"));
+}
+
+function pollerName(element: unknown): string {
+  return (element instanceof Element && element.getAttribute("data-poller")) || "Live log";
 }
 
 function runLog(): HTMLElement | null {
   return document.getElementById("run-log");
 }
+
+document.addEventListener("htmx:config:request", (event) => {
+  const ctx = event.detail.ctx;
+  if (!isPoller(ctx.sourceElement)) return;
+  if (document.hidden) {
+    event.preventDefault(); // nobody is looking; the next tick after the tab shows again polls
+    return;
+  }
+  ctx.request.headers[POLL_HEADER] = "1";
+});
 
 function pollFailed(message: string): void {
   const box = clientErrorBox();
@@ -93,7 +116,7 @@ if (initialLog) {
 }
 
 document.addEventListener("htmx:before:swap", (event) => {
-  if (isPoller(event.detail.ctx.target)) {
+  if (isLogPoller(event.detail.ctx.target)) {
     const log = runLog();
     followLog = !log || log.scrollHeight - log.scrollTop - log.clientHeight < 32;
   }
@@ -112,7 +135,9 @@ document.addEventListener("htmx:response:error", (event) => {
   }
   if (isPoller(ctx.sourceElement)) {
     ctx.swap = "none";
-    pollFailed(`Live log updates failed (HTTP ${status}). Drydock keeps trying; reload the page if this persists.`);
+    pollFailed(
+      `${pollerName(ctx.sourceElement)} updates failed (HTTP ${status}). Drydock keeps trying; reload the page if this persists.`,
+    );
     return;
   }
   if (isRegion(ctx.target)) {
@@ -136,8 +161,9 @@ document.addEventListener("htmx:response:error", (event) => {
 // NETWORK AND CLIENT ERRORS
 
 document.addEventListener("htmx:error", (event) => {
-  if (isPoller(event.detail.ctx?.sourceElement)) {
-    pollFailed("Live log updates failed. Check the connection; drydock keeps trying.");
+  const source = event.detail.ctx?.sourceElement;
+  if (isPoller(source)) {
+    pollFailed(`${pollerName(source)} updates failed. Check the connection; drydock keeps trying.`);
     return;
   }
   const target = event.detail.ctx?.target;
@@ -194,7 +220,7 @@ document.addEventListener("htmx:after:swap", (event) => {
   const target = event.detail.ctx.target;
   if (isPoller(target)) {
     const log = runLog();
-    if (log && followLog) {
+    if (isLogPoller(target) && log && followLog) {
       log.scrollTop = log.scrollHeight;
     }
     if (pollErrorShown) {

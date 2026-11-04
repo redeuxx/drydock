@@ -59,10 +59,11 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 ### T3. Stealing or fixing a session
 
 **Threat:** an attacker reuses a stolen or planted session token, or a session outlives a password or role change.
-**Defence:** 32-byte opaque tokens stored only as sha256, rotation at login, 1 h idle and 12 h absolute timeouts, `__Host-` cookies that are `Secure`, `HttpOnly` and `SameSite=Lax`, and revocation on password, role or disabled changes.
+**Defence:** 32-byte opaque tokens stored only as sha256, rotation at login, 1 h idle and 12 h absolute timeouts, `__Host-` cookies that are `Secure`, `HttpOnly` and `SameSite=Lax`, and revocation on password, role or disabled changes. A page left open that polls in the background (the dashboard's live status, a run's log) does not count as activity, so it cannot keep an unattended session alive.
 **Tests:**
 - `tests/test_login.py::test_login_rotates_session_and_stores_only_hashes`
 - `tests/test_login.py::test_idle_and_absolute_timeouts`
+- `tests/test_status.py::test_polls_never_keep_a_session_alive`
 - `tests/test_login.py::test_logout_ends_the_session`
 - `tests/test_login.py::test_password_change_revokes_other_sessions`
 - `tests/test_users.py::test_role_change_disable_and_reset_revoke_sessions`

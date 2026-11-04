@@ -352,6 +352,28 @@ const inventoryPage = await page.goto(`${localPath}/containers`);
 await page.waitForLoadState("networkidle");
 check(inventoryPage?.status() === 200, `GET ${localPath}/containers renders`);
 
+// THE DASHBOARD'S ENVIRONMENT CARDS REFRESH THEMSELVES
+
+const statusPoll = page
+  .waitForRequest(
+    (request) => request.url().endsWith("/status/hosts") && request.headers()["x-drydock-poll"] === "1",
+    { timeout: 15000 },
+  )
+  .then(() => true)
+  .catch(() => false);
+await page.goto("/");
+check(await statusPoll, "the environment cards poll in the background, marked as a poll");
+const cardsFilled = await page
+  .locator("#host-status ul[aria-label='Containers by state']")
+  .first()
+  .waitFor({ timeout: 20000 })
+  .then(() => true)
+  .catch(() => false);
+check(
+  cardsFilled && (await page.locator("#host-status").count()) === 1 && (await page.locator("#main").count()) === 1,
+  "the local host's card fills in, swapping only #host-status",
+);
+
 // STORAGE, A JOB AND A RUN WITH ITS LIVE LOG
 
 await page.goto("/storage/new");

@@ -68,7 +68,7 @@ Port 8000 is open to every network that can reach the host; Docker's published p
 3. **Manage > Jobs > Add job**: pick the container or Compose project, the scope, the mode and optionally a schedule, retention and notifications ([backups](docs/backups.md#jobs-and-runs)).
 4. **Run now** on the job's page, then **Manage > Restore** to bring an archive back ([restore](docs/restore.md)).
 
-The dashboard shows failed backups, recent runs, the next scheduled runs and the hosts' state; the bell beside your name lists finished runs (and, for admins, missed schedules, host key mismatches and storage that needs reconnecting). Your name opens your account, the admin pages and **About**, which shows the version and every component of the stack.
+The dashboard shows each host's containers live (running, stopped, unhealthy, CPU and memory; [hosts](docs/hosts.md#container-status)), failed backups, recent runs and the next scheduled runs; the bell beside your name lists finished runs (and, for admins, missed schedules, host key mismatches and storage that needs reconnecting). Your name opens your account, the admin pages and **About**, which shows the version and every component of the stack.
 
 ## Documentation
 

@@ -20,10 +20,11 @@ from drydock.db import get_db
 from drydock.jobs.targets import MAX_TARGETS
 from drydock.models import AuditEvent, Backup, Host, Job, Run, StorageTarget, User, utcnow
 from drydock.routes.auth import client_ip, safe_next
+from drydock.routes.hosts import target
 from drydock.security.rbac import Role, require_role
 from drydock.security.sessions import Auth
 from drydock.storage.rclone_rc import RCLONE_BINARY
-from drydock.templating import render, see_other
+from drydock.templating import is_htmx, render, see_other
 
 router = APIRouter()
 
@@ -34,6 +35,28 @@ NEXT_RUNS = 5
 FAILURE_DAYS = 7
 
 # DASHBOARD
+
+
+def environments(request: Request, db: Session, auth: Auth) -> list[tuple[Any, ...]]:
+    """(host, connection status, status snapshot or None, its address for admins) for
+    every host, from the status collector's cache. Marks every host as shown, so the
+    collector keeps reading them."""
+    collector = request.app.state.status
+    collector.touch()
+    manager = request.app.state.hosts
+    admin = auth.user.role >= Role.admin  # the address is on the admin-only host pages too
+    return [
+        (host, manager.status(host), collector.snapshot(host.id), target(host) if admin else None)
+        for host in db.scalars(select(Host).order_by(Host.name))
+    ]
+
+
+@router.get("/status/hosts")
+def host_status(request: Request, auth: Viewer, db: Session = Depends(get_db)) -> Response:
+    """The dashboard's environment cards (#host-status): the cards alone for its poller, or a
+    page of their own. Reads only what the collector last read: never calls Docker."""
+    template = "status/_hosts.html" if is_htmx(request) else "status/hosts.html"
+    return render(request, template, auth=auth, environments=environments(request, db, auth))
 
 
 @router.get("/")
@@ -92,14 +115,10 @@ def home(request: Request, auth: Viewer, db: Session = Depends(get_db)) -> Respo
         "upcoming": upcoming,
         "backup_count": backups[0],
         "backup_bytes": backups[1],
-        "hosts": [],
+        "environments": environments(request, db, auth),
         "storage": [],
     }
     if auth.user.role >= Role.admin:  # the pages these link to are admins' too
-        manager = request.app.state.hosts
-        context["hosts"] = [
-            (host, manager.status(host)) for host in db.scalars(select(Host).order_by(Host.name))
-        ]
         context["storage"] = db.scalars(select(StorageTarget).order_by(StorageTarget.name)).all()
     return render(request, "home.html", auth=auth, **context)
 

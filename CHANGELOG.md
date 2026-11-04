@@ -5,11 +5,14 @@ Notable changes to drydock. Versions follow [semantic versioning](https://semver
 ## Unreleased
 
 ### Dashboard
+- Live container status: a card per host, for every role, with its containers by state, unhealthy containers by name, CPU and memory, images, volumes, networks and Compose stacks. Cards refresh every 10 seconds from what drydock last read, and drydock reads a host only while a page shows the cards, so pages never call Docker. It replaces the admins' list of hosts.
+- Pages that poll in the background (the status cards, a run's live log) no longer count as activity: a tab left open cannot keep a session past its 1 hour idle timeout, and polls skip their turn while the tab is hidden.
 - Dismiss a failed or interrupted run from "Needs attention" (operators and up). The run, its log and the failure count stay.
 - Filter the run list by status. The "Failed" and "Running or queued" tiles open the list filtered to their runs.
 - A job's runs, one per target, are one entry in the notifications and in "Recent backups": how many targets ended how, total size, how long it took, who started it and the first error. "Recent backups" lists the targets, and a run's page lists the other targets of its job run.
 
 ### Interface
+- A logo: in the header, on the login, setup and About pages, and as the favicon.
 - The run list and the audit log fit the window: rows keep one line and long values are cut short, with the full text on hover. Clicking an audit event opens every field, details included.
 - Custom schedules read like the presets in the job list ("Every Monday to Friday at 02:15").
 - The job list shows "encrypted" beside the job's status and a stack target's badge on its own line.

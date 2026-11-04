@@ -1,0 +1,81 @@
+{% from "_macros.html" import host_status_badge %}
+{% from "_icons.html" import icon %}
+{# One card per host, from what the status collector last read (hosts/status.py); nothing
+   here calls Docker. The grid refreshes itself (data-poller, frontend/app.ts) by swapping
+   in #host-status from /status/hosts. Not aria-live: a screen reader would announce every
+   refresh. #}
+{% set counters = [
+  ("running", "Running", "play", "text-success"),
+  ("exited", "Stopped (exited or dead)", "square", ""),
+  ("paused", "Paused", "pause", "text-warning"),
+  ("restarting", "Restarting", "rotate-cw", "text-warning"),
+  ("unhealthy", "Unhealthy", "triangle-alert", "text-error"),
+  ("created", "Created", "circle-plus", "text-info"),
+] %}
+{% macro meter(label, symbol, percent, detail) -%}
+<div>
+  <div class="flex items-center justify-between gap-2 text-xs">
+    <span class="flex items-center gap-1 opacity-70">{{ icon(symbol, "size-3.5") }}{{ label }}</span>
+    <span class="font-semibold">{% if percent is none %}<span class="opacity-70">n/a</span>{% else %}{{ "%.1f"|format(percent) }}%{% endif %}{% if detail %} <span class="font-normal opacity-70">({{ detail }})</span>{% endif %}</span>
+  </div>
+  {% set tone = "progress-success" if percent is none or percent < 70 else "progress-warning" if percent < 90 else "progress-error" %}
+  <progress class="progress {{ tone }} h-1.5" max="100" value="{{ "%.1f"|format(percent or 0) }}" aria-label="{{ label }}"></progress>
+</div>
+{%- endmacro %}
+<div id="host-status" class="grid gap-4 md:grid-cols-2 xl:grid-cols-3"
+  {%- if environments %} data-poller="Live status" hx-get="/status/hosts" hx-trigger="every 10s" hx-target="this" hx-select="#host-status" hx-swap="outerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}"{% endif %}>
+  {% for host, state, snap, where in environments %}
+  <article class="card border border-base-300 bg-base-100 shadow-sm{% if not host.enabled %} opacity-60{% endif %}" aria-labelledby="env-{{ host.id }}">
+    <div class="card-body gap-3 p-4">
+      <div class="flex items-start gap-3">
+        <span class="rounded-box bg-base-200 p-2" title="{{ 'Local host' if host.kind == 'local' else 'SSH host' }}">{{ icon("server" if host.kind == "local" else "globe", "size-5") }}</span>
+        <div class="min-w-0 flex-1">
+          <h3 id="env-{{ host.id }}" class="truncate font-semibold">{{ host.name }}</h3>
+          <p class="truncate text-xs opacity-70"{% if where %} title="{{ where }}"{% endif %}>{{ where or ("Local host" if host.kind == "local" else "SSH host") }}{% if snap and snap.engine %} &middot; Docker {{ snap.engine }}{% endif %}</p>
+        </div>
+        {{ host_status_badge(state) }}
+        {% if auth.user.role >= Role.admin %}<a class="btn btn-square btn-ghost btn-xs" href="/hosts/{{ host.id }}" title="Host settings">{{ icon("settings") }}<span class="sr-only">Settings of {{ host.name }}</span></a>{% endif %}
+      </div>
+      {% if not host.enabled %}
+      <p class="text-sm opacity-70">Disabled: drydock does not connect to it.</p>
+      {% elif snap is none or snap.taken_at is none %}
+      {% if snap and snap.error %}
+      <div class="alert alert-warning alert-soft text-sm"><span>Cannot read the containers: {{ snap.error }}</span></div>
+      {% else %}
+      <p class="text-sm opacity-70">Reading the containers&hellip;</p>
+      {% endif %}
+      {% else %}
+      {% set states, health = snap.states, snap.health %}
+      <ul class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm" aria-label="Containers by state">
+        {% for key, label, symbol, tone in counters %}
+        {% set count = health["unhealthy"] if key == "unhealthy" else states["exited"] + states["dead"] if key == "exited" else states[key] %}
+        <li class="flex items-center gap-1 {{ tone if count else 'opacity-40' }}" title="{{ label }}">{{ icon(symbol) }}<span class="font-semibold">{{ count }}</span><span class="sr-only">{{ label }}</span></li>
+        {% endfor %}
+        <li class="ml-auto"><span class="opacity-70">Total</span> <span class="font-semibold">{{ snap.containers|length }}</span></li>
+      </ul>
+      {% set sick = snap.containers|selectattr("health", "equalto", "unhealthy")|map(attribute="name")|list %}
+      {% if sick %}
+      <div class="alert alert-error alert-soft px-3 py-2 text-sm">{{ icon("triangle-alert") }}<span>{{ sick|length }} unhealthy: {{ sick[:5]|join(", ") }}{% if sick|length > 5 %} and {{ sick|length - 5 }} more{% endif %}</span></div>
+      {% elif states["running"] %}
+      <div class="alert alert-success alert-soft px-3 py-2 text-sm">{{ icon("circle-check") }}<span>No unhealthy containers</span></div>
+      {% endif %}
+      {{ meter("CPU", "cpu", snap.cpu_percent, (snap.ncpu ~ " cores") if snap.ncpu else "") }}
+      {{ meter("Memory", "memory-stick", snap.mem_percent, snap.mem_bytes|filesize) }}
+      {% set stacks_running, stacks_partial, stacks_stopped = snap.stacks %}
+      <dl class="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+        <div class="flex justify-between"><dt class="flex items-center gap-1 opacity-70">{{ icon("image", "size-3.5") }}Images</dt><dd class="font-semibold">{{ snap.images }}</dd></div>
+        <div class="flex justify-between"><dt class="flex items-center gap-1 opacity-70">{{ icon("layers", "size-3.5") }}Stacks</dt><dd class="font-semibold" title="{{ stacks_running }} running, {{ stacks_partial }} partly running, {{ stacks_stopped }} stopped">{{ stacks_running + stacks_partial + stacks_stopped }} <span class="font-normal"><span class="text-success">{{ stacks_running }}</span>/<span class="text-warning">{{ stacks_partial }}</span>/<span class="opacity-70">{{ stacks_stopped }}</span></span></dd></div>
+        <div class="flex justify-between"><dt class="flex items-center gap-1 opacity-70">{{ icon("hard-drive", "size-3.5") }}Volumes</dt><dd class="font-semibold">{{ snap.volumes }}</dd></div>
+        <div class="flex justify-between"><dt class="flex items-center gap-1 opacity-70">{{ icon("network", "size-3.5") }}Networks</dt><dd class="font-semibold">{{ snap.networks }}</dd></div>
+      </dl>
+      {% if snap.error %}
+      <div class="alert alert-warning alert-soft px-3 py-2 text-sm"><span>Stale since {{ snap.stale_since|ago }}: {{ snap.error }}</span></div>
+      {% endif %}
+      <p class="text-xs opacity-70" title="{{ snap.taken_at|stamp }}">Read {{ snap.taken_at|ago }}</p>
+      {% endif %}
+    </div>
+  </article>
+  {% else %}
+  <p class="text-sm opacity-70">No host is set up yet.{% if auth.user.role >= Role.admin %} <a class="link" href="/hosts/new?kind=local">Add the local host</a> or <a class="link" href="/hosts/new?kind=ssh">an SSH host</a>.{% endif %}</p>
+  {% endfor %}
+</div>

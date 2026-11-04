@@ -105,6 +105,7 @@ INVENTORY = {
     ("GET", "/audit"),
     ("GET", "/healthz"),
     ("GET", "/feed"),
+    ("GET", "/status/hosts"),
     ("POST", "/feed/read"),
     ("GET", "/about"),
     ("GET", "/hosts"),
