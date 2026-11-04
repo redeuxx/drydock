@@ -94,8 +94,10 @@ function runLog(): HTMLElement | null {
 document.addEventListener("htmx:config:request", (event) => {
   const ctx = event.detail.ctx;
   if (!isPoller(ctx.sourceElement)) return;
-  if (document.hidden) {
-    event.preventDefault(); // nobody is looking; the next tick after the tab shows again polls
+  // Nobody is looking, or a dialog in the region is open, which the swap would close:
+  // skip this turn, the next tick polls.
+  if (document.hidden || ctx.sourceElement.querySelector("dialog[open]")) {
+    event.preventDefault();
     return;
   }
   ctx.request.headers[POLL_HEADER] = "1";
@@ -115,7 +117,16 @@ if (initialLog) {
   initialLog.scrollTop = initialLog.scrollHeight; // the newest lines, or the outcome
 }
 
+// Rows selected in a polled table (data-select) stay selected across its swaps.
+let selectedRows: string[] = [];
+
 document.addEventListener("htmx:before:swap", (event) => {
+  const target = event.detail.ctx.target;
+  if (target instanceof Element && target.hasAttribute("data-poller")) {
+    selectedRows = [...target.querySelectorAll<HTMLInputElement>("input[data-select]:checked")].map(
+      (box) => box.value,
+    );
+  }
   if (isLogPoller(event.detail.ctx.target)) {
     const log = runLog();
     followLog = !log || log.scrollHeight - log.scrollTop - log.clientHeight < 32;
@@ -196,6 +207,19 @@ document.addEventListener("click", (event) => {
   }
 });
 
+// SELECT ALL
+//
+// The containers table's header checkbox (data-select-all) checks or clears every row's
+// (data-select).
+
+document.addEventListener("change", (event) => {
+  const all = event.target;
+  if (!(all instanceof HTMLInputElement) || !all.hasAttribute("data-select-all")) return;
+  for (const box of document.querySelectorAll<HTMLInputElement>("input[data-select]")) {
+    box.checked = all.checked;
+  }
+});
+
 // SCHEDULE PRESETS
 //
 // The job form's schedule list (data-cron-preset) fills the cron field, so switching to
@@ -207,6 +231,32 @@ document.addEventListener("change", (event) => {
   const field = list.closest("[data-schedule]")?.querySelector<HTMLInputElement>('input[name="cron"]');
   if (field && list.value !== "custom") field.value = list.value === "manual" ? "" : list.value;
 });
+
+// THE CONTAINERS PAGE'S HOST
+//
+// The host picker (data-remember-host) remembers the last host chosen, and the menu's
+// Containers link opens that host. A convenience only: storage may be unavailable, and
+// the server falls back to its own choice for a host that no longer exists.
+
+const HOST_KEY = "drydock.containers.host";
+
+document.addEventListener("change", (event) => {
+  const picker = event.target;
+  if (!(picker instanceof HTMLSelectElement) || !picker.hasAttribute("data-remember-host")) return;
+  try {
+    localStorage.setItem(HOST_KEY, picker.value);
+  } catch {
+    // storage blocked
+  }
+});
+
+try {
+  const saved = localStorage.getItem(HOST_KEY);
+  const link = document.querySelector<HTMLAnchorElement>('nav a[href="/containers"]');
+  if (saved && link) link.href = `/containers?host=${encodeURIComponent(saved)}`;
+} catch {
+  // storage blocked
+}
 
 // FOCUS AFTER A SWAP OF #MAIN
 //
@@ -223,6 +273,10 @@ document.addEventListener("htmx:after:swap", (event) => {
     if (isLogPoller(target) && log && followLog) {
       log.scrollTop = log.scrollHeight;
     }
+    for (const box of document.querySelectorAll<HTMLInputElement>("input[data-select]")) {
+      if (selectedRows.includes(box.value)) box.checked = true;
+    }
+    selectedRows = [];
     if (pollErrorShown) {
       hideClientError(); // the poll works again
       pollErrorShown = false;

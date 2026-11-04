@@ -192,10 +192,11 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 ### T13. Secrets leaking into pages, logs, audit records or errors
 
 **Threat:** a stored secret, an entered passphrase, a hook's output or an error from rclone or Docker shows a secret to a user or writes it to a log.
-**Defence:** secrets are never rendered back, refused forms do not echo them, the audit log redacts secret-like keys, run logs and hook output are redacted, rclone gets secrets only obscured through its private API, and upstream error bodies are not quoted.
+**Defence:** secrets are never rendered back, refused forms do not echo them, the audit log redacts secret-like keys, run logs and hook output are redacted, container labels are never shown and only admins' searches on the containers page match their values (a viewer cannot probe a label for a credential), rclone gets secrets only obscured through its private API, and upstream error bodies are not quoted.
 **Tests:**
 - `tests/test_hosts_routes.py::test_a_refused_password_still_trusts_the_host_key`
 - `tests/test_audit.py::test_redaction`
+- `tests/test_status.py::test_viewers_see_containers_without_addresses_or_label_values`
 - `tests/test_config.py::test_error_message_never_echoes_the_key`
 - `tests/test_hosts_routes.py::test_pasted_key_with_passphrase_is_never_echoed`
 - `tests/test_hosts.py::test_daemon_errors_do_not_echo_the_response_body`
@@ -592,6 +593,19 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 - `tests/test_deploy.py::test_ci_images_are_pinned_by_digest`
 - `tests/test_deploy.py::test_scan_exceptions_say_why_and_expire`
 - `tests/test_deploy.py::test_releases_carry_an_sbom_and_provenance_for_both_platforms`
+
+### T41. Starting, stopping or inspecting containers from the containers page
+
+**Threat:** a viewer or a forged request stops containers, an action stops drydock itself or yanks a container from under a backup or restore, or inspect shows a container's secrets.
+**Defence:** start, stop, restart, pause and unpause need an operator and a CSRF token, take only container IDs, and audit every container acted on or refused. Each refuses drydock's own container and Compose project (the socket proxy among them) and its helpers, and holds the keys a backup or restore of the container would take: a container a run holds is refused, and a run that starts meanwhile waits. Inspect is for admins only and shows environment values, secret-looking labels and log driver options as `***`.
+**Tests:**
+- `tests/test_status.py::test_actions_and_inspect_need_their_roles_and_csrf`
+- `tests/test_status.py::test_actions_refuse_bad_input_before_calling_docker`
+- `tests/test_status.py::test_actions_refuse_drydock_itself_and_its_helpers`
+- `tests/test_status.py::test_inspect_hides_environment_values_and_secret_labels`
+- `tests/test_status.py::test_try_hold_takes_all_keys_or_none`
+- `tests/test_status.py::test_try_hold_never_jumps_a_waiting_run`
+- `tests/test_status_docker.py::test_container_actions_and_inspect_on_a_real_container`
 
 ## Accepted risks
 

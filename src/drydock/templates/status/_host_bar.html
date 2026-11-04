@@ -1,0 +1,19 @@
+{% from "_macros.html" import host_status_badge %}
+{% from "_icons.html" import icon %}
+{# One host's facts above a page about its containers, from what the status collector last
+   read. where is the host's address, for admins only (None for other roles). Docker's API
+   tells neither the host's uptime nor its disk, so they are not here. #}
+{% macro host_bar(host, state, snap, where) -%}
+<div class="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-box border border-base-300 bg-base-100 px-4 py-2 text-sm">
+  <span class="flex min-w-0 items-center gap-2 font-semibold">{{ icon("server" if host.kind == "local" else "globe") }}<span class="truncate">{{ host.name }}</span></span>
+  {{ host_status_badge(state) }}
+  <span class="truncate opacity-70"{% if where %} title="{{ where }}"{% endif %}>{{ where or ("Local host" if host.kind == "local" else "SSH host") }}</span>
+  {% if snap and snap.taken_at %}
+  {% if snap.os %}<span>{{ snap.os }}{% if snap.arch %} ({{ snap.arch }}){% endif %}</span>{% endif %}
+  {% if snap.engine %}<span>Docker {{ snap.engine }}</span>{% endif %}
+  {% if snap.ncpu %}<span>{{ snap.ncpu }} cores</span>{% endif %}
+  {% if snap.mem_total %}<span>{{ snap.mem_total|filesize }} RAM</span>{% endif %}
+  <span class="ml-auto text-xs{% if snap.error %} text-warning{% else %} opacity-70{% endif %}" title="{{ snap.taken_at|stamp }}">{% if snap.error %}Stale since {{ snap.stale_since|ago }}{% else %}Live, read {{ snap.taken_at|ago }}{% endif %}</span>
+  {% endif %}
+</div>
+{%- endmacro %}

@@ -30,6 +30,7 @@
       <nav aria-label="Main">
         <ul class="menu menu-horizontal gap-1 p-0">
           <li><a href="/"{% if current == "/" %} class="menu-active" aria-current="page"{% endif %}>Dashboard</a></li>
+          <li><a href="/containers"{% if current == "/containers" %} class="menu-active" aria-current="page"{% endif %}>Containers</a></li>
           <li>
             <details data-menu>
               <summary{% if ns.manage_active %} class="menu-active"{% endif %}>Manage</summary>
@@ -116,7 +117,7 @@
       <span data-message></span>
     </div>
   </div>
-  <main id="main" class="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6">
+  <main id="main" class="mx-auto w-full {% block width %}max-w-5xl{% endblock %} px-4 py-6 sm:px-6">
     {% block content %}{% endblock %}
   </main>
 </body>

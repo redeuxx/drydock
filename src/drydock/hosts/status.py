@@ -18,6 +18,7 @@ holds the worker threads that the app's sync routes run on.
 import asyncio
 import contextlib
 import functools
+import ipaddress
 import logging
 import math
 import re
@@ -25,7 +26,7 @@ import time
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import anyio
@@ -47,6 +48,7 @@ INTERVAL = 10  # seconds between polls of a host
 WARM = 60  # a host is polled while a status page showed it this recently
 TIMEOUT = 8  # per Docker request
 THREADS = 4
+REFRESH_WAIT = 15  # seconds a page waits for a host's reading after an action
 # Restart counts need an inspect, which the container list lacks. A container is inspected
 # when it first shows up or changes state, and again after this many seconds.
 INSPECT_EVERY = 60
@@ -77,6 +79,7 @@ class Port:
     public: int
     private: int
     protocol: str
+    loopback: bool = False  # published on 127.0.0.1 or ::1 only: no use from another machine
 
 
 @dataclass(frozen=True)
@@ -90,6 +93,7 @@ class ContainerStatus:
     project: str | None
     service: str | None
     restarts: int | None
+    started_at: datetime | None  # the latest start, from the same inspect as restarts
     cpu_percent: float | None  # of one core, like docker stats; None until a second sample
     mem_bytes: int | None
     mem_limit: int | None
@@ -99,6 +103,12 @@ class ContainerStatus:
     block_write: int | None
     ips: tuple[tuple[str, str], ...]  # (network, address)
     ports: tuple[Port, ...]
+    labels: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def status_text(self) -> str:
+        """Docker's status without the health, which is shown on its own."""
+        return HEALTH_TEXT_RE.sub("", self.status).strip()
 
 
 @dataclass(frozen=True)
@@ -162,6 +172,14 @@ class Sample:
 
 
 @dataclass(frozen=True)
+class Inspected:
+    at: float  # monotonic
+    state: str
+    restarts: int
+    started_at: datetime | None
+
+
+@dataclass(frozen=True)
 class Reading:
     info: dict[str, Any]
     containers: list[dict[str, Any]]
@@ -169,20 +187,32 @@ class Reading:
     restarts: dict[str, int]
     volumes: int
     networks: int
+    started: dict[str, datetime | None] = field(default_factory=dict)
 
 
-def read(
-    api, instance_id: str, inspected: dict[str, tuple[float, str, int]], now: float
-) -> Reading:
-    """Blocking. Everything a snapshot needs from one daemon. inspected (container ID to
-    when it was inspected, its state then, its restart count) is kept between polls and
-    updated here; containers that are gone are dropped from it."""
+def started_of(inspect: dict[str, Any]) -> datetime | None:
+    """State.StartedAt (RFC 3339 with nanoseconds), or None: never started ("0001-..."),
+    missing or not a time."""
+    value = (inspect.get("State") or {}).get("StartedAt")
+    if not isinstance(value, str) or value.startswith("0001-"):
+        return None
+    try:
+        return datetime.fromisoformat(value[:19]).replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def read(api, instance_id: str, inspected: dict[str, Inspected], now: float) -> Reading:
+    """Blocking. Everything a snapshot needs from one daemon. inspected (what the last
+    inspect of each container found) is kept between polls and updated here; containers
+    that are gone are dropped from it."""
     info = api.info()
     containers = [
         c for c in api.containers(all=True) if not is_helper(c.get("Labels") or {}, instance_id)
     ]
     stats: dict[str, dict[str, Any]] = {}
     restarts: dict[str, int] = {}
+    started: dict[str, datetime | None] = {}
     # ponytail: one request per container, one after another. Fine for tens of containers
     # per host; send them concurrently (bounded by the collector's threads) if a host's
     # poll ever takes close to INTERVAL.
@@ -193,13 +223,21 @@ def read(
             with contextlib.suppress(*CONTAINER_ERRORS):
                 stats[cid] = api.stats(cid, stream=False, one_shot=True)
         seen = inspected.get(cid)
-        if seen is None or seen[1] != c.get("State") or now - seen[0] >= INSPECT_EVERY:
+        state = str(c.get("State"))
+        # ponytail: a container that crashed and came back between two polls is "running"
+        # both times, so its start time (the containers page's uptime sort) can be up to
+        # INSPECT_EVERY old. Inspect on every poll if that ever matters.
+        if seen is None or seen.state != state or now - seen.at >= INSPECT_EVERY:
             try:
-                count = api.inspect_container(cid).get("RestartCount")
+                details = api.inspect_container(cid)
             except CONTAINER_ERRORS:
                 continue
-            seen = inspected[cid] = (now, c.get("State"), count if is_int(count) else 0)
-        restarts[cid] = seen[2]
+            count = details.get("RestartCount")
+            seen = inspected[cid] = Inspected(
+                now, state, count if is_int(count) else 0, started_of(details)
+            )
+        restarts[cid] = seen.restarts
+        started[cid] = seen.started_at
     for gone in inspected.keys() - {c["Id"] for c in containers}:
         del inspected[gone]
     return Reading(
@@ -209,6 +247,7 @@ def read(
         restarts=restarts,
         volumes=len(api.volumes().get("Volumes") or []),
         networks=len(api.networks()),
+        started=started,
     )
 
 
@@ -292,14 +331,21 @@ def ips_of(container: dict[str, Any]) -> tuple[tuple[str, str], ...]:
     )
 
 
+def is_loopback(address: object) -> bool:
+    try:
+        return ipaddress.ip_address(str(address)).is_loopback
+    except ValueError:
+        return False  # no address (all interfaces) or not one
+
+
 def ports_of(container: dict[str, Any]) -> tuple[Port, ...]:
     """Published ports, once each (Docker lists one per address family)."""
-    found = {
-        Port(p["PublicPort"], p["PrivatePort"], str(p.get("Type", "tcp")))
-        for p in container.get("Ports") or []
-        if isinstance(p, dict) and is_int(p.get("PublicPort")) and is_int(p.get("PrivatePort"))
-    }
-    return tuple(sorted(found, key=lambda p: (p.public, p.private, p.protocol)))
+    loopback: dict[tuple[int, int, str], bool] = {}
+    for p in container.get("Ports") or []:
+        if isinstance(p, dict) and is_int(p.get("PublicPort")) and is_int(p.get("PrivatePort")):
+            key = (p["PublicPort"], p["PrivatePort"], str(p.get("Type", "tcp")))
+            loopback[key] = loopback.get(key, True) and is_loopback(p.get("IP"))
+    return tuple(Port(*key, loopback=local) for key, local in sorted(loopback.items()))
 
 
 def summarize(
@@ -343,6 +389,7 @@ def summarize(
                 project=labels.get(PROJECT_LABEL),
                 service=labels.get(SERVICE_LABEL),
                 restarts=reading.restarts.get(cid),
+                started_at=reading.started.get(cid),
                 cpu_percent=cpu_percent,
                 mem_bytes=mem,
                 mem_limit=limit,
@@ -352,6 +399,7 @@ def summarize(
                 block_write=block_write,
                 ips=ips_of(c),
                 ports=ports_of(c),
+                labels=tuple(sorted((str(k), str(v)) for k, v in labels.items())),
             )
         )
     # ponytail: host CPU sums the containers with two samples, so for one poll it leaves
@@ -415,7 +463,7 @@ class HostCache:
     url: str | None = None
     handle: client.DockerHandle | None = None
     samples: dict[str, Sample] = field(default_factory=dict)
-    inspected: dict[str, tuple[float, str, int]] = field(default_factory=dict)
+    inspected: dict[str, Inspected] = field(default_factory=dict)
     snapshot: HostSnapshot | None = None
     task: asyncio.Task[None] | None = None
     dropped: bool = False
@@ -474,6 +522,28 @@ class StatusCollector:
             with contextlib.suppress(RuntimeError):  # the loop has closed: shutting down
                 self._loop.call_soon_threadsafe(self._wake.set)
 
+    async def refresh(self, host_id: int, wait: float = REFRESH_WAIT) -> None:
+        """After drydock changed the host (a container started or stopped): read that host
+        again now, and wait up to wait seconds in all for the reading, so the page shows
+        the change. A reading already under way may predate the change: it is waited out
+        first, and if it outlasts wait, the page shows what it has. Only in the process
+        that runs the collector (the one that owns the tunnels)."""
+        if not self.running:
+            return
+        self.touch()
+        deadline = asyncio.get_running_loop().time() + wait
+        cache = self._caches.get(host_id)
+        if cache is not None and cache.task is not None and not cache.task.done():
+            await asyncio.wait({cache.task}, timeout=wait)
+            if not cache.task.done():
+                return
+        host = next(
+            (h for h in await client.run_blocking(self._load_hosts) if h.id == host_id), None
+        )
+        if host is None or (task := self._start(host)) is None:
+            return
+        await asyncio.wait({task}, timeout=max(0.0, deadline - asyncio.get_running_loop().time()))
+
     def snapshot(self, host_id: int) -> HostSnapshot | None:
         cache = self._caches.get(host_id)
         return cache.snapshot if cache is not None else None
@@ -499,19 +569,20 @@ class StatusCollector:
         hosts = await client.run_blocking(self._load_hosts)
         for host_id in self._caches.keys() - {h.id for h in hosts}:
             self._drop(host_id)  # deleted or disabled
-        started = []
-        for host in hosts:
-            cache = self._caches.get(host.id)
-            if cache is not None and cache.key != connection_key(host):
-                self._drop(host.id)
-                cache = None
-            if cache is None:
-                cache = self._caches[host.id] = HostCache(connection_key(host))
-            if cache.task is not None and not cache.task.done():
-                continue
-            cache.task = asyncio.create_task(self._poll_host(host, cache))
-            started.append(cache.task)
-        return started
+        return [task for host in hosts if (task := self._start(host)) is not None]
+
+    def _start(self, host: Host) -> asyncio.Task[None] | None:
+        """Starts a poll of the host, unless one is under way."""
+        cache = self._caches.get(host.id)
+        if cache is not None and cache.key != connection_key(host):
+            self._drop(host.id)
+            cache = None
+        if cache is None:
+            cache = self._caches[host.id] = HostCache(connection_key(host))
+        if cache.task is not None and not cache.task.done():
+            return None
+        cache.task = asyncio.create_task(self._poll_host(host, cache))
+        return cache.task
 
     def _drop(self, host_id: int) -> None:
         cache = self._caches.pop(host_id, None)

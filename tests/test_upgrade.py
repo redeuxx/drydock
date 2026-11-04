@@ -116,6 +116,6 @@ async def test_a_populated_database_upgrades(tmp_path: Path, fixture: Path) -> N
                 continue
             expected = 404 if path == "/setup" else 200  # gone once a superadmin exists
             for host_id in hosts if "{host_id}" in path else hosts[:1]:
-                url = fill(path, viewer, host_id=host_id, **ids)
+                url = fill(path, viewer, host_id=host_id, container_id="a" * 64, **ids)
                 response = await browser.get(url)
                 assert response.status_code == expected, f"GET {url}: {response.status_code}"

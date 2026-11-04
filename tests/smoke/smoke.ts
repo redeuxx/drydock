@@ -374,6 +374,66 @@ check(
   "the local host's card fills in, swapping only #host-status",
 );
 
+// THE CONTAINERS PAGE: ITS TABLE POLLS, THE TOOLBAR FILTERS IT IN PLACE
+
+const rowButtons = "#containers tbody button[command='show-modal'][title]"; // the names, not Stop or Restart
+const tablePoll = page
+  .waitForRequest(
+    (request) =>
+      request.url().includes("/containers?host=") && request.headers()["x-drydock-poll"] === "1",
+    { timeout: 15000 },
+  )
+  .then(() => true)
+  .catch(() => false);
+await page.click("#host-status a[href^='/containers?host=']");
+await page.locator(rowButtons).first().waitFor({ timeout: 20000 });
+check((await page.locator(rowButtons).count()) > 0, "the containers page lists the local host's containers");
+check(await tablePoll, "the containers table polls in the background with the toolbar's fields");
+const before = await page.locator(rowButtons).allTextContents();
+const filtered = page.waitForResponse((response) => response.url().includes("q=drydock-test-app-1"), { timeout: 5000 });
+await page.fill("#containers-filter input[name=q]", "drydock-test-app-1");
+await filtered;
+await page.waitForURL(/q=drydock-test-app-1/, { timeout: 5000 });
+const names = await page.locator(rowButtons).allTextContents();
+check(
+  // The full name: other containers' compose labels (depends_on) name services.
+  names.length === 1 && names[0] === "drydock-test-app-1" && (await page.locator("#main").count()) === 1,
+  `the search filters the table in place and keeps it in the address (${names.join(", ")} of ${before.join(", ")})`,
+);
+await page.locator(rowButtons).first().click();
+check((await page.locator("#containers dialog[open]").count()) === 1, "a row opens its dialog");
+await page.keyboard.press("Escape");
+
+// A CONTAINER ACTION AND INSPECT
+//
+// smoke-target is in drydock's own Compose project, so starting it is refused: the POST,
+// its swap and the alert are exercised without touching a container.
+
+await page.goto("/containers?q=drydock-test-smoke-target-1");
+const targetRow = page.locator("#containers tbody tr", { hasText: "drydock-test-smoke-target-1" });
+await targetRow.waitFor({ timeout: 20000 });
+await targetRow.getByRole("button", { name: "Start drydock-test-smoke-target-1" }).click();
+const refused = await page
+  .locator("#main [role=alert]", { hasText: "own Compose project" })
+  .waitFor({ timeout: 15000 })
+  .then(() => true)
+  .catch(() => false);
+check(refused, "an action on drydock's own project is refused, shown in an alert");
+check(
+  await page.evaluate(() => document.activeElement?.matches("[role=alert]") ?? false),
+  "focus moves to the action's outcome",
+);
+check(page.url().includes("/containers?") && !page.url().includes("/actions"), "the address stays the page's");
+await targetRow.locator("button[command='show-modal'][title]").click();
+await page.locator("#containers dialog[open]").getByRole("button", { name: "Inspect" }).click();
+const inspected = await page
+  .locator("#containers dialog[open] #inspect pre")
+  .waitFor({ timeout: 15000 })
+  .then(() => true)
+  .catch(() => false);
+check(inspected, "inspect loads into the row's dialog");
+await page.keyboard.press("Escape");
+
 // STORAGE, A JOB AND A RUN WITH ITS LIVE LOG
 
 await page.goto("/storage/new");

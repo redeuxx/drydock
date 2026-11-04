@@ -38,6 +38,7 @@ from drydock.routes import (
     account,
     auth,
     backups,
+    containers,
     hooks,
     hosts,
     jobs,
@@ -320,6 +321,7 @@ def create_app(settings: Settings) -> FastAPI:
         backups,
         restore,
         system,
+        containers,
     )
     for module in routers:
         app.include_router(module.router)

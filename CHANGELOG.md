@@ -6,6 +6,9 @@ Notable changes to drydock. Versions follow [semantic versioning](https://semver
 
 ### Dashboard
 - Live container status: a card per host, for every role, with its containers by state, unhealthy containers by name, CPU and memory, images, volumes, networks and Compose stacks. Cards refresh every 10 seconds from what drydock last read, and drydock reads a host only while a page shows the cards, so pages never call Docker. It replaces the admins' list of hosts.
+- Containers page: one host's containers with state, health, uptime, restarts, CPU, memory, network and disk I/O, addresses, published ports (linked), Compose stack and the backup jobs that cover each one. Search, filter by state or stack, and sort by any column; it refreshes every 10 seconds and the address keeps the view. The dashboard's counters and unhealthy list open it filtered. Every role sees it; label values are searched for admins only.
+- The status cards show memory as used of total.
+- Container actions on the containers page: operators start, stop, restart, pause and unpause one container or the selected ones (stop and restart ask first), each audited. Drydock refuses its own containers and helpers, and containers a backup or restore is using. Admins can inspect a container, with environment values and secret-looking labels hidden.
 - Pages that poll in the background (the status cards, a run's live log) no longer count as activity: a tab left open cannot keep a session past its 1 hour idle timeout, and polls skip their turn while the tab is hidden.
 - Dismiss a failed or interrupted run from "Needs attention" (operators and up). The run, its log and the failure count stay.
 - Filter the run list by status. The "Failed" and "Running or queued" tiles open the list filtered to their runs.

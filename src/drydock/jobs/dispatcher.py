@@ -391,6 +391,16 @@ def name_key(scope: int | str, kind: str, name: str) -> str:
     return f"name:{scope}:{kind}:{name}"
 
 
+def free(lock: asyncio.Lock | None) -> bool:
+    """Whether acquire() would take the lock without waiting: unlocked, and no live waiter
+    (a run woken by a release but not yet running). Reads asyncio.Lock's waiter queue,
+    as its own acquire() does; the tests catch a change of that private detail."""
+    if lock is None:
+        return True
+    waiters = getattr(lock, "_waiters", None) or ()
+    return not lock.locked() and all(w.cancelled() for w in waiters)
+
+
 def lock_scope(info: Any, host_id: int) -> str:
     """The scope of name keys on the daemon whose /info this is: from its ID, so every host
     entry for one daemon (a socket proxy and an SSH tunnel, say) locks the same names. The
@@ -1238,6 +1248,28 @@ class Dispatcher:
             self._release(held)
             raise
         return held
+
+    async def try_hold(self, keys: list[str], owner: str) -> bool:
+        """Takes every key for an action outside runs (the containers page's start, stop
+        and the like), or none when a run holds or awaits one of them. Never waits: a lock
+        that is free with nobody queued is taken at once, without suspending. A run that
+        wants a key meanwhile waits until release_held."""
+        if not all(free(self._locks.get(key)) for key in keys):
+            return False
+        held: list[str] = []
+        try:
+            for key in keys:
+                await self._locks[key].acquire()
+                held.append(key)
+                self._owners[key] = owner
+        except BaseException:
+            self._release(held)
+            raise
+        return True
+
+    def release_held(self, keys: list[str]) -> None:
+        """Gives back what try_hold took. On the event loop's thread."""
+        self._release(keys)
 
     def _release(self, keys: list[str]) -> None:
         for key in keys:

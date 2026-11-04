@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Containers{% endblock %}
+{% block width %}max-w-screen-2xl{% endblock %}
+{% block content %}
+<h1 class="mb-4 text-3xl font-bold">Containers</h1>
+{% if not hosts %}
+<p class="text-sm opacity-70">No host is set up yet.{% if auth.user.role >= Role.admin %} <a class="link" href="/hosts/new?kind=local">Add the local host</a> or <a class="link" href="/hosts/new?kind=ssh">an SSH host</a>.{% endif %}</p>
+{% else %}
+{# The host picker swaps #main (inherited from <body>): the toolbar's stacks belong to the
+   host. frontend/app.ts remembers the last host chosen. #}
+<form id="host-picker" method="get" action="/containers" hx-get="/containers" hx-trigger="change" hx-push-url="true" hx-nonce="{{ csp_nonce }}" class="mb-3 flex items-center gap-2">
+  <label for="host-select" class="text-sm font-semibold">Host</label>
+  <select id="host-select" name="host" class="select select-sm w-auto" data-remember-host data-focus-result>
+    {% for h in hosts %}<option value="{{ h.id }}"{% if h.id == chosen.id %} selected{% endif %}>{{ h.name }}{% if not h.enabled %} (disabled){% endif %}</option>{% endfor %}
+  </select>
+  <noscript><button type="submit" class="btn btn-sm">Show</button></noscript>
+</form>
+{# The toolbar sits outside #containers, so the table's polls never touch what is being
+   typed. Its fields go with every poll (hx-include on #containers), and a change asks for
+   the table at once. A toolbar request replaces an older one, and a poll is dropped while
+   one is under way (hx-sync), so an answer for old filters never lands last. #}
+<form id="containers-filter" method="get" action="/containers" role="search" class="mb-3 flex flex-wrap items-center gap-2"
+  hx-get="/containers" hx-trigger="submit, input delay:300ms" hx-target="#containers" hx-select="#containers" hx-swap="outerHTML ignoreTitle:true" hx-replace-url="true" hx-sync="this:replace" hx-nonce="{{ csp_nonce }}">
+  <input type="hidden" name="host" value="{{ chosen.id }}">
+  <input type="hidden" name="sort" value="{{ sort }}">
+  <input type="hidden" name="order" value="{{ order }}">
+  <input type="search" name="q" value="{{ q }}" maxlength="100" class="input input-sm w-64" placeholder="Name, image or label" aria-label="Search by name, image or label">
+  <select name="status" class="select select-sm w-auto" aria-label="State">
+    <option value="">All states</option>
+    {% for key, entry in statuses.items() %}<option value="{{ key }}"{% if key == status %} selected{% endif %}>{{ entry[0] }}</option>{% endfor %}
+  </select>
+  <select name="stack" class="select select-sm w-auto" aria-label="Stack">
+    <option value="">All stacks</option>
+    {% for name in stacks %}<option value="{{ name }}"{% if name == stack %} selected{% endif %}>{{ name }}</option>{% endfor %}
+    {% if stack and stack not in stacks %}<option value="{{ stack }}" selected>{{ stack }} (no containers)</option>{% endif %}
+  </select>
+  <noscript><button type="submit" class="btn btn-sm">Apply</button></noscript>
+</form>
+{% if outcomes %}
+{% set failed = outcomes|selectattr("error")|list %}
+<div role="alert" class="alert {{ 'alert-warning' if failed else 'alert-success' }} alert-soft mb-3 text-sm">
+  <ul>
+    {% for o in outcomes %}<li>{{ o.name }}: {{ o.error if o.error else verbs[o.action] }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
+{% include "containers/_table.html" %}
+{% endif %}
+{% endblock %}

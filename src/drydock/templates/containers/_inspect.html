@@ -1,0 +1,9 @@
+{# One container's inspect JSON, swapped into its row's dialog (#inspect). #}
+<div id="inspect">
+  {% if error %}
+  <p class="text-sm text-error">{{ error }}</p>
+  {% else %}
+  <p class="mb-1 text-xs opacity-70">Environment values, secret-looking labels and log driver options are hidden; command lines are not.</p>
+  <pre class="max-h-96 overflow-auto rounded-box bg-base-200 p-2 text-xs">{{ text }}</pre>
+  {% endif %}
+</div>

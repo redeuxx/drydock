@@ -1,0 +1,179 @@
+{% from "status/_host_bar.html" import host_bar %}
+{# One host's containers from the status collector's cache (routes/containers.py). The
+   region polls itself every 10 s with the toolbar's fields (data-poller, frontend/app.ts,
+   which skips a poll while a dialog is open or a row is selected). Each row's name is a
+   button stretched over the row that opens its dialog, as on the audit log; links and
+   controls in a row sit above it. Operators get a checkbox and actions per row; the
+   actions all submit #container-actions, and stop and restart ask first.
+   Names, images, addresses and ports come from the host: autoescaped only. #}
+{% set columns = [
+  ("name", "Name", "w-48"),
+  ("image", "Image", "max-md:hidden"),
+  ("state", "State", "w-32"),
+  ("uptime", "Uptime", "w-36 max-sm:hidden"),
+  ("restarts", "Restarts", "w-20 max-lg:hidden"),
+  ("cpu", "CPU", "w-16"),
+  ("memory", "Memory", "w-40 max-sm:hidden"),
+  ("net", "Net I/O", "w-40 max-xl:hidden"),
+  ("disk", "Disk I/O", "w-40 max-xl:hidden"),
+  ("ip", "IP", "w-32 max-lg:hidden"),
+  (None, "Ports", "w-32 max-lg:hidden"),
+  ("stack", "Stack", "w-32 max-md:hidden"),
+  (None, "Backup jobs", "w-36 max-lg:hidden"),
+] %}
+{% set state_tones = {"running": "badge-success", "paused": "badge-warning", "restarting": "badge-warning", "exited": "badge-neutral", "dead": "badge-error", "created": "badge-info"} %}
+{% set health_tones = {"healthy": "bg-success", "unhealthy": "bg-error", "starting": "bg-warning"} %}
+{% set operator = auth.user.role >= Role.operator %}
+{% set admin = auth.user.role >= Role.admin %}
+{% macro confirm(id, value, title, text) -%}
+<dialog id="{{ id }}" class="modal" aria-labelledby="{{ id }}-title">
+  <div class="modal-box">
+    <h2 id="{{ id }}-title" class="mb-2 text-lg font-bold">{{ title }}</h2>
+    <p class="text-sm break-words">{{ text }}</p>
+    <div class="modal-action">
+      <form method="dialog"><button class="btn btn-sm">Cancel</button></form>
+      <button type="submit" form="container-actions" name="action" value="{{ value }}" class="btn btn-sm btn-warning">{{ title }}</button>
+    </div>
+  </div>
+  <form method="dialog" class="modal-backdrop"><button>Close</button></form>
+</dialog>
+{%- endmacro %}
+{% macro act(c, verb, label) -%}
+<button type="submit" form="container-actions" name="action" value="{{ verb }}:{{ c.id }}" class="btn btn-ghost btn-xs">{{ label }}<span class="sr-only"> {{ c.name }}</span></button>
+{%- endmacro %}
+{% macro ask(n, c, verb, label) -%}
+<button type="button" class="btn btn-ghost btn-xs" commandfor="ctr-{{ n }}-{{ verb }}" command="show-modal" aria-haspopup="dialog">{{ label }}<span class="sr-only"> {{ c.name }}</span></button>
+{%- endmacro %}
+{% macro pair(a, b) %}{% if a is none and b is none %}<span class="opacity-50">n/a</span>{% else %}{{ a|filesize or "0 bytes" }} / {{ b|filesize or "0 bytes" }}{% endif %}{% endmacro %}
+{% macro port_list(ports, linked) -%}
+{% for p in ports %}{% if linked and p.protocol == "tcp" and not p.loopback %}<a class="link relative z-10" href="{{ linked }}:{{ p.public }}" target="_blank" rel="noopener noreferrer">{{ p.public }}</a>{% else %}{{ p.public }}{% endif %}&rarr;{{ p.private }}/{{ p.protocol }}{% if not loop.last %}, {% endif %}{% endfor %}
+{%- endmacro %}
+{% macro job_links(jobs) -%}
+{% for job in jobs %}<a class="link relative z-10" href="/jobs/{{ job.id }}">{{ job.name }}</a>{% if not job.enabled %} (disabled){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
+{%- endmacro %}
+<div id="containers"
+  {%- if chosen and chosen.enabled %} data-poller="Container status" hx-get="/containers" hx-include="#containers-filter" hx-trigger="every 10s" hx-target="this" hx-select="#containers" hx-swap="outerHTML ignoreTitle:true" hx-sync="#containers-filter:drop" hx-nonce="{{ csp_nonce }}"{% endif %}>
+{% if chosen %}
+{{ host_bar(chosen, state, snap, where) }}
+{% if not chosen.enabled %}
+<p class="text-sm opacity-70">Disabled: drydock does not connect to this host.</p>
+{% elif snap is none or snap.taken_at is none %}
+{% if snap and snap.error %}
+<div class="alert alert-warning alert-soft text-sm"><span>Cannot read the containers: {{ snap.error }}</span></div>
+{% else %}
+<p class="text-sm opacity-70">Reading the containers&hellip;</p>
+{% endif %}
+{% else %}
+{% if snap.error %}
+<div class="alert alert-warning alert-soft mb-3 px-3 py-2 text-sm"><span>Stale since {{ snap.stale_since|ago }}: {{ snap.error }}</span></div>
+{% endif %}
+<p class="mb-2 text-sm opacity-70">{% if rows|length == snap.containers|length %}{{ rows|length }} container{{ "" if rows|length == 1 else "s" }}{% else %}{{ rows|length }} of {{ snap.containers|length }} containers{% endif %}</p>
+{% if operator %}
+<form id="container-actions" method="post" action="/containers/actions" hx-post="/containers/actions" hx-nonce="{{ csp_nonce }}" class="mb-2 flex flex-wrap items-center gap-1 text-sm">
+  <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+  <input type="hidden" name="host" value="{{ chosen.id }}">
+  <input type="hidden" name="sort" value="{{ sort }}">
+  <input type="hidden" name="order" value="{{ order }}">
+  <input type="hidden" name="status" value="{{ status }}">
+  <input type="hidden" name="stack" value="{{ stack }}">
+  <input type="hidden" name="q" value="{{ q }}">
+  <span class="mr-1 opacity-70">Selected:</span>
+  <button type="submit" name="action" value="start" class="btn btn-xs">Start</button>
+  <button type="button" class="btn btn-xs" commandfor="confirm-stop" command="show-modal" aria-haspopup="dialog">Stop</button>
+  <button type="button" class="btn btn-xs" commandfor="confirm-restart" command="show-modal" aria-haspopup="dialog">Restart</button>
+  <button type="submit" name="action" value="pause" class="btn btn-xs">Pause</button>
+  <button type="submit" name="action" value="unpause" class="btn btn-xs">Unpause</button>
+</form>
+{{ confirm("confirm-stop", "stop", "Stop", "Stop the selected containers? Each gets its own stop timeout to shut down.") }}
+{{ confirm("confirm-restart", "restart", "Restart", "Restart the selected containers?") }}
+{% endif %}
+<div class="overflow-hidden rounded-box border border-base-300 bg-base-100">
+  <table class="table table-zebra table-sm table-fixed w-full">
+    <thead>
+      <tr>
+        {% if operator %}<th scope="col" class="w-8"><input type="checkbox" class="checkbox checkbox-xs" data-select-all aria-label="Select all shown"></th>{% endif %}
+        {% for key, label, width in columns %}
+        <th scope="col" class="{{ width }}"{% if key and key == sort %} aria-sort="{{ 'descending' if order == 'desc' else 'ascending' }}"{% endif %}>
+          {%- if key -%}
+          <a class="link link-hover" href="/containers?{{ {'host': chosen.id, 'sort': key, 'order': 'desc' if key == sort and order == 'asc' else 'asc', 'status': status, 'stack': stack, 'q': q}|urlencode }}">{{ label }}{% if key == sort %}<span aria-hidden="true">{{ " ▼" if order == "desc" else " ▲" }}</span>{% endif %}</a>
+          {%- else %}{{ label }}{% endif -%}
+        </th>
+        {% endfor %}
+        {% if operator %}<th scope="col" class="w-44">Actions</th>{% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in rows %}
+      {% set jobs = jobs_of[c.id] %}
+      <tr class="relative hover:bg-base-200">
+        {% if operator %}<td><input type="checkbox" form="container-actions" name="id" value="{{ c.id }}" class="checkbox checkbox-xs relative z-10" data-select aria-label="Select {{ c.name }}"></td>{% endif %}
+        <td class="truncate font-semibold"><button type="button" class="cursor-pointer after:absolute after:inset-0" commandfor="ctr-{{ loop.index }}" command="show-modal" aria-haspopup="dialog" title="{{ c.name }}">{{ c.name }}</button></td>
+        <td class="truncate max-md:hidden" title="{{ c.image }}">{{ c.image }}</td>
+        <td class="truncate">
+          <span class="badge badge-soft badge-sm {{ state_tones.get(c.state, 'badge-neutral') }}">{{ c.state }}</span>
+          {% if c.health %}<span class="ml-1 inline-block size-2 rounded-full {{ health_tones[c.health] }}" title="{{ c.health }}"></span><span class="sr-only">, {{ c.health }}</span>{% endif %}
+        </td>
+        <td class="truncate max-sm:hidden" title="{{ c.status_text }}">{{ c.status_text }}</td>
+        <td class="truncate max-lg:hidden">{{ c.restarts if c.restarts is not none else "" }}</td>
+        <td class="truncate">{% if c.cpu_percent is not none %}{{ "%.1f"|format(c.cpu_percent) }}%{% endif %}</td>
+        <td class="truncate max-sm:hidden">{% if c.mem_bytes is not none %}{{ c.mem_bytes|filesize }}{% if c.mem_limit %} / {{ c.mem_limit|filesize }}{% endif %}{% endif %}</td>
+        <td class="truncate max-xl:hidden">{% if c.net_rx is not none %}{{ pair(c.net_rx, c.net_tx) }}{% endif %}</td>
+        <td class="truncate max-xl:hidden">{% if c.block_read is not none %}{{ pair(c.block_read, c.block_write) }}{% endif %}</td>
+        <td class="truncate max-lg:hidden">{{ c.ips[0][1] if c.ips else "" }}</td>
+        <td class="truncate max-lg:hidden">{{ port_list(c.ports, port_base) }}</td>
+        <td class="truncate max-md:hidden">{{ c.project or "" }}</td>
+        <td class="truncate max-lg:hidden">{{ job_links(jobs) }}</td>
+        {% if operator %}
+        <td><div class="relative z-10 flex flex-wrap gap-1">
+          {%- if c.state in ("exited", "created", "dead") %}{{ act(c, "start", "Start") }}{% endif %}
+          {%- if c.state == "paused" %}{{ act(c, "unpause", "Unpause") }}{% endif %}
+          {%- if c.state == "running" %}{{ ask(loop.index, c, "restart", "Restart") }}{{ act(c, "pause", "Pause") }}{% endif %}
+          {%- if c.state in ("running", "paused", "restarting") %}{{ ask(loop.index, c, "stop", "Stop") }}{% endif %}
+        </div></td>
+        {% endif %}
+      </tr>
+      {% else %}
+      <tr><td colspan="{{ columns|length + (2 if operator else 0) }}">{% if snap.containers %}No container matches.{% else %}No containers on this host.{% endif %}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% for c in rows %}
+{% set jobs = jobs_of[c.id] %}
+<dialog id="ctr-{{ loop.index }}" class="modal" aria-labelledby="ctr-{{ loop.index }}-title">
+  <div class="modal-box">
+    <h2 id="ctr-{{ loop.index }}-title" class="mb-3 text-lg font-bold break-all">{{ c.name }}</h2>
+    <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+      <dt class="font-semibold">ID</dt><dd class="font-mono text-xs break-all">{{ c.id }}</dd>
+      <dt class="font-semibold">Image</dt><dd class="break-all">{{ c.image }}</dd>
+      <dt class="font-semibold">State</dt><dd>{{ c.state }}{% if c.health %}, {{ c.health }}{% endif %}</dd>
+      <dt class="font-semibold">Status</dt><dd>{{ c.status }}</dd>
+      <dt class="font-semibold">Started</dt><dd>{{ c.started_at|stamp }}</dd>
+      <dt class="font-semibold">Restarts</dt><dd>{{ c.restarts if c.restarts is not none else "" }}</dd>
+      <dt class="font-semibold">CPU</dt><dd>{% if c.cpu_percent is not none %}{{ "%.1f"|format(c.cpu_percent) }}% of one core{% endif %}</dd>
+      <dt class="font-semibold">Memory</dt><dd>{% if c.mem_bytes is not none %}{{ c.mem_bytes|filesize }}{% if c.mem_limit %} of {{ c.mem_limit|filesize }}{% endif %}{% endif %}</dd>
+      <dt class="font-semibold">Network</dt><dd>{% if c.net_rx is not none %}{{ c.net_rx|filesize }} received, {{ c.net_tx|filesize or "0 bytes" }} sent{% endif %}</dd>
+      <dt class="font-semibold">Disk</dt><dd>{% if c.block_read is not none %}{{ c.block_read|filesize or "0 bytes" }} read, {{ c.block_write|filesize or "0 bytes" }} written{% endif %}</dd>
+      <dt class="font-semibold">Addresses</dt><dd class="break-all">{% for network, address in c.ips %}{{ address }} ({{ network }}){% if not loop.last %}<br>{% endif %}{% endfor %}</dd>
+      <dt class="font-semibold">Ports</dt><dd class="break-all">{{ port_list(c.ports, port_base) }}</dd>
+      <dt class="font-semibold">Stack</dt><dd class="break-all">{% if c.project %}{{ c.project }}{% if c.service %} (service {{ c.service }}){% endif %}{% endif %}</dd>
+      <dt class="font-semibold">Backup jobs</dt><dd>{{ job_links(jobs) if jobs else "None" }}</dd>
+    </dl>
+    {% if admin %}
+    {# Loaded on demand: it calls Docker. Environment values and secret-looking labels are
+       hidden (routes/containers.py redacted). #}
+    <div class="mt-3">
+      <button type="button" class="btn btn-xs" hx-get="/containers/{{ chosen.id }}/{{ c.id }}/inspect" hx-target="#inspect-{{ loop.index }}" hx-select="#inspect" hx-swap="innerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}">Inspect</button>
+      <div id="inspect-{{ loop.index }}" class="mt-2" aria-live="polite"></div>
+    </div>
+    {% endif %}
+    <div class="modal-action"><form method="dialog"><button class="btn btn-sm">Close</button></form></div>
+  </div>
+  <form method="dialog" class="modal-backdrop"><button>Close</button></form>
+</dialog>
+{% if operator and c.state == "running" %}{{ confirm("ctr-" ~ loop.index ~ "-restart", "restart:" ~ c.id, "Restart", "Restart " ~ c.name ~ "?") }}{% endif %}
+{% if operator and c.state in ("running", "paused", "restarting") %}{{ confirm("ctr-" ~ loop.index ~ "-stop", "stop:" ~ c.id, "Stop", "Stop " ~ c.name ~ "? It gets its own stop timeout to shut down.") }}{% endif %}
+{% endfor %}
+{% endif %}
+{% endif %}
+</div>

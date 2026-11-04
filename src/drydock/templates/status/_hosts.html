@@ -49,18 +49,19 @@
       <ul class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm" aria-label="Containers by state">
         {% for key, label, symbol, tone in counters %}
         {% set count = health["unhealthy"] if key == "unhealthy" else states["exited"] + states["dead"] if key == "exited" else states[key] %}
-        <li class="flex items-center gap-1 {{ tone if count else 'opacity-40' }}" title="{{ label }}">{{ icon(symbol) }}<span class="font-semibold">{{ count }}</span><span class="sr-only">{{ label }}</span></li>
+        <li><a class="flex items-center gap-1 rounded hover:underline {{ tone if count else 'opacity-40' }}" href="/containers?host={{ host.id }}&amp;status={{ key }}" title="{{ label }}">{{ icon(symbol) }}<span class="font-semibold">{{ count }}</span><span class="sr-only">{{ label }}</span></a></li>
         {% endfor %}
-        <li class="ml-auto"><span class="opacity-70">Total</span> <span class="font-semibold">{{ snap.containers|length }}</span></li>
+        <li class="ml-auto"><a class="hover:underline" href="/containers?host={{ host.id }}"><span class="opacity-70">Total</span> <span class="font-semibold">{{ snap.containers|length }}</span></a></li>
       </ul>
       {% set sick = snap.containers|selectattr("health", "equalto", "unhealthy")|map(attribute="name")|list %}
       {% if sick %}
-      <div class="alert alert-error alert-soft px-3 py-2 text-sm">{{ icon("triangle-alert") }}<span>{{ sick|length }} unhealthy: {{ sick[:5]|join(", ") }}{% if sick|length > 5 %} and {{ sick|length - 5 }} more{% endif %}</span></div>
+      <div class="alert alert-error alert-soft px-3 py-2 text-sm">{{ icon("triangle-alert") }}<a class="hover:underline" href="/containers?host={{ host.id }}&amp;status=unhealthy">{{ sick|length }} unhealthy: {{ sick[:5]|join(", ") }}{% if sick|length > 5 %} and {{ sick|length - 5 }} more{% endif %}</a></div>
       {% elif states["running"] %}
       <div class="alert alert-success alert-soft px-3 py-2 text-sm">{{ icon("circle-check") }}<span>No unhealthy containers</span></div>
       {% endif %}
       {{ meter("CPU", "cpu", snap.cpu_percent, (snap.ncpu ~ " cores") if snap.ncpu else "") }}
-      {{ meter("Memory", "memory-stick", snap.mem_percent, snap.mem_bytes|filesize) }}
+      {# Used is what the containers use (docker stats); the daemon reports no host-wide figure. #}
+      {{ meter("Memory", "memory-stick", snap.mem_percent, (snap.mem_bytes|filesize or "0 bytes") ~ (" / " ~ snap.mem_total|filesize if snap.mem_total else "")) }}
       {% set stacks_running, stacks_partial, stacks_stopped = snap.stacks %}
       <dl class="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
         <div class="flex justify-between"><dt class="flex items-center gap-1 opacity-70">{{ icon("image", "size-3.5") }}Images</dt><dd class="font-semibold">{{ snap.images }}</dd></div>

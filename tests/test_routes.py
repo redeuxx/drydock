@@ -24,6 +24,7 @@ from drydock.notify import Notifier
 from drydock.restore import apply as restore_apply
 from drydock.restore import plan as restore_plan
 from drydock.routes import auth as auth_routes
+from drydock.routes import containers as containers_routes
 from drydock.security import csrf
 from drydock.security.rbac import Role, authenticated
 from drydock.storage import certs, gdrive_oauth
@@ -93,6 +94,8 @@ EXPECTED_MIN_ROLE = [
     ({"GET"}, re.compile(r"^/jobs/mount-options$"), Role.admin),
     ({"GET"}, re.compile(r"^/jobs/[^/]+/edit$"), Role.admin),
     ({"POST"}, re.compile(r"^/jobs"), Role.admin),
+    ({"POST"}, re.compile(r"^/containers/actions$"), Role.operator),
+    ({"GET"}, re.compile(r"^/containers/[^/]+/[^/]+/inspect$"), Role.admin),
     ({"GET", "POST"}, re.compile(r".*"), Role.viewer),
 ]
 # Every route the app serves. A new route fails this test until it is added here,
@@ -106,6 +109,9 @@ INVENTORY = {
     ("GET", "/healthz"),
     ("GET", "/feed"),
     ("GET", "/status/hosts"),
+    ("GET", "/containers"),
+    ("POST", "/containers/actions"),
+    ("GET", "/containers/{host_id}/{container_id}/inspect"),
     ("POST", "/feed/read"),
     ("GET", "/about"),
     ("GET", "/hosts"),
@@ -232,6 +238,7 @@ def fill(path: str, user_id: int, **ids: int) -> str:
         "restore_id",
         "target_id",
         "upload_id",
+        "container_id",
     ):
         path = path.replace("{" + name + "}", str(ids.get(name, user_id)))
     return path.replace("{user_id}", str(user_id))
@@ -415,7 +422,9 @@ async def test_get_routes_write_nothing_but_last_seen(admin: Browser) -> None:
         for method, path, _route in api_routes(admin.app):
             if method != "GET" or path in GET_WRITE_EXEMPTIONS:
                 continue
-            response = await admin.get(fill(path, victim, host_id=host_id, **ids))
+            response = await admin.get(
+                fill(path, victim, host_id=host_id, container_id="a" * 64, **ids)
+            )
             assert response.status_code in (200, 404), f"GET {path}: {response.status_code}"
             if "{" in path:
                 assert response.status_code == 200, f"GET {path}"
@@ -638,6 +647,13 @@ AUDITED_SUCCESS = [
         303,
     ),
     ("/hosts/{host_id}/test", {}, "host.test", 200),
+    # Docker's side faked (run_actions): one container started.
+    (
+        "/containers/actions",
+        {"host": "{host_id}", "action": "start", "id": "c" * 64},
+        "container.start",
+        303,
+    ),
     (
         "/storage",
         {"name": "backups", "path": "{storage_root}", "enabled": "1"},
@@ -827,6 +843,11 @@ async def test_every_unsafe_route_audits_its_success(fresh: Browser, monkeypatch
     monkeypatch.setattr(Dispatcher, "_backup", wait_for_cancel)
     monkeypatch.setattr(restore_apply, "inspect_target", empty_target)
     monkeypatch.setattr(restore_apply, "apply", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        containers_routes,
+        "run_actions",
+        lambda request, auth, host, verb, chosen: [containers_routes.Outcome(verb, "web")],
+    )
     # The storage root doubles as the allowed restore path.
     root_path = fresh.settings.local_storage_roots[0]
     allowed = dataclasses.replace(fresh.settings, restore_paths=(root_path,))
