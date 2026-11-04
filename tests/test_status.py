@@ -1123,3 +1123,18 @@ async def test_try_hold_never_jumps_a_waiting_run(admin: Browser) -> None:
     lock.release()
     assert await dispatcher.try_hold(["k"], "an action")
     dispatcher.release_held(["k"])
+
+
+async def test_refresh_waits_for_a_reading_however_it_starts(collector) -> None:
+    status_collector, _, queue, hosts = collector
+    hosts.append(make_host(1))
+    queue.append(FakeApi([summary("a", "web")]))
+    await status_collector.refresh(1)
+    assert status_collector.snapshot(1) is None, "only the process running the collector"
+    status_collector.start()
+    try:
+        # touch() wakes the collector's own loop, which may start the reading first.
+        await status_collector.refresh(1)
+        assert by_name(status_collector.snapshot(1))["web"].state == "running"
+    finally:
+        await status_collector.close()

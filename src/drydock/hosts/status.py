@@ -540,9 +540,14 @@ class StatusCollector:
         host = next(
             (h for h in await client.run_blocking(self._load_hosts) if h.id == host_id), None
         )
-        if host is None or (task := self._start(host)) is None:
+        if host is None:
             return
-        await asyncio.wait({task}, timeout=max(0.0, deadline - asyncio.get_running_loop().time()))
+        # None when the collector's own loop (woken by touch) started one meanwhile: it
+        # started after the change too, so wait for that one.
+        task = self._start(host) or self._caches[host_id].task
+        if task is not None:
+            remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+            await asyncio.wait({task}, timeout=remaining)
 
     def snapshot(self, host_id: int) -> HostSnapshot | None:
         cache = self._caches.get(host_id)

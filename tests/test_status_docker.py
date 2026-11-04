@@ -37,8 +37,9 @@ BUSY = ["sh", "-c", "while :; do :; done"]  # keeps one core busy, so CPU shows
 
 
 async def poll(collector: StatusCollector, host_id: int) -> HostSnapshot:
-    collector.touch()
-    await asyncio.gather(*await collector.poll())
+    """One fresh reading of the host, whether this call or the collector's own loop (woken
+    by the touch) starts it."""
+    await collector.refresh(host_id, wait=60)
     snapshot = collector.snapshot(host_id)
     assert snapshot is not None
     assert snapshot.error is None, snapshot.error
