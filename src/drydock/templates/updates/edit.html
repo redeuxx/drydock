@@ -9,7 +9,7 @@
 <section class="card bg-base-100 shadow-sm">
   <div class="card-body">
     {{ alerts(errors) }}
-    <p class="text-sm opacity-70">On its schedule, drydock updates the container, or every container of the stack that has a newer image, as described in <a class="link" href="https://github.com/redeuxx/drydock/blob/main/docs/updates.md" target="_blank" rel="noopener noreferrer">docs/updates.md</a>: it is put back if the new one does not stay up or become healthy. A tag like <code>latest</code> can move to a new major version: pin minor version tags for what matters.</p>
+    <p class="text-sm opacity-70">On its schedule, drydock updates the container, or every container of the stack that has a newer image, as docs/updates.md describes: it is put back if the new one does not stay up or become healthy. A tag like <code>latest</code> can move to a new major version: pin minor version tags for what matters.</p>
     <form method="post" action="/updates{% if policy %}/{{ policy.id }}{% endif %}" hx-post="/updates{% if policy %}/{{ policy.id }}{% endif %}" hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-1">
       <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
       <label class="label text-sm" for="policy-enabled"><input id="policy-enabled" type="checkbox" class="checkbox checkbox-sm" name="enabled" value="1"{% if form.enabled %} checked{% endif %}> Enabled</label>

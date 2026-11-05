@@ -53,7 +53,7 @@ async def test_runs_checks_allow_restore_kind_and_new_statuses(settings: Setting
     async with running(settings) as browser:
         with closing(browser.db()) as conn:
             sql = runs_sql(conn)
-            assert "kind IN ('backup', 'restore')" in sql
+            assert "kind IN ('backup', 'restore'" in sql  # and 'update' since 0017
             assert "'verifying'" in sql
             assert "'awaiting_confirmation'" in sql
             assert "AUTOINCREMENT" in sql
