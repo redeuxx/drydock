@@ -10,6 +10,7 @@
   {% if (active or awaiting) and auth.user.role >= (Role.admin if restore else Role.operator) %}
   {% if awaiting %}{% set question = "Discard this restore? Its verified data is removed." %}
   {% elif restore %}{% set question = "Cancel this restore? Drydock rolls back what it changed so far." %}
+  {% elif run.kind == "update" %}{% set question = "Cancel this update? Drydock puts back the containers it replaced so far." %}
   {% elif run.target_label %}{% set question = "Cancel this run and the job's targets after it? Drydock starts any container it stopped again." %}
   {% else %}{% set question = "Cancel this run? Drydock starts any container it stopped again." %}{% endif %}
   <form method="post" action="/runs/{{ run.id }}/cancel" hx-post="/runs/{{ run.id }}/cancel" hx-nonce="{{ csp_nonce }}" hx-confirm="{{ question }}" class="ml-auto">
@@ -40,6 +41,8 @@
       <dt class="opacity-70">Host</dt><dd>{{ summary.get("host_name", "") }}</dd>
       {% endif %}
       <dt class="opacity-70">Signature</dt><dd>{{ "signed by this drydock" if restore_doc.get("signed") is sameas true else "not signed by this drydock" if restore_doc.get("signed") is sameas false else "not verified yet" }}</dd>
+      {% elif run.kind == "update" %}
+      <dt class="opacity-70">Update of</dt><dd class="break-all">{{ run.target_label or "" }}</dd>
       {% else %}
       <dt class="opacity-70">Job</dt><dd>{% if job %}<a class="link" href="/jobs/{{ job.id }}">{{ job.name }}</a>{% else %}deleted job{% endif %}</dd>
       {% if run.target_label %}<dt class="opacity-70">Target</dt><dd class="break-all">{{ run.target_label }}</dd>{% endif %}

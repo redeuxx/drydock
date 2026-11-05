@@ -97,6 +97,7 @@ EXPECTED_MIN_ROLE = [
     ({"POST"}, re.compile(r"^/jobs"), Role.admin),
     ({"POST"}, re.compile(r"^/containers/actions$"), Role.operator),
     ({"POST"}, re.compile(r"^/containers/check-updates$"), Role.operator),
+    ({"POST"}, re.compile(r"^/containers/update$"), Role.operator),
     ({"GET"}, re.compile(r"^/containers/[^/]+/[^/]+/inspect$"), Role.admin),
     ({"GET"}, re.compile(r"^/logs"), Role.admin),
     ({"POST"}, re.compile(r"^/activity/clear$"), Role.admin),
@@ -116,6 +117,7 @@ INVENTORY = {
     ("GET", "/containers"),
     ("POST", "/containers/actions"),
     ("POST", "/containers/check-updates"),
+    ("POST", "/containers/update"),
     ("GET", "/containers/{host_id}/{container_id}/inspect"),
     ("GET", "/logs"),
     ("GET", "/logs/lines"),
@@ -666,6 +668,8 @@ AUDITED_SUCCESS = [
     ),
     # Docker's side faked (UpdateChecker.check_now): nothing to update.
     ("/containers/check-updates", {"host": "{host_id}"}, "container.check_updates", 303),
+    # Docker's side faked (Dispatcher.submit_update): a run starts.
+    ("/containers/update", {"host": "{host_id}", "container": "c" * 64}, "container.update", 303),
     (
         "/storage",
         {"name": "backups", "path": "{storage_root}", "enabled": "1"},
@@ -866,6 +870,11 @@ async def test_every_unsafe_route_audits_its_success(fresh: Browser, monkeypatch
         return HostChecks(utcnow())
 
     monkeypatch.setattr(fresh.app.state.updates, "check_now", nothing_newer)
+
+    async def queued(host_id, ids, by, label) -> int:
+        return 1
+
+    monkeypatch.setattr(fresh.app.state.dispatcher, "submit_update", queued)
     # The storage root doubles as the allowed restore path.
     root_path = fresh.settings.local_storage_roots[0]
     allowed = dataclasses.replace(fresh.settings, restore_paths=(root_path,))

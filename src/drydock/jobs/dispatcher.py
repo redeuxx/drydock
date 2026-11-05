@@ -128,6 +128,7 @@ from drydock.config import Settings, known_zones
 from drydock.crypto import Crypto, CryptoError
 from drydock.engine import capture, stacks
 from drydock.hosts import client as docker_client
+from drydock.hosts import inventory
 from drydock.hosts.client import DockerHandle, run_blocking
 from drydock.hosts.inventory import (
     DEFAULT_STOP_TIMEOUT,
@@ -159,6 +160,7 @@ from drydock.storage.local import LocalStorage
 from drydock.storage.rclone import KINDS as REMOTE_KINDS
 from drydock.storage.rclone import LATER, RcloneBackend
 from drydock.storage.rclone_rc import RcloneDaemon
+from drydock.updates import apply as update_apply
 
 log = logging.getLogger("drydock.jobs")
 
@@ -222,7 +224,10 @@ SAFE_ERRORS = (
     restore_apply.ApplyError,
     stacks.StackError,
     hooks.HookError,
+    update_apply.UpdateError,
 )
+# Runs whose journal (runs.restore_originals_json) a rollback undoes: restores and updates.
+JOURNALED_KINDS = ("restore", "update")
 UNDECRYPTABLE_STORAGE = "The storage settings cannot be decrypted with the configured secret keys."
 UNEXPECTED_RETENTION = "Unexpected error in drydock. See the drydock server log."
 RETENTION_CANCELLED = "Cancelled before it deleted everything."
@@ -676,6 +681,23 @@ class Dispatcher:
         active.task = asyncio.create_task(self._verify_restore(active), name=f"run-{run_id}")
         return run_id
 
+    async def submit_update(
+        self, host_id: int, container_ids: list[str], triggered_by: str | None, label: str
+    ) -> int:
+        """Queues an update of the containers (a stack's in dependency order) to what
+        their tags name on the registry now, and returns the run's ID. label names them on
+        the run pages. Raises DispatchError."""
+        self._check_open()
+        run_id = await run_blocking(
+            self._create_update_run, host_id, container_ids, triggered_by, label
+        )
+        active = ActiveRun(run_id, None)
+        self._active[run_id] = active
+        active.task = asyncio.create_task(
+            self._execute_update(active, triggered_by), name=f"run-{run_id}"
+        )
+        return run_id
+
     async def execute_restore(
         self,
         run_id: int,
@@ -748,7 +770,7 @@ class Dispatcher:
         uploading: set[int] = set()  # backups to remote storage that may have been uploading
         with self._sessions() as db, db.begin():
             for run in db.scalars(select(Run).where(Run.status.in_(OPEN_STATUSES))):
-                if run.kind == "restore":
+                if run.kind in JOURNALED_KINDS:
                     # Never restarted from stopped_containers_json: the journal says what
                     # its originals need.
                     interrupted.append((run.id, [], []))
@@ -794,7 +816,7 @@ class Dispatcher:
             # host since. Done runs keep their committed journals on purpose.
             just_interrupted = {run_id for run_id, _ in restores}
             for run in db.scalars(
-                select(Run).where(Run.kind == "restore", Run.status == "interrupted")
+                select(Run).where(Run.kind.in_(JOURNALED_KINDS), Run.status == "interrupted")
             ):
                 doc = json_object(run.restore_originals_json)
                 if (
@@ -1773,6 +1795,82 @@ class Dispatcher:
             self._active.pop(run_id, None)
             await self._remove_staged(run_id)
 
+    async def _execute_update(self, active: ActiveRun, triggered_by: str | None) -> None:
+        """Plans the update, takes the locks a restore of those containers would, plans
+        again (a run that held them may have changed the host), then runs it through
+        restore.apply with updates.apply.settled before the commit; a failure rolls the
+        journal back under the same locks."""
+        run_id = active.run_id
+        run_log = RunLog(log_path(self.settings.data_dir, run_id))
+        held: list[str] = []
+        try:
+            run_log(f"Update started by {triggered_by}.")
+            host_id, container_ids = await run_blocking(self._load_update, run_id)
+            host = await run_blocking(self._load_host, host_id)
+            if host is None:
+                raise DispatchError("The host no longer exists.")
+            if not host.enabled:
+                raise DispatchError("The host is disabled.")
+            await self._hosts.first_attempt(host)
+            url = self._hosts.docker_url(host)
+            await self._hosts.ready(host.id)
+            handle = await run_blocking(docker_client.open_client, url)
+            try:
+                api = handle.client.api
+                scope = await run_blocking(self._lock_scope, handle, host.id)
+                own = await run_blocking(inventory.own_ids, api)
+                plan_now = functools.partial(
+                    update_apply.plan_update, api, host.id, container_ids, own, handle.api_version
+                )
+                planned = await run_blocking(plan_now)
+                if planned.plan is not None:
+                    keys = scoped(planned.plan.lock_keys, host.id, scope)
+                    held = await self._acquire(keys, run_id, run_log)
+                active.started = True
+                planned = await run_blocking(plan_now)
+                for line in planned.notes:
+                    run_log(line)
+                if planned.plan is None:
+                    await run_blocking(self._finish, run_id, run_log, "done", None)
+                    return
+                if not set(scoped(planned.plan.lock_keys, host.id, scope)) <= set(held):
+                    raise DispatchError("The containers changed while the update waited.")
+                if active.cancel.is_set():
+                    raise Cancelled("The run was cancelled.")
+                for line in planned.plan.warnings:
+                    run_log(line)
+                for name, old, new in planned.changes:
+                    run_log(
+                        f"Updating {name}: {old[:19] or 'an image with no digest'} to {new[:19]}."
+                    )
+                await run_blocking(self._mark_running, run_id)
+                await self._apply_update(active, handle, planned.plan, scope, run_log)
+                await run_blocking(self._finish, run_id, run_log, "done", None)
+            finally:
+                self._release(held)
+                await run_blocking(handle.close)
+        except BaseException as exc:
+            # Abandoned by shutdown: its journal is left for startup recovery to roll back.
+            if not active.abandoned:
+                await self._ended(active, run_log, exc)
+            if not isinstance(exc, Exception | asyncio.CancelledError):
+                raise
+        finally:
+            self._active.pop(run_id, None)
+
+    async def _apply_update(
+        self,
+        active: ActiveRun,
+        handle: DockerHandle,
+        plan: restore_plan.RestorePlan,
+        scope: str,
+        run_log: RunLog,
+    ) -> None:
+        """_apply for an update: no archive, and settled() before the commit."""
+        await self._run_plan(
+            active, handle, plan, None, contextlib.nullcontext, scope, run_log, update_apply.settled
+        )
+
     def _plan_restore(
         self,
         handle: DockerHandle,
@@ -1814,8 +1912,23 @@ class Dispatcher:
             active.cancel,
             self._entered.get(run_id),
         )
+        await self._run_plan(active, handle, plan, staged, opener, scope, run_log)
+
+    async def _run_plan(
+        self,
+        active: ActiveRun,
+        handle: DockerHandle,
+        plan: restore_plan.RestorePlan,
+        staged: Any,
+        opener: Callable[[], Any],
+        scope: str,
+        run_log: RunLog,
+        verify: Callable[..., None] | None = None,
+    ) -> None:
+        """restore.apply on the executor, its journal stored with the locks' scope. If it
+        fails, rolls the journal back while the locks are still held, then raises."""
         env = restore_apply.ApplyEnv(
-            handle, self.settings.helper_image, self._hosts.instance_id, run_id
+            handle, self.settings.helper_image, self._hosts.instance_id, active.run_id
         )
         loop = asyncio.get_running_loop()
         try:
@@ -1829,7 +1942,9 @@ class Dispatcher:
                     opener,
                     cancel=active.cancel,
                     log=run_log,
-                    journal=functools.partial(self._set_scoped_journal, run_id, scope),
+                    journal=functools.partial(self._set_scoped_journal, active.run_id, scope),
+                    # Only an update's: a restore calls apply exactly as before.
+                    **({"verify": verify} if verify is not None else {}),
                 ),
             )
         except BaseException:
@@ -2189,7 +2304,7 @@ class Dispatcher:
             paused = run_entries(run.paused_containers_json) if run else []
             doc = (
                 json_object(run.restore_originals_json)
-                if run is not None and run.kind == "restore"
+                if run is not None and run.kind in JOURNALED_KINDS
                 else {}
             )
         if doc and not doc.get("rolled_back"):
@@ -2200,7 +2315,7 @@ class Dispatcher:
             )
             log.warning("Run %d: leaving the rollback to startup recovery", run_id)
             return
-        if run is None or run.kind == "restore":
+        if run is None or run.kind in JOURNALED_KINDS:
             if run is not None:
                 self._finish(run_id, run_log, "cancelled", "Drydock is shutting down.")
             return
@@ -2607,6 +2722,35 @@ class Dispatcher:
             run.finished_at = utcnow()
             RunLog(log_path(self.settings.data_dir, run_id))("Run cancelled: Discarded.")
             return True
+
+    def _create_update_run(
+        self, host_id: int, container_ids: list[str], triggered_by: str | None, label: str
+    ) -> int:
+        with self._sessions() as db, db.begin():
+            if db.get(Host, host_id) is None:
+                raise DispatchError("The host no longer exists.")
+            run = Run(
+                job_id=None,
+                kind="update",
+                status="queued",
+                triggered_by=triggered_by,
+                target_label=label[:300],
+                plan=json.dumps({"update": {"host_id": host_id, "containers": container_ids}}),
+            )
+            db.add(run)
+            db.flush()
+            return run.id
+
+    def _load_update(self, run_id: int) -> tuple[int, list[str]]:
+        with self._sessions() as db:
+            run = db.get(Run, run_id)
+            doc = json_object(run.plan if run is not None else None).get("update")
+        if not isinstance(doc, dict) or not isinstance(doc.get("host_id"), int):
+            raise DispatchError("The update has no plan.")
+        ids = doc.get("containers")
+        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+            raise DispatchError("The update has no plan.")
+        return doc["host_id"], ids
 
     def _journal(self, run_id: int) -> dict[str, Any]:
         with self._sessions() as db:

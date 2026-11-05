@@ -94,6 +94,8 @@ class JobRun:
     def title(self) -> str:
         if self.first.kind == "restore":
             return f"Restore #{self.first.id}: {self.first.status.replace('_', ' ')}"
+        if self.first.kind == "update":
+            return f"Update of {self.first.target_label or 'containers'}: {self.first.status}"
         name = self.job_name or "a deleted job"
         if len(self.runs) == 1:
             return f"Backup of {name}: {self.first.status}"

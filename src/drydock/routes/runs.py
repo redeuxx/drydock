@@ -26,7 +26,13 @@ from sqlalchemy.orm import Session
 
 from drydock import audit
 from drydock.db import get_db
-from drydock.jobs.dispatcher import ACTIVE_STATUSES, OPEN_STATUSES, journal_entries, json_object
+from drydock.jobs.dispatcher import (
+    ACTIVE_STATUSES,
+    JOURNALED_KINDS,
+    OPEN_STATUSES,
+    journal_entries,
+    json_object,
+)
 from drydock.jobs.runlog import log_path, read_log, read_tail
 from drydock.models import RUN_STATUSES, Job, Run, utcnow
 from drydock.routes.auth import client_ip
@@ -60,7 +66,7 @@ def strings(doc: dict[str, Any], key: str) -> list[str]:
 def restore_warning(run: Run) -> str | None:
     """What a restore left behind, from its journal: data that may be partial, originals
     not started again, and objects drydock could not remove."""
-    if run.kind != "restore":
+    if run.kind not in JOURNALED_KINDS:
         return None
     doc = json_object(run.restore_originals_json)
     sentences = []

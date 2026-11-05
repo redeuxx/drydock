@@ -33,6 +33,8 @@
         <td class="truncate" title="Restore of {{ run.archive_name }}">Restore of
           {%- if run.status == "awaiting_confirmation" and auth.user.role >= Role.admin %} <a class="link font-mono text-xs" href="/restore/runs/{{ run.id }}/plan">{{ run.archive_name }}</a>
           {%- else %} <span class="font-mono text-xs">{{ run.archive_name }}</span>{% endif %}</td>
+        {% elif run.kind == "update" %}
+        <td class="truncate" title="Update of {{ run.target_label or '' }}">Update of {{ run.target_label or "" }}</td>
         {% else %}
         <td class="truncate" title="{{ jobs.get(run.job_id, 'deleted job') }}{% if run.kind == "backup" and run.target_label %}: {{ run.target_label }}{% endif %}">
           {%- if run.job_id in jobs %}<a class="link" href="/jobs/{{ run.job_id }}">{{ jobs[run.job_id] }}</a>

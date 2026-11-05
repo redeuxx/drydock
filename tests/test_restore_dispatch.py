@@ -1143,3 +1143,22 @@ def test_journal_keys_include_the_projects() -> None:
     assert "name:3:project:app" not in dispatcher_module.journal_keys(
         3, journal(3, 1, projects="app")
     )
+
+
+async def test_startup_recovery_rolls_back_an_interrupted_update(
+    settings: Settings, fakes: Fakes
+) -> None:
+    """An update runs through restore.apply with the same journal: drydock killed during
+    one rolls it back at the next start, like a restore."""
+    async with running(settings) as browser:
+        host_id, _ = await ready_app(browser)
+        with browser.app.state.sessionmaker() as db, db.begin():
+            run = Run(kind="update", status="running", target_label="web")
+            db.add(run)
+            db.flush()
+            run_id = run.id
+            run.restore_originals_json = json.dumps(journal(host_id, run_id))
+    async with running(settings) as browser:
+        await wait_until(lambda: len(fakes.rolled) == 1, 10, "the rollback")
+        assert fakes.rolled[0]["run_id"] == run_id
+        assert browser.sql("SELECT status FROM runs WHERE id = ?", (run_id,)) == [("interrupted",)]

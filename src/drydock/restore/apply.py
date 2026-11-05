@@ -801,8 +801,13 @@ def apply(
     cancel: threading.Event,
     log: Callable[[str], None],
     journal: Callable[[dict[str, Any]], None],
+    verify: Callable[[Any, list[str], threading.Event, Callable[[str], None]], None] | None = None,
 ) -> None:
     """Runs the plan, writing the journal before every mutation.
+
+    verify, if given, is called after the containers started and before the commit with
+    the API, the IDs of the containers started, cancel and log; it raises (ApplyError) to
+    have the caller roll everything back. Updates use it to wait for health.
 
     Before the first mutation, every plan.bind_sources and plan.write_targets path (and the
     compose directory's parent) is resolved through Docker, and
@@ -811,7 +816,7 @@ def apply(
     Cancelled, VerifyError (the archive changed) or a Docker error; the caller rolls back
     with the last journal.
     """
-    Applier(env, plan, staged, open_archive, cancel, log, journal).run()
+    Applier(env, plan, staged, open_archive, cancel, log, journal, verify).run()
 
 
 class Applier:
@@ -824,7 +829,10 @@ class Applier:
         cancel: threading.Event,
         log: Callable[[str], None],
         journal: Callable[[dict[str, Any]], None],
+        verify: Callable[[Any, list[str], threading.Event, Callable[[str], None]], None]
+        | None = None,
     ) -> None:
+        self.verify = verify
         self.env = env
         self.api = env.handle.client.api
         self.plan = plan
@@ -890,6 +898,14 @@ class Applier:
         self.make_dirs()
         self.check_cancel()
         self.create_containers()
+        if self.verify is not None:
+            started = [
+                e["id"]
+                for e, step in zip(self.doc["created"], self.plan.containers, strict=True)
+                if step.start and e["id"]
+            ]
+            self.verify(self.api, started, self.cancel, self.log)
+            self.check_cancel()
         self.commit()
 
     # STEP 1: IMAGES
@@ -1221,13 +1237,16 @@ class Applier:
             entry: dict[str, Any] = {"name": step.name, "id": None, "failed": False}
             self.doc["created"].append(entry)
             self.journal()
-            paths = [normalized(source) for source in risk.bind_sources(step.body)]
-            paths += [
-                device
-                for volume in body_volumes(step.body)
-                if (device := self.volume_device(volume)) is not None
-            ]
-            current = reresolve(self.env, paths, self.expected)
+            if self.plan.recreate:
+                current: dict[str, str] = {}  # the binds it has: nothing new is mounted
+            else:
+                paths = [normalized(source) for source in risk.bind_sources(step.body)]
+                paths += [
+                    device
+                    for volume in body_volumes(step.body)
+                    if (device := self.volume_device(volume)) is not None
+                ]
+                current = reresolve(self.env, paths, self.expected)
             body = with_sources(step.body, current)
             body["Labels"] = {**(body.get("Labels") or {}), **self.label}
             if step.image_entry:

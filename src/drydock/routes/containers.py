@@ -33,7 +33,7 @@ from drydock.hosts import inventory
 from drydock.hosts.helper import HELPER_LABEL
 from drydock.hosts.inventory import PROJECT_LABEL
 from drydock.hosts.status import ContainerStatus
-from drydock.jobs.dispatcher import lock_scope, name_key
+from drydock.jobs.dispatcher import DispatchError, lock_scope, name_key
 from drydock.models import Host, Job, JobTarget
 from drydock.routes.auth import client_ip
 from drydock.routes.hosts import DOCKER_ERRORS, open_host, release, target
@@ -525,6 +525,62 @@ def check_updates(
     response = page(request, auth, db, view, notice=notice)
     response.headers["HX-Replace-Url"] = view.url
     return response
+
+
+@router.post("/containers/update")
+def update_container(
+    request: Request,
+    auth: Operator,
+    host: Annotated[int, Form()],
+    container: Annotated[str, Form()],
+    db: Session = Depends(get_db),
+) -> Response:
+    """Starts an update run of one container to what its tag names on the registry now
+    (updates/apply.py) and opens its run page. Audited."""
+    if not CONTAINER_ID_RE.fullmatch(container):
+        raise HTTPException(status_code=422)
+    target_host = db.get(Host, host)
+    if target_host is None:
+        raise HTTPException(status_code=404)
+    release(db, target_host)
+    snap = request.app.state.status.snapshot(target_host.id)
+    name = next((c.name for c in snap.containers if c.id == container), None) if snap else None
+    label = name or container[:12]
+    error = None
+    run_id = None
+    if not target_host.enabled:
+        error = "The host is disabled."
+    else:
+        try:
+            run_id = anyio.from_thread.run(
+                request.app.state.dispatcher.submit_update,
+                target_host.id,
+                [container],
+                auth.user.username,
+                label,
+            )
+        except DispatchError as exc:
+            error = str(exc)
+    audit.record(
+        db,
+        actor=auth.user.username,
+        action="container.update",
+        target=f"container:{label}",
+        outcome="success" if error is None else "failure",
+        ip=client_ip(request),
+        details={"host": target_host.name}
+        | ({"run_id": run_id} if run_id else {})
+        | ({"error": error} if error else {}),
+    )
+    db.commit()
+    if run_id is None:
+        view = View(target_host.id)
+        if not is_htmx(request):
+            return see_other(request, view.url)
+        response = page(request, auth, db, view, notice=(f"{label}: {error}", False))
+        response.headers["HX-Replace-Url"] = view.url
+        return response
+    return see_other(request, f"/runs/{run_id}")
 
 
 @router.get("/containers/{host_id}/{container_id}/inspect")

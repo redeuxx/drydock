@@ -638,6 +638,18 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 - `tests/test_activity.py::test_clearing_is_for_admins_with_recent_auth_and_audited`
 - `tests/test_activity.py::test_every_role_sees_the_activity_escaped`
 
+### T45. Updates replacing containers they should not, or leaving them broken
+
+**Threat:** a viewer or a forged request updates containers; an update replaces drydock itself, a helper, or a container a backup or restore is using; a bad new image leaves a service down; or an update pulls something other than what was checked.
+**Defence:** updates need an operator and a CSRF token and are audited. Drydock refuses its own containers and helpers, takes the same locks as a backup or restore of the container, pulls exactly the digest the registry named, and runs the update through the restore engine's journal: if the new container does not stay up or become healthy, or drydock stops midway, the original is put back with its name, restart policy and state. The registry's content under a tag is trusted, as the docs say.
+**Tests:**
+- `tests/test_update_apply.py::test_update_is_for_operators_audited_and_opens_its_run`
+- `tests/test_update_apply.py::test_what_is_left_alone_and_what_is_refused`
+- `tests/test_update_apply.py::test_the_plan_pulls_by_digest_and_makes_the_container_again`
+- `tests/test_update_apply.py::test_a_container_without_a_healthcheck_must_keep_running`
+- `tests/test_updates_docker.py::test_an_update_replaces_a_container_or_puts_it_back`
+- `tests/test_restore_dispatch.py::test_startup_recovery_rolls_back_an_interrupted_update`
+
 ## Accepted risks
 
 These are known limits of v1. The README and docs/ explain each one to operators; no test can remove them.

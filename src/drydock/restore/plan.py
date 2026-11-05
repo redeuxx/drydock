@@ -435,6 +435,9 @@ class RestorePlan:
     projects: tuple[str, ...] = ()
     compose: ComposeWrite | None = None
     mkdirs: tuple[MakeDir, ...] = ()
+    # An update (updates/apply.py): each container made again with the binds it has, so
+    # nothing new is mounted and its host paths are not resolved or checked again.
+    recreate: bool = False
 
 
 @dataclass(frozen=True)

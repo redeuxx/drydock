@@ -143,6 +143,7 @@
           {%- if c.state == "paused" %}{{ act(c, "unpause", "Unpause") }}{% endif %}
           {%- if c.state == "running" %}{{ ask(loop.index, c, "restart", "Restart") }}{{ act(c, "pause", "Pause") }}{% endif %}
           {%- if c.state in ("running", "paused", "restarting") %}{{ ask(loop.index, c, "stop", "Stop") }}{% endif %}
+          {%- set v = verdicts.get(c.id) %}{% if v and v.state == "update" %}{{ ask(loop.index, c, "update", "Update") }}{% endif %}
         </div></td>
         {% endif %}
       </tr>
@@ -189,6 +190,25 @@
 </dialog>
 {% if operator and c.state == "running" %}{{ confirm("ctr-" ~ loop.index ~ "-restart", "restart:" ~ c.id, "Restart", "Restart " ~ c.name ~ "?") }}{% endif %}
 {% if operator and c.state in ("running", "paused", "restarting") %}{{ confirm("ctr-" ~ loop.index ~ "-stop", "stop:" ~ c.id, "Stop", "Stop " ~ c.name ~ "? It gets its own stop timeout to shut down.") }}{% endif %}
+{% set v = verdicts.get(c.id) %}
+{% if operator and v and v.state == "update" %}
+<dialog id="ctr-{{ loop.index }}-update" class="modal" aria-labelledby="ctr-{{ loop.index }}-update-title">
+  <div class="modal-box">
+    <h2 id="ctr-{{ loop.index }}-update-title" class="mb-2 text-lg font-bold">Update {{ c.name }}</h2>
+    <p class="text-sm break-words">Pull {{ v.ref }} at <span class="font-mono text-xs">{{ v.latest[:19] }}</span> and make {{ c.name }} again with it, keeping its configuration. It is stopped meanwhile (its own stop timeout), and put back as it was if the new one does not start or become healthy. A backup first is up to you.</p>
+    <div class="modal-action">
+      <form method="dialog"><button class="btn btn-sm">Cancel</button></form>
+      <form method="post" action="/containers/update" hx-post="/containers/update" hx-nonce="{{ csp_nonce }}">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        <input type="hidden" name="host" value="{{ chosen.id }}">
+        <input type="hidden" name="container" value="{{ c.id }}">
+        <button type="submit" class="btn btn-sm btn-warning">Update</button>
+      </form>
+    </div>
+  </div>
+  <form method="dialog" class="modal-backdrop"><button>Close</button></form>
+</dialog>
+{% endif %}
 {% endfor %}
 {% endif %}
 {% endif %}

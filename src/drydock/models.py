@@ -167,7 +167,8 @@ SCOPES = ("config", "data", "image", "all")
 # The order is part of the schema: migration 0005 hardcodes the CHECKs in_list() makes.
 TARGET_TYPES = ("container", "stack")
 CONSISTENCY_MODES = ("stop", "pause", "live")
-RUN_KINDS = ("backup", "restore")
+# The order is part of the schema: migration 0017 hardcodes the CHECK that in_list() makes.
+RUN_KINDS = ("backup", "restore", "update")
 # The order is part of the schema: migration 0009 hardcodes the CHECK that in_list() makes.
 STORAGE_KINDS = ("local", "sftp", "smb", "webdav", "drive")
 # The order is part of the schema: migration 0008 hardcodes the CHECK that in_list() makes.
