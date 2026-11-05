@@ -506,17 +506,16 @@ async def test_backup_and_restore_never_overlap_on_a_container(
     await wait_until(lambda: events == ["apply"], 5, "the restore applies")
     assert {WEB_ID, name_key(host_id, "container", "web")} <= set(fakes.applied[0].lock_keys)
     first = await start_run(admin, job_id)
-    await asyncio.sleep(0.5)
+    # Wait on the log line, not "queued" (true from creation); 20 s stays inside the 30 s hold.
+    waiting = f"Waiting for run {restore} to finish with container {WEB_ID[:12]}."
+    await wait_until(lambda: waiting in log_text(admin, first), 20, "the first backup waits")
     assert run_status(admin, first) == "queued"
-    assert f"Waiting for run {restore} to finish with container {WEB_ID[:12]}." in log_text(
-        admin, first
-    )
     # The restore has created the new container: its ID is free, but its name is not.
     current["id"] = NEW_ID
     second = await start_run(admin, other_job)
-    await asyncio.sleep(0.5)
+    waiting = f"Waiting for run {restore} to finish with container web."
+    await wait_until(lambda: waiting in log_text(admin, second), 20, "the second backup waits")
     assert run_status(admin, second) == "queued"
-    assert f"Waiting for run {restore} to finish with container web." in log_text(admin, second)
     release_apply.set()
     for run_id in (restore, first, second):
         await dispatcher(admin).wait(run_id)
@@ -541,9 +540,12 @@ async def test_backup_and_restore_never_overlap_on_a_container(
     restore = await verified(admin, storage_id, name)
     choice = confirm_plan(admin, fakes, restore, p.Choice(host_id, "overwrite"))
     await dispatcher(admin).execute_restore(restore, choice, "admin")
-    await asyncio.sleep(0.5)
+    await wait_until(
+        lambda: f"Waiting for run {backup} to finish" in log_text(admin, restore),
+        20,
+        "the restore waits",
+    )
     assert run_status(admin, restore) == "queued"
-    assert f"Waiting for run {backup} to finish" in log_text(admin, restore)
     release_backup.set()
     await dispatcher(admin).wait(backup)
     await dispatcher(admin).wait(restore)
@@ -614,9 +616,9 @@ async def test_backup_waits_while_a_restore_has_renamed_the_container_away(
     await dispatcher(admin).execute_restore(restore, choice, "admin")
     await wait_until(lambda: events == ["apply"], 5, "the restore applies")
     backup = await start_run(admin, job_id)
-    await asyncio.sleep(0.5)
+    waiting = f"Waiting for run {restore} to finish with container web."
+    await wait_until(lambda: waiting in log_text(admin, backup), 20, "the backup waits")
     assert run_status(admin, backup) == "queued"
-    assert f"Waiting for run {restore} to finish with container web." in log_text(admin, backup)
     release_apply.set()
     for run_id in (restore, backup):
         await dispatcher(admin).wait(run_id)
@@ -839,9 +841,9 @@ async def test_host_entries_for_the_same_daemon_share_name_locks(
     await dispatcher(admin).execute_restore(restore, choice, "admin")
     await wait_until(lambda: events == ["apply"], 5, "the restore applies")
     backup = await start_run(admin, job_id)
-    await asyncio.sleep(0.5)
+    waiting = f"Waiting for run {restore} to finish with container web."
+    await wait_until(lambda: waiting in log_text(admin, backup), 20, "the backup waits")
     assert run_status(admin, backup) == "queued"
-    assert f"Waiting for run {restore} to finish with container web." in log_text(admin, backup)
     release_apply.set()
     for run_id in (restore, backup):
         await dispatcher(admin).wait(run_id)

@@ -335,8 +335,9 @@ async def test_runs_queue_per_container_and_cancel(admin: Browser, fake_docker: 
     first = await start_run(admin, first_job)
     await wait_until(lambda: run_status(admin, first) == "running", 5, "first run starts")
     second = await start_run(admin, second_job)
-    await anyio.sleep(0.5)
-    # Different hosts: both run. The same container on one host would queue (below).
+    # Different hosts: both run. The same container on one host would queue (below), and
+    # then this wait times out, since the first run holds until it is cancelled.
+    await wait_until(lambda: run_status(admin, second) == "running", 10, "second run starts")
     assert run_status(admin, second) == "running"
     for run_id in (first, second):
         assert (await admin.post(f"/runs/{run_id}/cancel")).status_code == 303
@@ -359,10 +360,14 @@ async def test_overlapping_runs_wait_and_a_queued_run_can_be_cancelled(
     assert response.status_code == 409 and "already has a run in progress" in response.text
     assert response.headers["HX-Replace-Url"] == f"/jobs/{job_id}"
     second = await start_run(admin, other_job)
-    await anyio.sleep(0.5)
+    # "queued" holds from creation; the log line shows the run actually reached the lock.
+    second_log = runlog.log_path(admin.settings.data_dir, second)
+    await wait_until(
+        lambda: second_log.exists() and f"Waiting for run {first}" in second_log.read_text(),
+        10,
+        "the second run waits",
+    )
     assert run_status(admin, second) == "queued"
-    log = runlog.log_path(admin.settings.data_dir, second).read_text()
-    assert f"Waiting for run {first}" in log
     assert (await admin.post(f"/runs/{second}/cancel")).status_code == 303
     await admin.app.state.dispatcher.wait(second)
     assert run_status(admin, second) == "cancelled"
@@ -492,10 +497,15 @@ async def test_a_run_waits_for_startup_recovery_of_its_container(
     async with running(settings) as browser:
         await browser.login("admin")
         run_id = await start_run(browser, job_id)
-        await anyio.sleep(0.5)
+        # Wait on the log line, not a fixed sleep: it is written only once the run reaches
+        # the lock, after the plan load, host connect and resolve.
+        log = runlog.log_path(settings.data_dir, run_id)
+        await wait_until(
+            lambda: log.exists() and "Waiting for startup recovery to finish" in log.read_text(),
+            10,
+            "the run waits for recovery",
+        )
         assert run_status(browser, run_id) == "queued"
-        log = runlog.log_path(settings.data_dir, run_id).read_text()
-        assert "Waiting for startup recovery to finish" in log
         release.set()
         await wait_until(lambda: run_status(browser, run_id) == "running", 10, "the run")
         assert events == ["restarted"]

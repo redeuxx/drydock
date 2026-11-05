@@ -53,6 +53,10 @@ needs_ssh = pytest.mark.skipif(
 
 KEY_MARKERS = (b"PRIVATE KEY-----", b"openssh-key-v1", b"b3BlbnNzaC1rZXktdjE")
 
+# How long a tunnel may take to connect: several CONNECT_TIMEOUT (15 s) attempts plus backoff
+# and a host key scan, since one stalled handshake on a loaded runner eats a whole attempt.
+TUNNEL_WAIT = ssh.CONNECT_TIMEOUT * 8
+
 
 # HOST DAEMON AND THE SSHHOST CONTAINER
 
@@ -133,11 +137,15 @@ async def add_ssh_host(browser: Browser, known_host_line: str | None = None) -> 
     hosts = browser.app.state.hosts
     await hosts.reload(host_id)
     if known_host_line is None:
-        await wait_until(
-            lambda: hosts.status(get_host(browser, host_id)).state == "connected",
-            30,
-            "the SSH tunnel",
-        )
+        try:
+            await wait_until(
+                lambda: hosts.status(get_host(browser, host_id)).state == "connected",
+                TUNNEL_WAIT,
+                "the SSH tunnel",
+            )
+        except AssertionError as exc:
+            error = hosts.status(get_host(browser, host_id)).error
+            raise AssertionError(f"{exc} (last tunnel error: {error})") from None
     return host_id
 
 

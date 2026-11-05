@@ -187,10 +187,11 @@ async def test_an_upload_is_invisible_until_complete(
     storage = backend(daemon, staging, slow_sftp.config())
     name = new_name()
     started = threading.Event()
+    # 32 MiB at 4 MiB/s, as the cancel siblings: the three checks must beat the rename.
     task = asyncio.create_task(
         put(
             storage,
-            upload_file(staging, os.urandom(16 * MiB)),
+            upload_file(staging, os.urandom(32 * MiB)),
             name,
             progress=lambda n: n > 0 and started.set(),
         )

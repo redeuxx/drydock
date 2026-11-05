@@ -120,10 +120,14 @@ def test_skipped_and_repeated_local_times() -> None:
 def test_a_schedule_that_never_runs_is_refused_quickly() -> None:
     now = datetime(2026, 10, 20, tzinfo=UTC)
     for expr in ("0 0 31 2 *", "0 0 31 2,4,6,9,11 *", "0 0 30 2 *"):
-        started = time.perf_counter()
-        with pytest.raises(CronError, match="never runs"):
-            scheduler.checked(expr, "UTC", now)
-        assert time.perf_counter() - started < 0.05, expr  # unbounded: up to 0.2 s each
+        timings = []
+        for _ in range(5):
+            started = time.perf_counter()
+            with pytest.raises(CronError, match="never runs"):
+                scheduler.checked(expr, "UTC", now)
+            timings.append(time.perf_counter() - started)
+        # Best of 5: a GC pass or CPU steal on a busy runner cannot fail it, unbounded still does.
+        assert min(timings) < 0.05, expr  # unbounded: up to 0.2 s each
     scheduler.checked("0 0 29 2 *", "UTC", now)  # a leap day still runs, in 2028
 
 

@@ -16,7 +16,14 @@ from drydock.engine import stream_probe
 from drydock.hosts import client as docker_client
 from drydock.hosts import helper
 from tests.conftest import Browser
-from tests.docker_support import TEST_LABEL, add_ssh_host, get_host, needs_docker, wait_until
+from tests.docker_support import (
+    TEST_LABEL,
+    TUNNEL_WAIT,
+    add_ssh_host,
+    get_host,
+    needs_docker,
+    wait_until,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -36,7 +43,9 @@ async def test_a_slow_reader_over_ssh_keeps_memory_flat(admin: Browser) -> None:
     host_id = await add_ssh_host(admin)
     hosts = admin.app.state.hosts
     await wait_until(
-        lambda: hosts.status(get_host(admin, host_id)).state == "connected", 30, "the tunnel"
+        lambda: hosts.status(get_host(admin, host_id)).state == "connected",
+        TUNNEL_WAIT,
+        "the tunnel",
     )
     handle = await docker_client.connect(hosts.docker_url(get_host(admin, host_id)))
     client = handle.client

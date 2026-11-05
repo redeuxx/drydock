@@ -182,7 +182,8 @@ def test_timeout_returns_while_docker_keeps_the_exec(target, run_log: RunLog) ->
             cancel=threading.Event(),
             log=run_log,
         )
-    assert time.monotonic() - started < 5
+    # Loose on purpose: it proves the hook did not wait for sleep 3600, not Docker's speed.
+    assert time.monotonic() - started < 60
     # Docker cannot kill an exec: it is still running, and so is the container.
     assert api.exec_inspect(recording.ids[0])["Running"] is True
     box.reload()
@@ -205,7 +206,7 @@ def test_exec_into_a_paused_container_fails_cleanly(target, run_log: RunLog) -> 
         started = time.monotonic()
         with pytest.raises(HookError, match=r"^Docker could not start hook h: "):
             run(target, make_hook(box, ["true"]), run_log)
-        assert time.monotonic() - started < 10
+        assert time.monotonic() - started < 60  # no hang, on a slow shared daemon
     finally:
         api.unpause(box.id)
     run(target, make_hook(box, ["true"]), run_log)

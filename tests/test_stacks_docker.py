@@ -469,7 +469,8 @@ async def test_hook_timeout_leaves_every_container_running(settings: Settings, m
         catalogued = browser.sql("SELECT name FROM backups")
     assert row["status"] == "failed", log
     assert "a post-hook failed" in row["error"] and "timed out" in row["error"], row["error"]
-    assert elapsed < 60, log
+    # Loose on purpose: the whole stop run is slow on CI; this only shows the 3600 s sleep ended.
+    assert elapsed < 600, log
     assert stack.running(), log
     assert row["archive_name"] and (settings.local_storage_roots[0] / row["archive_name"]).exists()
     assert catalogued == [(row["archive_name"],)]

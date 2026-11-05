@@ -166,7 +166,8 @@ async def test_a_webdav_upload_is_invisible_until_complete(
 ) -> None:
     storage = RcloneBackend(daemon, "webdav", slow_webdav.config(), staging)
     name = new_name()
-    upload = asyncio.create_task(put(storage, upload_file(staging, os.urandom(8 * MiB)), name))
+    # 32 MiB at 4 MiB/s: about 8 s for the checks before rclone renames the partial.
+    upload = asyncio.create_task(put(storage, upload_file(staging, os.urandom(32 * MiB)), name))
     await wait_until(lambda: slow_webdav.files() != [], 30, "the upload to start")
     (partial,) = slow_webdav.files()
     assert partial.startswith(f"{name}.") and partial.endswith(".partial")

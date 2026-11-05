@@ -6,6 +6,8 @@ import contextlib
 import functools
 import html
 import re
+import time
+from collections.abc import Callable
 
 import docker.errors
 import pytest
@@ -37,14 +39,34 @@ IMAGE = DEFAULT_HELPER_IMAGE
 BUSY = ["sh", "-c", "while :; do :; done"]  # keeps one core busy, so CPU shows
 
 
-async def poll(collector: StatusCollector, host_id: int) -> HostSnapshot:
-    """One fresh reading of the host, whether this call or the collector's own loop (woken
-    by the touch) starts it."""
-    await collector.refresh(host_id, wait=60)
-    snapshot = collector.snapshot(host_id)
-    assert snapshot is not None
-    assert snapshot.error is None, snapshot.error
-    return snapshot
+POLL_BUDGET = 180  # seconds for a good reading: several 60 s refreshes on a loaded daemon
+
+
+async def poll(
+    collector: StatusCollector,
+    host_id: int,
+    ok: Callable[[HostSnapshot], bool] = lambda _: True,
+) -> HostSnapshot:
+    """A fresh reading of the host without an error, and one ok accepts, whether this call
+    or the collector's own loop (woken by the touch) takes it. Read again until then: on a
+    loaded daemon one request can time out, failing the reading or dropping a stat."""
+    before = collector.snapshot(host_id)
+    seen = before.taken_at if before is not None else None
+    deadline = time.monotonic() + POLL_BUDGET
+    while True:
+        await collector.refresh(host_id, wait=60)
+        snapshot = collector.snapshot(host_id)
+        fresh = snapshot is not None and snapshot.taken_at not in (None, seen)
+        if fresh and snapshot.error is None and ok(snapshot):
+            return snapshot
+        if time.monotonic() > deadline:
+            error = snapshot.error if snapshot is not None else "no reading"
+            raise AssertionError(f"no good reading in {POLL_BUDGET}s: {error}")
+        await asyncio.sleep(1)
+
+
+def has_row(snapshot: HostSnapshot, container_id: str) -> bool:
+    return any(c.id == container_id for c in snapshot.containers)
 
 
 def row(snapshot: HostSnapshot, container_id: str):
@@ -86,7 +108,12 @@ async def test_status_of_the_local_host_through_the_proxy(settings: Settings) ->
                 host_id = await docker_client.run_blocking(insert_host, browser, host)
                 collector: StatusCollector = browser.app.state.status
 
-                first = await poll(collector, host_id)
+                # Wait for busy's stats (mem), not just any reading: a stats call can time out.
+                first = await poll(
+                    collector,
+                    host_id,
+                    lambda s: has_row(s, busy.id) and row(s, busy.id).mem_bytes is not None,
+                )
                 assert first.engine and first.ncpu and first.mem_total
                 found = row(first, busy.id)
                 assert found.state == "running" and found.status.startswith("Up")
@@ -98,7 +125,11 @@ async def test_status_of_the_local_host_through_the_proxy(settings: Settings) ->
                 assert first.states["running"] >= 1
 
                 await asyncio.sleep(1)
-                second = await poll(collector, host_id)
+                second = await poll(
+                    collector,
+                    host_id,
+                    lambda s: has_row(s, busy.id) and row(s, busy.id).cpu_percent is not None,
+                )
                 assert row(second, busy.id).cpu_percent > 10, "a busy loop uses a core"
                 assert second.cpu_percent is not None and second.cpu_percent > 0
 
@@ -140,9 +171,10 @@ async def test_status_of_an_ssh_host_through_its_tunnel(admin: Browser) -> None:
             # The tunnel goes down and comes back: the kept client is replaced once.
             await admin.app.state.hosts.reload(host_id)
             hosts = admin.app.state.hosts
+            # Several CONNECT_TIMEOUT (15 s) attempts plus backoff, as a slow sshd may need.
             await wait_until(
                 lambda: hosts.status(get_host(admin, host_id)).state == "connected",
-                30,
+                120,
                 "the tunnel to come back",
             )
             again = await poll(collector, host_id)
@@ -210,7 +242,16 @@ async def test_container_actions_and_inspect_on_a_real_container(admin: Browser)
             # Several at once, and the page shows the reading taken after them.
             text = await do("stop", web.id, other.id)
             assert f"{web.name}: stopped" in text and f"{other.name}: stopped" in text
-            stopped = admin.app.state.status.snapshot(host_id)
+            collector: StatusCollector = admin.app.state.status
+
+            def both_exited() -> bool:
+                s = collector.snapshot(host_id)
+                ours = [c.state for c in s.containers if c.id in (web.id, other.id)] if s else []
+                return ours == ["exited", "exited"]
+
+            # The route's refresh waits only REFRESH_WAIT (15 s); the collector reads on.
+            await wait_until(both_exited, 60, "the reading after the stop")
+            stopped = collector.snapshot(host_id)
             assert {row(stopped, web.id).state, row(stopped, other.id).state} == {"exited"}
 
             # A container a run holds is refused, and so is a helper.
@@ -299,9 +340,10 @@ async def test_logs_through_the_proxy_without_gaps_or_repeats(admin: Browser) ->
             host_id = await docker_client.run_blocking(insert_host, admin, host)
             await asyncio.sleep(1.5)
 
-            # The tail first, then each poll brings only lines it has not had.
+            # The tail first, then each poll brings only lines it has not had. 1000 lines
+            # (about 100 s of counting) so a slow tty start still leaves line 0 in it.
             lines, url = await read_log(
-                admin, f"/logs/lines?host={host_id}&c={counting.id}&tail=100"
+                admin, f"/logs/lines?host={host_id}&c={counting.id}&tail=1000"
             )
             assert lines[:2] in (
                 [(False, "line 0"), (True, "err 0")],
@@ -434,9 +476,12 @@ async def test_a_container_that_dies_alerts_through_the_event_stream(admin: Brow
         try:
 
             def alerted() -> list[tuple]:
-                return admin.sql(
+                # Only quitter's: the stream sees every container on the shared daemon,
+                # the other CI leg's dying ones too.
+                rows = admin.sql(
                     "SELECT outcome, details FROM audit_events WHERE action = 'alert.died'"
                 )
+                return [r for r in rows if f" {quitter.name} " in (r[1] or "")]
 
             await wait_until(lambda: bool(alerted()), 30, "the alert")
             ((outcome, details),) = alerted()

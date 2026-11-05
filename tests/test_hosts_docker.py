@@ -28,6 +28,7 @@ from tests.docker_support import (
     TEST_INSTANCE,
     TEST_LABEL,
     TEST_PROJECT,
+    TUNNEL_WAIT,
     add_ssh_host,
     archive_and_exec_roundtrip,
     authorize,
@@ -292,7 +293,7 @@ def host_state(browser: Browser, host_id: int) -> str:
 @needs_ssh
 async def test_ssh_forward_carries_put_archive_and_exec_stream(admin: Browser) -> None:
     host_id = await add_ssh_host(admin)
-    await wait_until(lambda: host_state(admin, host_id) == "connected", 30, "the tunnel")
+    await wait_until(lambda: host_state(admin, host_id) == "connected", TUNNEL_WAIT, "the tunnel")
 
     socket_path = admin.app.state.hosts.socket_path(host_id)
     assert stat.S_IMODE(socket_path.parent.stat().st_mode) == 0o700
@@ -314,7 +315,7 @@ async def test_ssh_forward_carries_put_archive_and_exec_stream(admin: Browser) -
 async def test_authorized_key_options_refuse_commands(admin: Browser) -> None:
     """The suggested authorized_keys options leave the forward working but run nothing."""
     host_id = await add_ssh_host(admin)
-    await wait_until(lambda: host_state(admin, host_id) == "connected", 30, "the tunnel")
+    await wait_until(lambda: host_state(admin, host_id) == "connected", TUNNEL_WAIT, "the tunnel")
     hosts = admin.app.state.hosts
     target = await docker_client.run_blocking(hosts._target, get_host(admin, host_id))
     async with asyncssh.connect(SSH_HOST, 22, options=ssh.client_options(target)) as conn:
@@ -326,7 +327,7 @@ async def test_authorized_key_options_refuse_commands(admin: Browser) -> None:
 @needs_ssh
 async def test_no_key_material_on_disk_after_connecting(admin: Browser) -> None:
     host_id = await add_ssh_host(admin)
-    await wait_until(lambda: host_state(admin, host_id) == "connected", 30, "the tunnel")
+    await wait_until(lambda: host_state(admin, host_id) == "connected", TUNNEL_WAIT, "the tunnel")
     handle = await connect_host(admin, host_id)
     await docker_client.run_blocking(handle.client.ping)
     await docker_client.run_blocking(handle.close)
@@ -358,7 +359,10 @@ async def test_host_key_mismatch_refuses_the_connection(
     _, real_fingerprint = await ssh.scan_host_key(SSH_HOST, 22)
 
     host_id = await add_ssh_host(admin, known_host_line=impostor)
-    await wait_until(lambda: host_state(admin, host_id) == "hostkey_mismatch", 30, "mismatch")
+    # ECDSA: a dropped handshake, then a host key scan (SCAN_TIMEOUT) to name the key presented.
+    await wait_until(
+        lambda: host_state(admin, host_id) == "hostkey_mismatch", TUNNEL_WAIT, "mismatch"
+    )
 
     def audit_rows() -> list[tuple]:
         return admin.sql(
@@ -389,7 +393,7 @@ async def test_host_key_mismatch_refuses_the_connection(
 @needs_ssh
 async def test_reconnects_after_sshd_restart(admin: Browser) -> None:
     host_id = await add_ssh_host(admin)
-    await wait_until(lambda: host_state(admin, host_id) == "connected", 30, "the tunnel")
+    await wait_until(lambda: host_state(admin, host_id) == "connected", TUNNEL_WAIT, "the tunnel")
     proxy = await docker_client.run_blocking(host_docker)
     remote = await docker_client.run_blocking(sshhost, proxy)
     try:
@@ -418,7 +422,9 @@ async def test_startup_reconnects_and_reaps_ssh_hosts(settings: Settings) -> Non
     async with running(settings) as browser:
         assert (await browser.setup()).status_code == 303
         host_id = await add_ssh_host(browser)
-        await wait_until(lambda: host_state(browser, host_id) == "connected", 30, "the tunnel")
+        await wait_until(
+            lambda: host_state(browser, host_id) == "connected", TUNNEL_WAIT, "the tunnel"
+        )
         handle = await connect_host(browser, host_id)
         remote = handle.client
         await docker_client.run_blocking(helper.ensure_image, remote, IMAGE)
@@ -427,7 +433,10 @@ async def test_startup_reconnects_and_reaps_ssh_hosts(settings: Settings) -> Non
         await docker_client.run_blocking(handle.close)
 
     async with running(settings) as browser:
-        await wait_until(lambda: host_state(browser, host_id) == "connected", 30, "the tunnel")
+        # A cold start: the new app builds the tunnel from scratch.
+        await wait_until(
+            lambda: host_state(browser, host_id) == "connected", TUNNEL_WAIT, "the tunnel"
+        )
         handle = await connect_host(browser, host_id)
         try:
             # Blocking calls must leave the event loop free: it also runs the SSH forward.
@@ -495,7 +504,7 @@ async def test_ssh_host_through_the_ui(admin: Browser) -> None:
     assert scan.status_code == 200 and fingerprint in scan.text
     trust = await admin.post(f"/hosts/{host_id}/trust-hostkey", {"fingerprint": fingerprint})
     assert trust.status_code == 303
-    await wait_until(lambda: host_state(admin, host_id) == "connected", 30, "the tunnel")
+    await wait_until(lambda: host_state(admin, host_id) == "connected", TUNNEL_WAIT, "the tunnel")
 
     test = await admin.post(f"/hosts/{host_id}/test")
     assert "Docker 29." in test.text and "(negotiated)" in test.text

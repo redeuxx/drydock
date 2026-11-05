@@ -1507,9 +1507,10 @@ async def test_shutdown_ends_the_health_wait_of_recovery(
             "the health wait",
         )
         stopping = time.monotonic()
-    # Shutdown ended the wait (HEALTH_WAIT is 120 s), and app still started.
-    await wait_until(lambda: ("start", "app") in daemon.calls, 5, "app started")
-    assert time.monotonic() - stopping < 5
+    # Shutdown ended the wait (HEALTH_WAIT is 120 s), and app still started. The bound is
+    # loose because it spans the whole lifespan shutdown, rclone.close() included.
+    await wait_until(lambda: ("start", "app") in daemon.calls, 30, "app started")
+    assert time.monotonic() - stopping < stacks.HEALTH_WAIT / 4
     assert daemon.state_calls() == [("start", "db"), ("start", "app")]
 
 

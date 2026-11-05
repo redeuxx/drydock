@@ -26,31 +26,39 @@ REGISTRY_IMAGE = (
 IMAGE = DEFAULT_HELPER_IMAGE
 
 
-def start_registry(client, port: int):
+def start_registry(client):
     """Blocking. A registry on the daemon's own network, listening on loopback only (the
     daemon pushes to it; nothing outside the host can reach it), its debug listener on the
     next port (its default, :5001, is shared by every registry on the host, such as the
-    other CI leg's). Waits until it listens."""
-    registry = client.containers.run(
-        REGISTRY_IMAGE,
-        detach=True,
-        labels={TEST_LABEL: "1"},
-        network_mode="host",
-        environment={
-            "REGISTRY_HTTP_ADDR": f"127.0.0.1:{port}",
-            "REGISTRY_HTTP_DEBUG_ADDR": f"127.0.0.1:{port + 1}",
-            "OTEL_TRACES_EXPORTER": "none",
-        },
-    )
-    deadline = time.monotonic() + 60
-    while b"listening on 127.0.0.1:%d" % port not in registry.logs():
-        registry.reload()
-        if registry.status != "running" or time.monotonic() > deadline:
-            logs = registry.logs()[-2000:].decode(errors="replace")
-            registry.remove(force=True)
-            raise AssertionError(f"the test registry did not start: {logs}")
-        time.sleep(0.5)
-    return registry
+    other CI leg's). Waits until it listens; returns it and its port."""
+    for attempt in range(5):
+        # Below Linux's ephemeral range (32768+), where the host's own client sockets sit.
+        port = 20000 + 2 * secrets.randbelow(6000)
+        registry = client.containers.run(
+            REGISTRY_IMAGE,
+            detach=True,
+            labels={TEST_LABEL: "1"},
+            network_mode="host",
+            environment={
+                "REGISTRY_HTTP_ADDR": f"127.0.0.1:{port}",
+                "REGISTRY_HTTP_DEBUG_ADDR": f"127.0.0.1:{port + 1}",
+                "OTEL_TRACES_EXPORTER": "none",
+            },
+        )
+        deadline = time.monotonic() + 60
+        while b"listening on 127.0.0.1:%d" % port not in registry.logs():
+            registry.reload()
+            if registry.status != "running" or time.monotonic() > deadline:
+                logs = registry.logs()[-2000:].decode(errors="replace")
+                registry.remove(force=True)
+                # Taken by something else on the shared host: try another port.
+                if "address already in use" in logs and attempt < 4:
+                    break
+                raise AssertionError(f"the test registry did not start: {logs}")
+            time.sleep(0.5)
+        else:
+            return registry, port
+    raise AssertionError("unreachable")
 
 
 def push(api, repository: str, source: str) -> None:
@@ -79,11 +87,10 @@ async def test_a_newer_image_on_the_registry_is_found(admin: Browser) -> None:
     api = client.api
     made: list = []
     repository = ""
-    port = 20000 + 2 * secrets.randbelow(20000)
     try:
         for image in (REGISTRY_IMAGE, IMAGE):
             await docker_client.run_blocking(helper.ensure_image, client, image)
-        registry = await docker_client.run_blocking(start_registry, client, port)
+        registry, port = await docker_client.run_blocking(start_registry, client)
         made.append(registry)
         # 127.0.0.1, not localhost: the daemon may resolve that to ::1, where nothing listens.
         repository = f"127.0.0.1:{port}/drydock-test-{uuid.uuid4().hex[:8]}"
@@ -141,11 +148,10 @@ async def test_an_update_replaces_a_container_or_puts_it_back(admin: Browser) ->
     names: list[str] = []
     made: list = []
     repository = ""
-    port = 20000 + 2 * secrets.randbelow(20000)
     try:
         for image in (REGISTRY_IMAGE, IMAGE):
             await docker_client.run_blocking(helper.ensure_image, client, image)
-        registry = await docker_client.run_blocking(start_registry, client, port)
+        registry, port = await docker_client.run_blocking(start_registry, client)
         made.append(registry)
         repository = f"127.0.0.1:{port}/drydock-test-{uuid.uuid4().hex[:8]}"
         await docker_client.run_blocking(push, api, repository, IMAGE)
@@ -226,11 +232,10 @@ async def test_a_stack_update_is_all_or_nothing(admin: Browser) -> None:
     project = f"drydock-test-stack-{uuid.uuid4().hex[:8]}"
     made: list = []
     repository = ""
-    port = 20000 + 2 * secrets.randbelow(20000)
     try:
         for image in (REGISTRY_IMAGE, IMAGE):
             await docker_client.run_blocking(helper.ensure_image, client, image)
-        registry = await docker_client.run_blocking(start_registry, client, port)
+        registry, port = await docker_client.run_blocking(start_registry, client)
         made.append(registry)
         repository = f"127.0.0.1:{port}/drydock-test-{uuid.uuid4().hex[:8]}"
         await docker_client.run_blocking(push, api, repository, IMAGE)

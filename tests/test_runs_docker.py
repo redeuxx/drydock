@@ -242,7 +242,8 @@ async def test_postgres_backup_in_every_scope(settings: Settings, targets: Targe
         mount="/var/lib/postgresql",
         environment={"POSTGRES_PASSWORD": SENTINEL},
     )
-    await wait_until(lambda: pg_ready(pg), 90, "postgres to accept connections")
+    # initdb fsyncs a fresh volume and starts the server twice; CI's disk is slow and shared.
+    await wait_until(lambda: pg_ready(pg), 300, "postgres to accept connections")
     code, output = pg.exec_run(
         ["psql", "-U", "postgres", "-c", "CREATE TABLE t (v text); INSERT INTO t VALUES ('kept');"]
     )
@@ -281,7 +282,7 @@ async def test_postgres_backup_in_every_scope(settings: Settings, targets: Targe
                 assert SENTINEL not in (await browser.get(page)).text, page
             assert "Stopping container" in app.log(run_id)
             assert targets.running(pg)
-            await wait_until(lambda: pg_ready(pg), 60, "postgres after the backup")
+            await wait_until(lambda: pg_ready(pg), 180, "postgres after the backup")
             assert staged_files(settings) == []
         for page in ("/runs", "/jobs", "/backups"):
             assert SENTINEL not in (await browser.get(page)).text, page
@@ -457,13 +458,15 @@ async def test_container_and_stack_jobs_never_overlap(
 ) -> None:
     first, second = targets.container(), targets.container()
     intervals: dict[str, tuple[float, float]] = {}
+    # Holds the stack run's capture (and so its locks) until the container run is seen waiting.
+    gate = threading.Event()
 
     def slow_capture(env, job, containers, out_path, *, cancel, log, before_data, **_):
         before_data()
         start = time.monotonic()
         api = env.handle.client.api
         assert not any(api.inspect_container(c)["State"]["Running"] for c in containers)
-        time.sleep(2)
+        gate.wait(300)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(b"archive")
         intervals[job.name] = (start, time.monotonic())
@@ -487,11 +490,14 @@ async def test_container_and_stack_jobs_never_overlap(
         # A hostile name still writes inside the storage root.
         container_job = await app.add_job(second.name, "config", name="../../x")
         stack_run = await app.start(stack_job)
-        await wait_until(lambda: app.status(stack_run) == "running", 10, "the stack run")
-        container_run = await app.start(container_job)
-        await anyio.sleep(1)
-        assert app.status(container_run) == "queued"
-        assert f"Waiting for run {stack_run}" in app.log(container_run)
+        try:
+            await wait_until(lambda: app.status(stack_run) == "running", 60, "the stack run")
+            container_run = await app.start(container_job)
+            waiting = f"Waiting for run {stack_run}"
+            await wait_until(lambda: waiting in app.log(container_run), 120, "the container run")
+            assert app.status(container_run) == "queued"
+        finally:
+            gate.set()  # never leave the executor thread blocked on a failed assert
         for run_id in (stack_run, container_run):
             await browser.app.state.dispatcher.wait(run_id)
             assert app.status(run_id) == "done", app.log(run_id)

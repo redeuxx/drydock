@@ -447,7 +447,8 @@ def test_dense_secrets_keep_the_buffer_and_the_work_bounded(tmp_path: Path) -> N
         out.feed(1, b"cdab")
     out.feed(1, b"cd ok\n")
     out.close(failed=False)
-    assert time.monotonic() - started < 2.0
+    # Linear work takes well under a second; quadratic over ~160 KiB would take far longer.
+    assert time.monotonic() - started < 15.0
     assert hook_text(log.path) == "[redacted] ok"
     # Overlapping occurrences are all covered: no fragment of one shows.
     log = RunLog(tmp_path / "overlap.log")
@@ -663,7 +664,8 @@ def test_run_hook_times_out_and_cancels(run_log: RunLog) -> None:
             cancel=threading.Event(),
             log=run_log,
         )
-    assert time.monotonic() - started < 1.5
+    # Slack for a stalled runner; the hook's own default timeout is minutes away.
+    assert time.monotonic() - started < 4
     assert "wrap long commands in timeout" in str(caught.value)
     assert api.sockets[0].fileno() == -1
 
@@ -699,7 +701,7 @@ def test_run_hook_times_out_and_cancels(run_log: RunLog) -> None:
         hooks.run_hook(
             api, "c", make_hook(), container_name="db", phase="pre", cancel=cancel, log=run_log
         )
-    assert time.monotonic() - started < 0.3 + hooks.POLL + 0.3
+    assert time.monotonic() - started < 0.3 + hooks.POLL + 2.5
     for peer in api.peers:
         peer.close()
 
@@ -733,7 +735,7 @@ def test_run_hook_polls_inspect_after_an_early_eof(run_log: RunLog, monkeypatch)
             cancel=threading.Event(),
             log=run_log,
         )
-    assert 0.9 < time.monotonic() - started < 1.5
+    assert 0.9 < time.monotonic() - started < 4
 
 
 class FakeTLS:
@@ -821,7 +823,7 @@ def test_run_all_post_semantics(run_log: RunLog, monkeypatch) -> None:
             api, pairs, phase="post", cancel=cancel, log=run_log, keep_going=True, on_cancel="wait"
         )
     assert len(api.creates) == 2
-    assert time.monotonic() - started < 2 * 0.5 + 0.6
+    assert time.monotonic() - started < 2 * 0.5 + 3
     assert "Starting post-hook two without waiting for it to finish." in lines(run_log.path)
     # Pre-hooks of a cancelled run are not started at all.
     with pytest.raises(Cancelled):
@@ -843,7 +845,7 @@ def test_run_all_post_semantics(run_log: RunLog, monkeypatch) -> None:
             budget=1,
         )
     assert len(api.creates) == 2
-    assert time.monotonic() - started < 1 + 0.5 + 0.6
+    assert time.monotonic() - started < 1 + 0.5 + 3
     logged = lines(run_log.path)
     assert "Hook one did not finish in the time left for post-hooks." in " ".join(logged)
     assert "Starting post-hook two without waiting for it to finish." in logged

@@ -358,7 +358,8 @@ def test_wait_healthy_waits_until_healthy_and_gives_up_at_the_deadline(monkeypat
 
     lines = []
     api = FakeHealth({"db": [health("unhealthy")]})
-    assert not stacks.wait_healthy(api, ["db"], time.monotonic() + 0.05, cancel, lines.append)
+    # 0.5 s, not less: a GC pause before the first check would skip the "Waiting" line.
+    assert not stacks.wait_healthy(api, ["db"], time.monotonic() + 0.5, cancel, lines.append)
     assert lines == [
         "Waiting for container db to be healthy.",
         "Container db is not healthy after waiting; starting the next one anyway.",
