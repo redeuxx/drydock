@@ -973,6 +973,11 @@ async def test_the_run_list_filters_by_status(admin: Browser) -> None:
 
 async def test_a_jobs_target_runs_are_one_job_run(admin: Browser) -> None:
     job_id = await add_job(admin, "rigel")
+    # One clock reading for all three: separate 'now's can straddle a second on a slow runner,
+    # and the job run would then take 2 min 1 s.
+    ((start, end),) = admin.sql(
+        "SELECT datetime('now', '+1 minute'), datetime('now', '+3 minutes')"
+    )
     for status, label, size, error in (
         ("done", "container web", 2048, None),
         ("failed", "container db", None, "The disk is full."),
@@ -981,9 +986,8 @@ async def test_a_jobs_target_runs_are_one_job_run(admin: Browser) -> None:
         admin.sql(
             "INSERT INTO runs (job_id, kind, status, stopped_containers_json, target_label,"
             " size, error, triggered_by, created_at, started_at, finished_at)"
-            " VALUES (?, 'backup', ?, '[]', ?, ?, ?, 'ops', datetime('now', '+1 minute'),"
-            " datetime('now', '+1 minute'), datetime('now', '+3 minutes'))",
-            (job_id, status, label, size, error),
+            " VALUES (?, 'backup', ?, '[]', ?, ?, ?, 'ops', ?, ?, ?)",
+            (job_id, status, label, size, error, start, start, end),
         )
     first, failed, last = (row[0] for row in admin.sql("SELECT id FROM runs ORDER BY id"))
     admin.sql("UPDATE runs SET first_run_id = ?", (first,))
