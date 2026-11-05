@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Activity{% endblock %}
+{% block width %}max-w-screen-2xl{% endblock %}
+{% block content %}
+<h1 class="mb-4 text-3xl font-bold">Activity</h1>
+{# The filters sit outside #activity, so its polls never touch what is being typed. Their
+   fields go with every poll (hx-include), and a change asks for the region at once. A
+   filter request replaces an older one, and a poll is dropped while one is under way. #}
+<form id="activity-filter" method="get" action="/activity" role="search" class="mb-3 flex flex-wrap items-center gap-2"
+  hx-get="/activity" hx-trigger="submit, input delay:300ms" hx-target="#activity" hx-select="#activity" hx-swap="outerHTML ignoreTitle:true" hx-replace-url="true" hx-sync="this:replace" hx-nonce="{{ csp_nonce }}">
+  <input type="search" name="container" value="{{ view.container }}" maxlength="100" class="input input-sm w-56" placeholder="Container name or ID" aria-label="Container name or ID">
+  <select name="action" class="select select-sm w-auto" aria-label="Action">
+    <option value="">All actions</option>
+    {% for key, label in actions.items() %}<option value="{{ key }}"{% if key == view.action %} selected{% endif %}>{{ label }}</option>{% endfor %}
+  </select>
+  <select name="host" class="select select-sm w-auto" aria-label="Host">
+    <option value="">All hosts</option>
+    {% for h in hosts %}<option value="{{ h.id }}"{% if h.id == view.host %} selected{% endif %}>{{ h.name }}</option>{% endfor %}
+  </select>
+  <select name="range" class="select select-sm w-auto" aria-label="Time range">
+    {% for key, entry in ranges.items() %}<option value="{{ key }}"{% if key == view.range %} selected{% endif %}>{{ entry[0] }}</option>{% endfor %}
+  </select>
+  <noscript><button type="submit" class="btn btn-sm">Apply</button></noscript>
+  {% if auth.user.role >= Role.admin %}
+  <button type="button" class="btn btn-sm btn-ghost ml-auto" commandfor="activity-clear" command="show-modal" aria-haspopup="dialog">Clear&hellip;</button>
+  {% endif %}
+</form>
+{% if auth.user.role >= Role.admin %}
+<dialog id="activity-clear" class="modal" aria-labelledby="activity-clear-title">
+  <div class="modal-box">
+    <h2 id="activity-clear-title" class="mb-2 text-lg font-bold">Clear the activity record</h2>
+    <form method="post" action="/activity/clear" hx-post="/activity/clear" hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-3 text-sm">
+      <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+      <p>Deletes the stored container events. Drydock keeps recording new ones. This is in the audit log, and needs your password if you have not entered it in the last 10 minutes.</p>
+      <label class="flex items-center gap-2">Of
+        <select name="host" class="select select-sm w-auto" required>
+          <option value="" selected disabled>choose</option>
+          {% for h in hosts %}<option value="{{ h.id }}">{{ h.name }}</option>{% endfor %}
+          <option value="0">all hosts</option>
+        </select>
+      </label>
+      <div class="modal-action">
+        <button type="button" class="btn btn-sm" commandfor="activity-clear" command="close">Cancel</button>
+        <button type="submit" class="btn btn-sm btn-error">Clear</button>
+      </div>
+    </form>
+  </div>
+  <form method="dialog" class="modal-backdrop"><button>Close</button></form>
+</dialog>
+{% endif %}
+{% include "activity/_events.html" %}
+{% endblock %}

@@ -38,6 +38,8 @@ const PAGES = [
   "/hooks/new",
   "/runs",
   "/backups",
+  "/activity",
+  "/logs",
   "/restore",
   "/reauth",
   "/does-not-exist",
@@ -517,6 +519,28 @@ const [download] = await Promise.all([
   page.getByRole("link", { name: "Download" }).click(),
 ]);
 check(download.suggestedFilename().endsWith("-logs.txt"), "the logs download as a text file");
+
+// ACTIVITY
+//
+// The containers drydock and the smoke run started and stopped are on record, and the
+// newest page refreshes itself.
+
+const activityPoll = page
+  .waitForResponse(
+    (response) =>
+      response.url().includes("/activity?") &&
+      response.request().headers()["x-drydock-poll"] === "1" &&
+      response.status() === 200,
+    { timeout: 15000 },
+  )
+  .then(() => true)
+  .catch(() => false);
+await page.goto("/activity");
+check(await activityPoll, "the activity page polls in the background, marked as a poll");
+check((await page.locator("#activity tbody tr td button[command='show-modal']").count()) > 0, "container events are on record");
+await page.locator("#activity tbody button[command='show-modal']").first().click();
+check((await page.locator("#activity dialog[open]").count()) === 1, "an event opens its dialog");
+await page.keyboard.press("Escape");
 
 // STORAGE, A JOB AND A RUN WITH ITS LIVE LOG
 

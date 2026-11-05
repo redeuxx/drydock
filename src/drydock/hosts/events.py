@@ -229,6 +229,10 @@ class EventCollector:
             self._counts = Counts(now, day_start, count(db, day_start))
         return self._counts.by_host
 
+    def forget_counts(self) -> None:
+        """The next counts() reads the table again (it was cleared)."""
+        self._counts = Counts()
+
     async def flush(self) -> None:
         """Stores what the streams brought. A batch the database refused (busy) is kept for
         the next flush, up to MAX_PENDING events; the oldest beyond that are dropped."""

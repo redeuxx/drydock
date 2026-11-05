@@ -1,0 +1,69 @@
+{% from "_icons.html" import icon %}
+{# Stored container events (routes/activity.py). The newest page polls itself every 5 s
+   with the filters' fields (data-poller, frontend/app.ts, which skips a poll while a
+   dialog is open); older pages hold still. Each row's time is a button stretched over the
+   row that opens its dialog, as on the audit log. Names and images come from the hosts:
+   autoescaped only. #}
+{% set symbols = {"create": "circle-plus", "start": "play", "restart": "rotate-cw", "unpause": "play", "stop": "square", "kill": "square", "die": "square", "destroy": "square", "pause": "pause", "oom": "triangle-alert", "health_status": "activity"} %}
+{% set tones = {"start": "text-success", "unpause": "text-success", "create": "text-info", "restart": "text-warning", "pause": "text-warning", "kill": "text-error", "oom": "text-error", "destroy": "opacity-70"} %}
+{% macro exit_code(e) -%}
+{% if e.exit_code is not none %}<span class="font-semibold {{ 'text-success' if e.exit_code == 0 else 'text-error' }}">{{ e.exit_code }}</span>{% endif %}
+{%- endmacro %}
+{% macro action_of(e) -%}
+<span class="flex items-center gap-1 {{ tones.get(e.action, '') }}{% if e.action == 'die' and e.exit_code %} text-error{% endif %}">{{ icon(symbols.get(e.action, "activity"), "size-3.5") }}{{ actions.get(e.action, e.action) }}{% if e.health %}: {{ e.health }}{% endif %}</span>
+{%- endmacro %}
+<div id="activity"
+  {%- if live %} data-poller="Activity" hx-get="/activity" hx-include="#activity-filter" hx-trigger="every 5s" hx-target="this" hx-select="#activity" hx-swap="outerHTML ignoreTitle:true" hx-sync="#activity-filter:drop" hx-nonce="{{ csp_nonce }}"{% endif %}>
+<p class="mb-2 text-sm opacity-70">{% if rows %}{{ first }} to {{ first + rows|length - 1 }} of {{ "{:,}".format(total) }}{% else %}No events{% endif %}{% if live %} &middot; updates every 5 seconds{% endif %}</p>
+<div class="overflow-hidden rounded-box border border-base-300 bg-base-100">
+  <table class="table table-zebra table-sm table-fixed w-full">
+    <thead>
+      <tr>
+        <th scope="col" class="w-52">Time</th>
+        <th scope="col" class="w-32 max-md:hidden">Host</th>
+        <th scope="col" class="w-36">Action</th>
+        <th scope="col">Container</th>
+        <th scope="col" class="max-sm:hidden">Image</th>
+        <th scope="col" class="w-20">Exit code</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in rows %}
+      <tr class="relative hover:bg-base-200">
+        <td class="truncate"><button type="button" class="cursor-pointer after:absolute after:inset-0" commandfor="event-{{ e.id }}" command="show-modal" aria-haspopup="dialog">{{ e.when|stamp }}</button></td>
+        <td class="truncate max-md:hidden">{{ host_names.get(e.host_id, "") }}</td>
+        <td class="truncate">{{ action_of(e) }}</td>
+        <td class="truncate font-semibold" title="{{ e.name }}">{{ e.name or e.container_id[:12] }}</td>
+        <td class="truncate max-sm:hidden" title="{{ e.image }}">{{ e.image }}</td>
+        <td class="truncate">{{ exit_code(e) }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6">{% if view.query|length > 1 or view.range != "24h" %}No event matches.{% else %}No container events in the last 24 hours.{% endif %}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% for e in rows %}
+<dialog id="event-{{ e.id }}" class="modal" aria-labelledby="event-{{ e.id }}-title">
+  <div class="modal-box">
+    <h2 id="event-{{ e.id }}-title" class="mb-3 text-lg font-bold">{{ action_of(e) }}</h2>
+    <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+      <dt class="font-semibold">Time</dt><dd>{{ e.when|stamp }}<br><span class="font-mono text-xs opacity-70">{{ e.time_ns }} ns</span></dd>
+      <dt class="font-semibold">Host</dt><dd class="break-all">{{ host_names.get(e.host_id, "") }}</dd>
+      <dt class="font-semibold">Action</dt><dd><code>{{ e.action }}</code></dd>
+      <dt class="font-semibold">Container</dt><dd class="break-all">{{ e.name }}</dd>
+      <dt class="font-semibold">ID</dt><dd class="font-mono text-xs break-all">{{ e.container_id }}</dd>
+      <dt class="font-semibold">Image</dt><dd class="break-all">{{ e.image }}</dd>
+      <dt class="font-semibold">Exit code</dt><dd>{{ exit_code(e) }}</dd>
+      <dt class="font-semibold">Health</dt><dd>{{ e.health or "" }}</dd>
+    </dl>
+    <div class="modal-action"><form method="dialog"><button class="btn btn-sm">Close</button></form></div>
+  </div>
+  <form method="dialog" class="modal-backdrop"><button>Close</button></form>
+</dialog>
+{% endfor %}
+<div class="mt-4 flex gap-2">
+  {% if not live %}<a class="btn btn-outline btn-sm" href="{{ newest_url }}">Newest</a>{% endif %}
+  {% if older_url %}<a class="btn btn-outline btn-sm" href="{{ older_url }}">Older</a>{% endif %}
+</div>
+</div>

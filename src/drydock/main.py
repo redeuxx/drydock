@@ -39,6 +39,7 @@ from drydock.notify import Notifier
 from drydock.restore import uploads
 from drydock.routes import (
     account,
+    activity,
     auth,
     backups,
     containers,
@@ -335,6 +336,7 @@ def create_app(settings: Settings) -> FastAPI:
         system,
         containers,
         logs,
+        activity,
     )
     for module in routers:
         app.include_router(module.router)

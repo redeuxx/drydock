@@ -111,6 +111,10 @@ class DockerEvent(Base):
     exit_code: Mapped[int | None] = mapped_column(Integer)
     health: Mapped[str | None] = mapped_column(String(16))
 
+    @property
+    def when(self) -> datetime:
+        return datetime.fromtimestamp(self.time_ns / 1_000_000_000, UTC)
+
 
 class Host(Base):
     """A Docker host. Admins add every host explicitly, including the local one.

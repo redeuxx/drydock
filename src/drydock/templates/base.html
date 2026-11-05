@@ -31,6 +31,7 @@
         <ul class="menu menu-horizontal gap-1 p-0">
           <li><a href="/"{% if current == "/" %} class="menu-active" aria-current="page"{% endif %}>Dashboard</a></li>
           <li><a href="/containers"{% if current == "/containers" %} class="menu-active" aria-current="page"{% endif %}>Containers</a></li>
+          <li><a href="/activity"{% if current == "/activity" %} class="menu-active" aria-current="page"{% endif %}>Activity</a></li>
           {% if auth.user.role >= Role.admin %}<li><a href="/logs"{% if current == "/logs" %} class="menu-active" aria-current="page"{% endif %}>Logs</a></li>{% endif %}
           <li>
             <details data-menu>

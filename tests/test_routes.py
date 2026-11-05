@@ -97,6 +97,7 @@ EXPECTED_MIN_ROLE = [
     ({"POST"}, re.compile(r"^/containers/actions$"), Role.operator),
     ({"GET"}, re.compile(r"^/containers/[^/]+/[^/]+/inspect$"), Role.admin),
     ({"GET"}, re.compile(r"^/logs"), Role.admin),
+    ({"POST"}, re.compile(r"^/activity/clear$"), Role.admin),
     ({"GET", "POST"}, re.compile(r".*"), Role.viewer),
 ]
 # Every route the app serves. A new route fails this test until it is added here,
@@ -116,6 +117,8 @@ INVENTORY = {
     ("GET", "/logs"),
     ("GET", "/logs/lines"),
     ("GET", "/logs/download"),
+    ("GET", "/activity"),
+    ("POST", "/activity/clear"),
     ("POST", "/feed/read"),
     ("GET", "/about"),
     ("GET", "/hosts"),
@@ -751,6 +754,7 @@ AUDITED_SUCCESS = [
     ("/runs/{run_id}/dismiss", {}, "run.dismiss", 303),
     ("/hooks/{hook_id}/delete", {}, "hook.delete", 303),
     ("/storage/{storage_id}/delete", {}, "storage.delete", 303),
+    ("/activity/clear", {"host": "{host_id}"}, "activity.clear", 303),
     ("/hosts/{host_id}/delete", {}, "host.delete", 303),
     ("/reauth", {"password": PASSWORD, "next": "/"}, "auth.reauth", 303),
     (

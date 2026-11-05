@@ -630,6 +630,14 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 - `tests/test_events.py::test_a_burst_is_stored_in_one_transaction`
 - `tests/test_status_docker.py::test_container_events_through_the_proxy_are_stored`
 
+### T44. Hiding container activity
+
+**Threat:** someone who stopped or replaced containers wipes the record of it, or a forged request does.
+**Defence:** only admins clear the activity record, with a CSRF token and their password from the last 10 minutes, and every clear is in the append-only audit log with the host and how many events went. The record keeps at most 200,000 events, so someone who can start and stop containers (an operator, or a container that restarts itself) can push old events out by flooding it; the audit log still holds every action taken through drydock.
+**Tests:**
+- `tests/test_activity.py::test_clearing_is_for_admins_with_recent_auth_and_audited`
+- `tests/test_activity.py::test_every_role_sees_the_activity_escaped`
+
 ## Accepted risks
 
 These are known limits of v1. The README and docs/ explain each one to operators; no test can remove them.

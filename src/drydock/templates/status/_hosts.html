@@ -69,7 +69,7 @@
         <div class="flex justify-between"><dt class="flex items-center gap-1 opacity-70">{{ icon("hard-drive", "size-3.5") }}Volumes</dt><dd class="font-semibold">{{ snap.volumes }}</dd></div>
         <div class="flex justify-between"><dt class="flex items-center gap-1 opacity-70">{{ icon("network", "size-3.5") }}Networks</dt><dd class="font-semibold">{{ snap.networks }}</dd></div>
         {% set today, total = event_counts.get(host.id, (0, 0)) %}
-        <div class="col-span-2 flex justify-between"><dt class="flex items-center gap-1 opacity-70">{{ icon("activity", "size-3.5") }}Container events</dt><dd><span class="font-semibold">{{ today }}</span> <span class="opacity-70">today,</span> <span class="font-semibold">{{ total }}</span> <span class="opacity-70">stored</span></dd></div>
+        <div class="col-span-2 flex justify-between"><dt class="flex items-center gap-1 opacity-70">{{ icon("activity", "size-3.5") }}Container events</dt><dd><a class="hover:underline" href="/activity?host={{ host.id }}&amp;range=all"><span class="font-semibold">{{ today }}</span> <span class="opacity-70">today,</span> <span class="font-semibold">{{ total }}</span> <span class="opacity-70">stored</span></a></dd></div>
       </dl>
       {% if snap.error %}
       <div class="alert alert-warning alert-soft px-3 py-2 text-sm"><span>Stale since {{ snap.stale_since|ago }}: {{ snap.error }}</span></div>
