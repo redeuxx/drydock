@@ -2,7 +2,7 @@
 
 Notable changes to drydock. Versions follow [semantic versioning](https://semver.org/); release images are tagged `X.Y.Z` and `X.Y` (see [docs/development.md](docs/development.md#releases)).
 
-## Unreleased
+## 0.3.0 (2026-11-05)
 
 **Upgrading:** this version changes the database (new tables and columns, a new run kind), so copy the `drydock-data` volume first ([Upgrading](docs/operations.md#upgrading)). Pull the new `compose.yaml` before `docker compose up -d`: its socket proxy allows container logs (`ALLOW_LOGS=1`) for the logs page and events (`EVENTS=1`) for the activity record.
 

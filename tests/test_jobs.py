@@ -1038,7 +1038,7 @@ async def test_viewers_see_backups_but_not_restores_or_alerts(admin: Browser) ->
 
 async def test_the_about_page_names_the_version_and_the_stack(admin: Browser) -> None:
     page = (await admin.get("/about")).text
-    assert '<dd class="font-mono">0.2</dd>' in page
+    assert '<dd class="font-mono">0.3</dd>' in page
     assert "https://pypi.org/project/fastapi/" in page and "rclone" in page
     assert "https://github.com/rclone/rclone/releases/tag/v1.75.2" in page
 
