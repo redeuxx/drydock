@@ -1,5 +1,6 @@
 {% from "_macros.html" import host_status_badge %}
 {% from "_icons.html" import icon %}
+{% from "_spark.html" import sparkline %}
 {# One card per host, from what the status collector last read (hosts/status.py); nothing
    here calls Docker. The grid refreshes itself (data-poller, frontend/app.ts) by swapping
    in #host-status from /status/hosts. Not aria-live: a screen reader would announce every
@@ -59,9 +60,12 @@
       {% elif states["running"] %}
       <div class="alert alert-success alert-soft px-3 py-2 text-sm">{{ icon("circle-check") }}<span>No unhealthy containers</span></div>
       {% endif %}
+      {% set hist = histories[host.id] %}
       {{ meter("CPU", "cpu", snap.cpu_percent, (snap.ncpu ~ " cores") if snap.ncpu else "") }}
+      {{ sparkline(hist.cpu, 100) }}
       {# Used is what the containers use (docker stats); the daemon reports no host-wide figure. #}
       {{ meter("Memory", "memory-stick", snap.mem_percent, (snap.mem_bytes|filesize or "0 bytes") ~ (" / " ~ snap.mem_total|filesize if snap.mem_total else "")) }}
+      {{ sparkline(hist.memory, 100) }}
       {% set stacks_running, stacks_partial, stacks_stopped = snap.stacks %}
       <dl class="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
         <div class="flex justify-between"><dt class="flex items-center gap-1 opacity-70">{{ icon("image", "size-3.5") }}Images</dt><dd class="font-semibold">{{ snap.images }}</dd></div>

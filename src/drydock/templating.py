@@ -85,6 +85,34 @@ def clock(value: datetime | None) -> str:
     return value.astimezone(DISPLAY_ZONE).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
 
+def spark(
+    values: list[float | int | None], top: float | None = None, floor: float = 0
+) -> list[str]:
+    """SVG polyline point lists for a sparkline in a 100 x 20 view box, newest at the right.
+    The y axis runs from 0 to top (the largest value without one); a missing value (None)
+    breaks the line, so each run of values is its own polyline. Fewer than two values:
+    nothing to draw."""
+    if len(values) < 2:
+        return []
+    known = [v for v in values if v is not None]
+    ceiling = top if top is not None else max(max(known, default=0), floor)
+    ceiling = ceiling if ceiling and ceiling > 0 else 1
+    step = 100 / (len(values) - 1)
+    lines: list[str] = []
+    run: list[str] = []
+    for i, value in enumerate(values):
+        if value is None:
+            if len(run) > 1:
+                lines.append(" ".join(run))
+            run = []
+            continue
+        y = 20 - 19 * min(max(value / ceiling, 0), 1) - 0.5
+        run.append(f"{i * step:.1f},{y:.1f}")
+    if len(run) > 1:
+        lines.append(" ".join(run))
+    return lines
+
+
 def ago(value: datetime | None) -> str:
     """A past time in words: "just now", "5 minutes ago", "3 days ago"."""
     if value is None:
@@ -117,6 +145,7 @@ env.filters["stamp"] = stamp
 env.filters["logtimes"] = logtimes
 env.filters["duration"] = duration
 env.filters["clock"] = clock
+env.filters["spark"] = spark
 # A query string from a dict whose values may be lists (repeated keys); Jinja's urlencode
 # writes a list as one value.
 env.filters["query"] = lambda values: urlencode(values, doseq=True)

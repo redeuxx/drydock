@@ -220,9 +220,11 @@ def page(
         "notice": notice,  # (text, whether it went well) after a check for updates
         "stack_newer": 0,  # members of the filtered stack with a newer image
         "auto_update": {},  # container ID: [(update policy, its next run)]
+        "history": None,  # the host's sparklines (hosts/status.py History)
     }
     if chosen is not None:
         snap = collector.snapshot(chosen.id)
+        context["history"] = collector.history(chosen.id)
         checks = request.app.state.updates.result(chosen.id)
         verdicts = checks.verdicts if checks is not None else {}
         context |= {

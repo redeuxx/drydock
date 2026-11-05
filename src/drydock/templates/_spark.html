@@ -1,0 +1,11 @@
+{# A sparkline: the latest readings as an inline SVG line (templating.spark), drawn from 0
+   to top, newest at the right; a missing reading breaks the line. Decorative: the value
+   beside it says the same, so screen readers skip it. Nothing shows before two readings.
+   Without a top, the line scales to its largest value, but never below floor (so idle
+   noise stays flat). #}
+{% macro sparkline(values, top=None, size="h-6 w-full", floor=0) -%}
+{% set lines = values|spark(top, floor) %}
+{%- if lines %}<svg class="{{ size }} shrink-0 text-primary/70" viewBox="0 0 100 20" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+{%- for points in lines %}<polyline points="{{ points }}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>{% endfor -%}
+</svg>{% endif -%}
+{%- endmacro %}

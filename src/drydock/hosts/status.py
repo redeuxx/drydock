@@ -22,8 +22,9 @@ import ipaddress
 import logging
 import math
 import re
+import threading
 import time
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -52,6 +53,11 @@ REFRESH_WAIT = 15  # seconds a page waits for a host's reading after an action
 # Restart counts need an inspect, which the container list lacks. A container is inspected
 # when it first shows up or changes state, and again after this many seconds.
 INSPECT_EVERY = 60
+# Sparklines: the latest readings kept in memory, about 10 minutes of a host and 5 of a
+# container at INTERVAL. ponytail: lost on restart and while no page shows the host;
+# keeping history means a table and retention.
+HOST_HISTORY = 60
+CONTAINER_HISTORY = 30
 STATS_STATES = frozenset({"running", "paused"})
 HEALTH = frozenset({"healthy", "unhealthy", "starting"})
 NOT_CONNECTED = "Drydock is not connected to this host."
@@ -442,6 +448,16 @@ def error_text(exc: BaseException) -> str:
 # THE COLLECTOR
 
 
+@dataclass(frozen=True)
+class History:
+    """Sparkline values: the host's CPU and memory (percent), and per container ID its CPU
+    (percent) and memory (bytes). None where a reading had no value."""
+
+    cpu: list[float | None] = field(default_factory=list)
+    memory: list[float | None] = field(default_factory=list)
+    containers: dict[str, tuple[list[float | None], list[int | None]]] = field(default_factory=dict)
+
+
 def connection_key(host: Host) -> tuple[Any, ...]:
     """What makes a host the same daemon: a change drops what was collected for it."""
     return (
@@ -464,6 +480,16 @@ class HostCache:
     handle: client.DockerHandle | None = None
     samples: dict[str, Sample] = field(default_factory=dict)
     inspected: dict[str, Inspected] = field(default_factory=dict)
+    # (CPU %, memory %) of the host, and (CPU %, memory bytes) of each container, per
+    # reading; None where a reading had no value.
+    history: deque[tuple[float | None, float | None]] = field(
+        default_factory=lambda: deque(maxlen=HOST_HISTORY)
+    )
+    container_history: dict[str, deque[tuple[float | None, int | None]]] = field(
+        default_factory=dict
+    )
+    # The loop writes the history; sync routes read it on worker threads.
+    lock: threading.Lock = field(default_factory=threading.Lock)
     snapshot: HostSnapshot | None = None
     task: asyncio.Task[None] | None = None
     dropped: bool = False
@@ -479,6 +505,34 @@ class HostCache:
         snapshot stays, with its taken_at telling how old it is."""
         self.close_handle()
         self.samples.clear()
+        # Readings resume who knows when: a line must not join them across the gap.
+        with self.lock:
+            self.history.clear()
+            self.container_history.clear()
+
+    def remember(self, snapshot: HostSnapshot) -> None:
+        """Adds a reading to the sparklines; containers that are gone are dropped.
+
+        ponytail: points are spaced evenly, so the extra readings after an action
+        (refresh) look INTERVAL apart. Keep reading times if that ever misleads."""
+        with self.lock:
+            self.history.append((snapshot.cpu_percent, snapshot.mem_percent))
+            current = {c.id for c in snapshot.containers}
+            for gone in self.container_history.keys() - current:
+                del self.container_history[gone]
+            for c in snapshot.containers:
+                line = self.container_history.get(c.id)
+                if line is None:
+                    line = self.container_history[c.id] = deque(maxlen=CONTAINER_HISTORY)
+                line.append((c.cpu_percent, c.mem_bytes))
+
+    def missed(self) -> None:
+        """A reading failed: a gap, so the lines break instead of joining across it."""
+        with self.lock:
+            if self.history:
+                self.history.append((None, None))
+            for line in self.container_history.values():
+                line.append((None, None))
 
 
 class StatusCollector:
@@ -552,6 +606,24 @@ class StatusCollector:
     def snapshot(self, host_id: int) -> HostSnapshot | None:
         cache = self._caches.get(host_id)
         return cache.snapshot if cache is not None else None
+
+    def history(self, host_id: int, containers: bool = True) -> History:
+        """The host's sparklines, oldest reading first (and its containers' unless
+        containers is False); empty for a host not read lately. Thread-safe."""
+        cache = self._caches.get(host_id)
+        if cache is None:
+            return History()
+        with cache.lock:
+            return History(
+                cpu=[cpu for cpu, _ in cache.history],
+                memory=[mem for _, mem in cache.history],
+                containers={
+                    cid: ([cpu for cpu, _ in line], [mem for _, mem in line])
+                    for cid, line in cache.container_history.items()
+                }
+                if containers
+                else {},
+            )
 
     async def _run(self) -> None:
         while True:
@@ -648,8 +720,10 @@ class StatusCollector:
             break
         if not cache.dropped:
             cache.snapshot, cache.samples = summarize(host.id, reading, cache.samples, utcnow())
+            cache.remember(cache.snapshot)
 
     def _failed(self, cache: HostCache, host_id: int, message: str) -> None:
+        cache.missed()
         previous = cache.snapshot or HostSnapshot(host_id=host_id, taken_at=None)
         cache.snapshot = replace(
             previous, error=message, stale_since=previous.stale_since or utcnow()

@@ -1,4 +1,5 @@
 {% from "status/_host_bar.html" import host_bar %}
+{% from "_spark.html" import sparkline %}
 {# One host's containers from the status collector's cache (routes/containers.py). The
    region polls itself every 10 s with the toolbar's fields (data-poller, frontend/app.ts,
    which skips a poll while a dialog is open or a row is selected). Each row's name is a
@@ -155,8 +156,9 @@
         </td>
         <td class="truncate max-sm:hidden" title="{{ c.status_text }}">{{ c.status_text }}</td>
         <td class="truncate max-lg:hidden">{{ c.restarts if c.restarts is not none else "" }}</td>
-        <td class="truncate">{% if c.cpu_percent is not none %}{{ "%.1f"|format(c.cpu_percent) }}%{% endif %}</td>
-        <td class="truncate max-sm:hidden">{% if c.mem_bytes is not none %}{{ c.mem_bytes|filesize }}{% if c.mem_limit %} / {{ c.mem_limit|filesize }}{% endif %}{% endif %}</td>
+        {% set lines = history.containers.get(c.id, ([], [])) if history else ([], []) %}
+        <td class="truncate">{% if c.cpu_percent is not none %}{{ "%.1f"|format(c.cpu_percent) }}%{% endif %}{{ sparkline(lines[0], None, "block h-3 w-full", floor=1) }}</td>
+        <td class="truncate max-sm:hidden">{% if c.mem_bytes is not none %}{{ c.mem_bytes|filesize }}{% if c.mem_limit %} / {{ c.mem_limit|filesize }}{% endif %}{% endif %}{{ sparkline(lines[1], c.mem_limit, "block h-3 w-full") }}</td>
         <td class="truncate max-xl:hidden">{% if c.net_rx is not none %}{{ pair(c.net_rx, c.net_tx) }}{% endif %}</td>
         <td class="truncate max-xl:hidden">{% if c.block_read is not none %}{{ pair(c.block_read, c.block_write) }}{% endif %}</td>
         <td class="truncate max-lg:hidden">{{ c.ips[0][1] if c.ips else "" }}</td>

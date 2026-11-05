@@ -54,6 +54,15 @@ def event_counts(request: Request, db: Session) -> dict[int, tuple[int, int]]:
     return request.app.state.events.counts(db, today)
 
 
+def histories(request: Request, db: Session) -> dict[int, Any]:
+    """Each host's sparklines (hosts/status.py History), from the collector's memory."""
+    collector = request.app.state.status
+    return {
+        host_id: collector.history(host_id, containers=False)
+        for host_id in db.scalars(select(Host.id))
+    }
+
+
 def update_checks(request: Request) -> dict[int, Any]:
     """Each host's last check for newer images (updates/check.py), if it had one."""
     return request.app.state.updates.results()
@@ -85,6 +94,7 @@ def host_status(request: Request, auth: Viewer, db: Session = Depends(get_db)) -
         environments=environments(request, db, auth),
         event_counts=event_counts(request, db),
         update_checks=update_checks(request),
+        histories=histories(request, db),
     )
 
 
@@ -155,6 +165,7 @@ def home(request: Request, auth: Viewer, db: Session = Depends(get_db)) -> Respo
         "environments": environments(request, db, auth),
         "event_counts": event_counts(request, db),
         "update_checks": update_checks(request),
+        "histories": histories(request, db),
         "storage": [],
     }
     if auth.user.role >= Role.admin:  # the pages these link to are admins' too
