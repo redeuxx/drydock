@@ -141,7 +141,7 @@ from drydock.hosts.manager import HostManager, HostUnavailable
 from drydock.jobs import hooks, mounts, retention
 from drydock.jobs import targets as job_targets
 from drydock.jobs.runlog import RunLog, env_values, log_dir, log_path, public_names
-from drydock.models import Backup, Host, Job, Run, StorageTarget, Upload, utcnow
+from drydock.models import Backup, Host, Job, Run, StorageTarget, UpdatePolicy, Upload, utcnow
 from drydock.models import Hook as HookRow
 from drydock.restore import apply as restore_apply
 from drydock.restore import paths as restore_paths
@@ -596,6 +596,7 @@ class Dispatcher:
         self._owners: dict[str, str] = {}  # lock key: who holds it, for the log
         self._active: dict[int, ActiveRun] = {}
         self._jobs: set[int] = set()  # jobs with a queued or running run
+        self._policies: set[int] = set()  # update policies with a queued or running run
         self._chains: dict[int, int] = {}  # job: its runs not finished yet (one per target)
         self._last_stamp: dict[str, datetime] = {}
         self._stamp_lock = threading.Lock()
@@ -703,6 +704,27 @@ class Dispatcher:
         active.task = asyncio.create_task(
             self._execute_update(active, triggered_by), name=f"run-{run_id}"
         )
+        return run_id
+
+    async def submit_policy(self, policy_id: int, triggered_by: str | None) -> int:
+        """Queues the update an update policy describes (its container or stack, and the
+        backup first), and returns the run's ID. Raises DispatchError."""
+        self._check_open()
+        # Claimed on the event loop, so two fires (or clicks) cannot both pass.
+        if policy_id in self._policies:
+            raise DispatchError("This update policy already has a run in progress.")
+        self._policies.add(policy_id)
+        try:
+            run_id = await run_blocking(self._create_policy_run, policy_id, triggered_by)
+        except BaseException:
+            self._policies.discard(policy_id)
+            raise
+        active = ActiveRun(run_id, None)
+        self._active[run_id] = active
+        active.task = asyncio.create_task(
+            self._execute_update(active, triggered_by), name=f"run-{run_id}"
+        )
+        active.task.add_done_callback(lambda _: self._policies.discard(policy_id))
         return run_id
 
     async def execute_restore(
@@ -1813,6 +1835,7 @@ class Dispatcher:
         try:
             run_log(f"Update started by {triggered_by}.")
             host_id, container_ids, project = await run_blocking(self._load_update, run_id)
+            doc = await run_blocking(self._update_doc, run_id)
             host = await run_blocking(self._load_host, host_id)
             if host is None:
                 raise DispatchError("The host no longer exists.")
@@ -1826,6 +1849,12 @@ class Dispatcher:
                 api = handle.client.api
                 scope = await run_blocking(self._lock_scope, handle, host.id)
                 own = await run_blocking(inventory.own_ids, api)
+                if isinstance(doc.get("name"), str):  # a policy's container, by its name
+                    found = await run_blocking(restore_apply.by_name, api, doc["name"])
+                    # Exactly that name: Docker falls back to an ID prefix.
+                    if found is None or str(found.get("Name", "")).lstrip("/") != doc["name"]:
+                        raise DispatchError(f"Container {doc['name']} is not on the host.")
+                    container_ids = [str(found["Id"])]
                 # A stack's members are found again after the locks, like everything else.
                 if project is not None:
                     plan_now = functools.partial(
@@ -1848,6 +1877,11 @@ class Dispatcher:
                     )
                 planned = await run_blocking(plan_now)
                 if planned.plan is not None:
+                    # Only when there is something to update; it ends before the locks.
+                    label = project or str(doc.get("name") or "")
+                    await self._backup_first(doc, label, run_log)
+                    if active.cancel.is_set():
+                        raise Cancelled("The run was cancelled.")
                     keys = scoped(planned.plan.lock_keys, host.id, scope)
                     held = await self._acquire(keys, run_id, run_log)
                 active.started = True
@@ -2775,6 +2809,82 @@ class Dispatcher:
             db.flush()
             return run.id
 
+    def _create_policy_run(self, policy_id: int, triggered_by: str | None) -> int:
+        with self._sessions() as db, db.begin():
+            policy = db.get(UpdatePolicy, policy_id)
+            if policy is None or not policy.enabled:
+                raise DispatchError("The update policy is gone or disabled.")
+            update: dict[str, Any] = {
+                "host_id": policy.host_id,
+                "containers": [],
+                "policy_id": policy.id,
+                "stop_on_failed_backup": policy.stop_on_failed_backup,
+            }
+            if policy.target_type == "stack":
+                update["project"] = policy.target
+                label = f"stack {policy.target}"
+            else:
+                update["name"] = policy.target
+                label = policy.target
+            if policy.backup_job_id is not None:
+                update["backup_job_id"] = policy.backup_job_id
+            run = Run(
+                job_id=None,
+                kind="update",
+                status="queued",
+                triggered_by=triggered_by,
+                target_label=label[:300],
+                plan=json.dumps({"update": update}),
+            )
+            db.add(run)
+            db.flush()
+            return run.id
+
+    def _update_doc(self, run_id: int) -> dict[str, Any]:
+        with self._sessions() as db:
+            run = db.get(Run, run_id)
+            doc = json_object(run.plan if run is not None else None).get("update")
+        return doc if isinstance(doc, dict) else {}
+
+    def _job_run_statuses(self, first_run_id: int) -> list[tuple[int, str]]:
+        with self._sessions() as db:
+            return [
+                (run.id, run.status)
+                for run in db.scalars(
+                    select(Run)
+                    .where(or_(Run.id == first_run_id, Run.first_run_id == first_run_id))
+                    .order_by(Run.id)
+                )
+            ]
+
+    async def _backup_first(self, doc: dict[str, Any], label: str, run_log: RunLog) -> None:
+        """Runs the policy's backup job and waits for every run of it. Raises DispatchError
+        when it did not succeed and the policy says to stop then."""
+        job_id = doc.get("backup_job_id")
+        if not isinstance(job_id, int):
+            return
+        stop = doc.get("stop_on_failed_backup") is not False
+        run_log(f"Backing up first with job {job_id}.")
+        try:
+            first = await self.submit(job_id, f"the update of {label}")
+        except DispatchError as exc:
+            if stop:
+                raise DispatchError(f"The backup first did not start: {exc}") from None
+            run_log(f"The backup first did not start ({exc}); updating anyway.")
+            return
+        for run_id, _ in await run_blocking(self._job_run_statuses, first):
+            await self.wait(run_id)
+        ended = await run_blocking(self._job_run_statuses, first)
+        failed = [f"#{run_id} {status}" for run_id, status in ended if status != "done"]
+        if not failed:
+            run_log(f"The backup first is done (run #{first}).")
+            return
+        if stop:
+            raise DispatchError(
+                f"The backup first did not succeed ({', '.join(failed)}), so nothing was updated."
+            )
+        run_log(f"The backup first did not succeed ({', '.join(failed)}); updating anyway.")
+
     def _load_update(self, run_id: int) -> tuple[int, list[str], str | None]:
         with self._sessions() as db:
             run = db.get(Run, run_id)
@@ -2931,7 +3041,8 @@ class Dispatcher:
             run.status = status
             run.error = error
             run.finished_at = utcnow()
-            backup = run.kind == "backup"  # restores have no job to notify for
+            # Restores have no job to notify for; updates tell their policy's target.
+            backup = run.kind in ("backup", "update")
             # Before the commit: once the status changes, the log page stops polling.
             run_log(f"Run {status}." if error is None else f"Run {status}: {error}")
         if backup:

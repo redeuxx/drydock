@@ -4,7 +4,7 @@ Notable changes to drydock. Versions follow [semantic versioning](https://semver
 
 ## Unreleased
 
-**Upgrading:** this version changes the database (a new table, a new run kind), so copy the `drydock-data` volume first ([Upgrading](docs/operations.md#upgrading)). Pull the new `compose.yaml` before `docker compose up -d`: its socket proxy allows container logs (`ALLOW_LOGS=1`) for the logs page and events (`EVENTS=1`) for the activity record.
+**Upgrading:** this version changes the database (new tables, a new run kind), so copy the `drydock-data` volume first ([Upgrading](docs/operations.md#upgrading)). Pull the new `compose.yaml` before `docker compose up -d`: its socket proxy allows container logs (`ALLOW_LOGS=1`) for the logs page and events (`EVENTS=1`) for the activity record.
 
 ### Dashboard
 - Live container status: a card per host, for every role, with its containers by state, unhealthy containers by name, CPU and memory, images, volumes, networks and Compose stacks. Cards refresh every 10 seconds from what drydock last read, and drydock reads a host only while a page shows the cards, so pages never call Docker. It replaces the admins' list of hosts.
@@ -15,6 +15,7 @@ Notable changes to drydock. Versions follow [semantic versioning](https://semver
 - Container events from every host are recorded (created, started, died with its exit code, health results and more), always on, with nothing lost across short drops. Only a few fields are kept, never labels or exec commands; 30 days and at most 200,000 events. Each host's card counts them, and the Activity page lists them for every role, filtered by container, action, host and time range, refreshing every 5 seconds. Admins can clear it (audited, password asked again).
 - Newer images: drydock checks every 6 hours whether the registry has a newer image for each container's tag (without pulling) and marks those containers on the containers page and the dashboard. Operators can check a host at once. Pinned and locally built images are skipped.
 - Update a container to the newest image of its tag from the containers page (operators): drydock pulls it, makes the container again with the same configuration, and puts the old one back if the new one does not stay up or become healthy. Its own containers and helpers are never updated. Or update a whole Compose stack in dependency order, all or nothing. See [docs/updates.md](docs/updates.md).
+- Scheduled updates: update policies (Manage > Updates) update a container or a stack on a cron schedule, optionally after a backup by one of the jobs (stopping when it fails), and tell a notification target. Missed fires are audited like a job's. The containers page shows each container's policy and next run, and the dashboard's next runs include them.
 - Pages that poll in the background (the status cards, a run's live log) no longer count as activity: a tab left open cannot keep a session past its 1 hour idle timeout, and polls skip their turn while the tab is hidden.
 - Dismiss a failed or interrupted run from "Needs attention" (operators and up). The run, its log and the failure count stay.
 - Filter the run list by status. The "Failed" and "Running or queued" tiles open the list filtered to their runs.

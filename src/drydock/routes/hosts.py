@@ -32,7 +32,7 @@ from drydock.db import get_db
 from drydock.hosts import client as docker_client
 from drydock.hosts import inventory, ssh
 from drydock.hosts.manager import HostManager, HostUnavailable
-from drydock.models import Hook, Host, Job, utcnow
+from drydock.models import Hook, Host, Job, UpdatePolicy, utcnow
 from drydock.routes.auth import FormStr, client_ip
 from drydock.security.rbac import Role, require_recent_auth, require_role
 from drydock.security.sessions import Auth
@@ -517,6 +517,13 @@ def delete_host(
     if users:
         db.rollback()
         error = f"Jobs still use this host: {', '.join(users)}. Move or delete them first."
+        return edit_page(request, auth, get_host(db, host_id), 409, error=error)
+    policies = db.scalars(
+        select(UpdatePolicy.name).where(UpdatePolicy.host_id == host.id).order_by(UpdatePolicy.name)
+    ).all()
+    if policies:
+        db.rollback()
+        error = f"Update policies still use this host: {', '.join(policies)}. Delete them first."
         return edit_page(request, auth, get_host(db, host_id), 409, error=error)
     # The foreign key is RESTRICT: only a superadmin can remove what is bound here.
     bound = db.scalars(select(Hook.name).where(Hook.host_id == host.id).order_by(Hook.name)).all()

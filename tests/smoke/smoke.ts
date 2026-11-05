@@ -40,6 +40,8 @@ const PAGES = [
   "/backups",
   "/activity",
   "/logs",
+  "/updates",
+  "/updates/new",
   "/restore",
   "/reauth",
   "/does-not-exist",

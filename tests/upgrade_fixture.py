@@ -225,6 +225,20 @@ async def populate(browser: Browser) -> None:
                     expires_at=now + timedelta(days=36500),
                 )
             )
+        if hasattr(models, "UpdatePolicy"):  # added in revision 0018
+            db.add(
+                models.UpdatePolicy(
+                    name="web weekly",
+                    host_id=local,
+                    target_type="container",
+                    target="web",
+                    cron="0 4 * * 0",
+                    timezone="Europe/Berlin",
+                    backup_job_id=web,
+                    notify_target_id=ops,
+                    notify_success=True,
+                )
+            )
         if hasattr(models, "DockerEvent"):  # added in revision 0016
             db.add_all(
                 models.DockerEvent(

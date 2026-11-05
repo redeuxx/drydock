@@ -49,7 +49,7 @@ from drydock.config import Settings, known_zones
 from drydock.hosts.client import run_blocking
 from drydock.hosts.manager import HostManager
 from drydock.jobs.dispatcher import Dispatcher, DispatchError
-from drydock.models import Job, utcnow
+from drydock.models import Job, UpdatePolicy, utcnow
 from drydock.restore import uploads
 
 log = logging.getLogger("drydock.scheduler")
@@ -58,6 +58,7 @@ MISFIRE_GRACE = 3600  # seconds
 MAINTENANCE_ID = "system:maintenance"  # job schedules use their job ID, digits only
 MAINTENANCE_EVERY = timedelta(hours=1)
 MAINTENANCE_FIRST = timedelta(minutes=5)
+UPDATE_PREFIX = "update:"
 TRIGGERED_BY = "the schedule"  # has a space, so no username can look like it
 CRON_MAX = 100
 CRON_RE = re.compile(r"[0-9A-Za-z*/,\- ]{1,100}")
@@ -284,10 +285,20 @@ def ordinal(n: int) -> str:
 
 @dataclass(frozen=True)
 class Spec:
-    job_id: int
+    job_id: int  # the job's ID, or the update policy's (kind "update")
     cron: str
     tz: str
     since: datetime  # its last fire, or its last edit: fires before it are not missed
+    kind: str = "job"
+
+    @property
+    def key(self) -> str:
+        """Its scheduler job ID: a job's own ID, "update:<id>" for an update policy."""
+        return str(self.job_id) if self.kind == "job" else f"{UPDATE_PREFIX}{self.job_id}"
+
+    @property
+    def what(self) -> str:
+        return f"Job {self.job_id}" if self.kind == "job" else f"Update policy {self.job_id}"
 
 
 class Scheduler:
@@ -311,7 +322,7 @@ class Scheduler:
             },
             timezone=zoneinfo.ZoneInfo(settings.tz),
         )
-        self._specs: dict[int, tuple[str, str]] = {}
+        self._specs: dict[str, tuple[str, str]] = {}  # by Spec.key
         self._reload = asyncio.Lock()  # rebuilds apply in the order they load
         self._maintaining: asyncio.Task[Any] | None = None
         self.running = False
@@ -329,7 +340,7 @@ class Scheduler:
             try:
                 await self._catch_up(spec, now)
             except Exception:
-                log.exception("Catch-up of job %d failed", spec.job_id)
+                log.exception("Catch-up of %s failed", spec.what.lower())
         self._apply(specs, now)
         self._scheduler.add_job(
             self._maintain,
@@ -368,16 +379,21 @@ class Scheduler:
         job = self._scheduler.get_job(str(job_id)) if self.running else None
         return job.next_run_time if job is not None else None
 
+    def next_update_time(self, policy_id: int) -> datetime | None:
+        job = self._scheduler.get_job(f"{UPDATE_PREFIX}{policy_id}") if self.running else None
+        return job.next_run_time if job is not None else None
+
     def _apply(self, specs: list[Spec], now: datetime | None = None) -> None:
         """Adds, replaces and removes scheduler jobs. An unchanged one keeps its next run.
         With now (at start), each first fire is the first one after now."""
-        wanted = {spec.job_id: (spec.cron, spec.tz) for spec in specs}
+        wanted = {spec.key: spec for spec in specs}
         for job in self._scheduler.get_jobs():
-            if job.id.isdigit() and int(job.id) not in wanted:
+            if job.id != MAINTENANCE_ID and job.id not in wanted:
                 job.remove()
-                self._specs.pop(int(job.id), None)
-        for job_id, (cron, tz) in wanted.items():
-            if self._specs.get(job_id) == (cron, tz):
+                self._specs.pop(job.id, None)
+        for key, spec in wanted.items():
+            cron, tz = spec.cron, spec.tz
+            if self._specs.get(key) == (cron, tz):
                 continue
             schedule = trigger(cron, tz)
             first = {}
@@ -386,15 +402,15 @@ class Scheduler:
                 if fire is not None:
                     first["next_run_time"] = fire
             self._scheduler.add_job(
-                self._fire,
+                self._fire if spec.kind == "job" else self._fire_update,
                 schedule,
-                args=[job_id],
-                id=str(job_id),
-                name=f"job {job_id}",
+                args=[spec.job_id],
+                id=key,
+                name=spec.what.lower(),
                 replace_existing=True,
                 **first,
             )
-            self._specs[job_id] = (cron, tz)
+            self._specs[key] = (cron, tz)
 
     async def _fire(self, job_id: int) -> None:
         """Submits a scheduled run. The run row and jobs.last_fired_at are written in one
@@ -407,6 +423,17 @@ class Scheduler:
             log.warning("Scheduled run of job %d did not start: %s", job_id, exc)
             return
         log.info("Scheduled run %d of job %d", run_id, job_id)
+
+    async def _fire_update(self, policy_id: int) -> None:
+        """Submits a scheduled update; like _fire, a refused one still counts as fired."""
+        try:
+            run_id = await self._dispatcher.submit_policy(policy_id, TRIGGERED_BY)
+        except DispatchError as exc:
+            log.warning("Scheduled update of policy %d did not start: %s", policy_id, exc)
+            return
+        finally:
+            await run_blocking(self._mark_update_fired, policy_id, None)
+        log.info("Scheduled update run %d of policy %d", run_id, policy_id)
 
     async def _maintain(self) -> None:
         self._maintaining = asyncio.current_task()
@@ -436,19 +463,20 @@ class Scheduler:
         grace = now - timedelta(seconds=MISFIRE_GRACE)
         recent = first_fire(cron, max(since, grace), now)
         if recent is not None:
-            log.warning("Job %d missed its run at %s; starting it now", spec.job_id, recent)
-            await self._fire(spec.job_id)
+            log.warning("%s missed its run at %s; starting it now", spec.what, recent)
+            await (self._fire if spec.kind == "job" else self._fire_update)(spec.job_id)
             return
         missed = first_fire(cron, since, now)
         if missed is not None:
             log.warning(
-                "Job %d missed its run at %s while drydock was stopped; more than %d seconds "
+                "%s missed its run at %s while drydock was stopped; more than %d seconds "
                 "ago, so it does not run now",
-                spec.job_id,
+                spec.what,
                 missed,
                 MISFIRE_GRACE,
             )
-            await run_blocking(self._mark_fired, spec.job_id, missed)
+            mark = self._mark_fired if spec.kind == "job" else self._mark_update_fired
+            await run_blocking(mark, spec.job_id, missed)
 
     # DATABASE
 
@@ -467,7 +495,35 @@ class Scheduler:
                 continue
             since = max(job.updated_at, job.last_fired_at or job.updated_at)
             specs.append(Spec(job.id, job.cron or "", tz, since))
+        with self._sessions() as db:
+            policies = db.scalars(select(UpdatePolicy).where(UpdatePolicy.enabled)).all()
+        for policy in policies:
+            tz = policy.timezone or self._settings.tz
+            try:
+                checked(policy.cron, tz, now)
+            except CronError as exc:
+                log.error("Update policy %d has no valid schedule: %s", policy.id, exc)
+                continue
+            since = max(policy.updated_at, policy.last_fired_at or policy.updated_at)
+            specs.append(Spec(policy.id, policy.cron, tz, since, kind="update"))
         return specs
+
+    def _mark_update_fired(self, policy_id: int, missed: datetime | None) -> None:
+        """Records a policy's fire (or a missed fire found at startup, audited)."""
+        with self._sessions() as db, db.begin():
+            policy = db.get(UpdatePolicy, policy_id)
+            if policy is None:
+                return
+            policy.last_fired_at = utcnow()
+            if missed is not None:
+                audit.record(
+                    db,
+                    actor=None,
+                    action="update.schedule_missed",
+                    target=f"update_policy:{policy.id}",
+                    outcome="failure",
+                    details={"name": policy.name, "missed": missed.isoformat()},
+                )
 
     def _mark_fired(self, job_id: int, missed: datetime | None) -> None:
         """Records a fire (or a missed fire found at startup, audited)."""

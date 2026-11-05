@@ -27,6 +27,7 @@ never changes the run.
 
 import concurrent.futures
 import ipaddress
+import json
 import logging
 import re
 import threading
@@ -43,7 +44,15 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from drydock.config import Settings
 from drydock.crypto import Crypto, CryptoError
-from drydock.models import Host, Job, JobNotification, NotificationTarget, Run, StorageTarget
+from drydock.models import (
+    Host,
+    Job,
+    JobNotification,
+    NotificationTarget,
+    Run,
+    StorageTarget,
+    UpdatePolicy,
+)
 
 log = logging.getLogger("drydock.notify")
 # Apprise logs recipients, topics and partly masked URLs; drydock logs outcomes itself.
@@ -388,6 +397,9 @@ class Notifier:
         """(target name, url, title, body, failure) for each target to tell about the run."""
         with self._sessions() as db:
             run = db.get(Run, run_id)
+            if run is not None and run.kind == "update":
+                rows, title, body, failure = self._update_message(db, run)
+                return self._decrypted(run_id, rows, title, body, failure)
             if run is None or run.kind != "backup" or run.job_id is None:
                 return []
             failure = run.status in FAILURE_STATUSES
@@ -406,6 +418,42 @@ class Notifier:
                 )
             )
             title, body = message(run, job, db.get(Host, job.host_id), self._settings.base_url)
+        return self._decrypted(run_id, rows, title, body, failure)
+
+    def _update_message(self, db: Session, run: Run) -> tuple[list[Any], str, str, bool]:
+        """The target of the update policy that started the run (failures always, success
+        when the policy asks), and the message."""
+        failure = run.status in FAILURE_STATUSES
+        if not failure and run.status not in SUCCESS_STATUSES:
+            return [], "", "", failure
+        try:
+            doc = json.loads(run.plan or "{}").get("update")
+        except ValueError, AttributeError:
+            doc = None
+        policy_id = doc.get("policy_id") if isinstance(doc, dict) else None
+        policy = db.get(UpdatePolicy, policy_id) if isinstance(policy_id, int) else None
+        if (
+            policy is None
+            or policy.notify_target_id is None
+            or (not failure and not policy.notify_success)
+        ):
+            return [], "", "", failure
+        target = db.get(NotificationTarget, policy.notify_target_id)
+        if target is None or not target.enabled:
+            return [], "", "", failure
+        outcome = "succeeded" if run.status == "done" else run.status
+        subject = run.target_label or policy.name
+        lines = [f"Update run #{run.id} of {subject} ({policy.name}) {outcome}."]
+        if run.error:
+            error = run.error if len(run.error) <= MAX_ERROR else run.error[:MAX_ERROR] + "..."
+            lines.append(f"Error: {error}")
+        lines.append(f"{self._settings.base_url}/runs/{run.id}")
+        body = "\n".join(lines)
+        return [target], f"drydock: update of {subject} {outcome}", body, failure
+
+    def _decrypted(
+        self, run_id: int, rows: list[Any], title: str, body: str, failure: bool
+    ) -> list[tuple[str, str, str, str, bool]]:
         sends = []
         for target in rows:
             try:

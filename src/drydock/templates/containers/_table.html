@@ -20,6 +20,7 @@
   (None, "Ports", "w-32 max-lg:hidden"),
   ("stack", "Stack", "w-32 max-md:hidden"),
   (None, "Backup jobs", "w-36 max-lg:hidden"),
+  (None, "Auto-update", "w-36 max-xl:hidden"),
 ] %}
 {% set state_tones = {"running": "badge-success", "paused": "badge-warning", "restarting": "badge-warning", "exited": "badge-neutral", "dead": "badge-error", "created": "badge-info"} %}
 {% set health_tones = {"healthy": "bg-success", "unhealthy": "bg-error", "starting": "bg-warning"} %}
@@ -47,6 +48,9 @@
 {% macro pair(a, b) %}{% if a is none and b is none %}<span class="opacity-50">n/a</span>{% else %}{{ a|filesize or "0 bytes" }} / {{ b|filesize or "0 bytes" }}{% endif %}{% endmacro %}
 {% macro port_list(ports, linked) -%}
 {% for p in ports %}{% if linked and p.protocol == "tcp" and not p.loopback %}<a class="link relative z-10" href="{{ linked }}:{{ p.public }}" target="_blank" rel="noopener noreferrer">{{ p.public }}</a>{% else %}{{ p.public }}{% endif %}&rarr;{{ p.private }}/{{ p.protocol }}{% if not loop.last %}, {% endif %}{% endfor %}
+{%- endmacro %}
+{% macro policy_list(found) -%}
+{% for policy, when in found %}<span title="{{ 'next ' ~ when|stamp(False) if when else 'disabled' }}">{{ policy.name }}{% if not policy.enabled %} (disabled){% endif %}</span>{% if not loop.last %}, {% endif %}{% endfor %}
 {%- endmacro %}
 {% macro job_links(jobs) -%}
 {% for job in jobs %}<a class="link relative z-10" href="/jobs/{{ job.id }}">{{ job.name }}</a>{% if not job.enabled %} (disabled){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
@@ -159,6 +163,7 @@
         <td class="truncate max-lg:hidden">{{ port_list(c.ports, port_base) }}</td>
         <td class="truncate max-md:hidden">{{ c.project or "" }}</td>
         <td class="truncate max-lg:hidden">{{ job_links(jobs) }}</td>
+        <td class="truncate max-xl:hidden">{{ policy_list(auto_update.get(c.id, [])) }}</td>
         {% if operator %}
         <td><div class="relative z-10 flex flex-wrap gap-1">
           {%- if c.state in ("exited", "created", "dead") %}{{ act(c, "start", "Start") }}{% endif %}
@@ -197,6 +202,8 @@
       <dt class="font-semibold">Ports</dt><dd class="break-all">{{ port_list(c.ports, port_base) }}</dd>
       <dt class="font-semibold">Stack</dt><dd class="break-all">{% if c.project %}{{ c.project }}{% if c.service %} (service {{ c.service }}){% endif %}{% endif %}</dd>
       <dt class="font-semibold">Backup jobs</dt><dd>{{ job_links(jobs) if jobs else "None" }}</dd>
+      {% set found = auto_update.get(c.id, []) %}
+      <dt class="font-semibold">Auto-update</dt><dd>{% for policy, when in found %}{{ policy.name }}{% if when %}, next {{ when|stamp(False) }}{% elif not policy.enabled %} (disabled){% endif %}{% if not loop.last %}<br>{% endif %}{% else %}None{% endfor %}</dd>
     </dl>
     {% if admin %}
     {# Loaded on demand: it calls Docker. Environment values and secret-looking labels are

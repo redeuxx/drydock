@@ -49,6 +49,7 @@ from drydock.models import (
     NotificationTarget,
     Run,
     StorageTarget,
+    UpdatePolicy,
     utcnow,
 )
 from drydock.routes.auth import FormStr, client_ip
@@ -1142,6 +1143,17 @@ def delete_job(
         db.rollback()
         error = "This job has a run in progress. Cancel it or wait for it to finish."
         return job_page(request, db, auth, job, 409, EDIT, error=error)
+    # An update policy would quietly lose its backup first.
+    policies = db.scalars(
+        select(UpdatePolicy.name).where(UpdatePolicy.backup_job_id == job.id)
+    ).all()
+    if policies:
+        db.rollback()
+        error = (
+            f"Update policies back up with this job first: {', '.join(policies)}. "
+            "Change them first."
+        )
+        return job_page(request, db, auth, get_job(db, job_id), 409, EDIT, error=error)
     audit.record(
         db,
         actor=auth.user.username,

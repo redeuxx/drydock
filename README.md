@@ -76,6 +76,7 @@ The dashboard shows each host's containers live (running, stopped, unhealthy, CP
 - [Hosts](docs/hosts.md): the local socket proxy, remote hosts over SSH and helper containers.
 - [Backups](docs/backups.md): storage, jobs, consistency modes, stacks, hooks, schedules, retention, notifications and the archive format.
 - [Restore](docs/restore.md): restore modes, what needs a superadmin, and the host-path denylist.
+- [Hosts](docs/hosts.md#container-status) also covers the live container status, logs and activity; [Container updates](docs/updates.md): updating containers and stacks to newer images, on demand or on a schedule.
 - [Running drydock](docs/operations.md): backing up drydock itself, upgrading and container hardening.
 - [Threat model](docs/threat-model.md), [SECURITY.md](SECURITY.md) and [CHANGELOG.md](CHANGELOG.md).
 - [Development](docs/development.md): dev loop, tests, CI and releases. [Measurements](docs/measurements.md): Phase 1 and 2 results.

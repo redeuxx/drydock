@@ -35,7 +35,7 @@ from drydock.hosts.helper import HELPER_LABEL
 from drydock.hosts.inventory import PROJECT_LABEL
 from drydock.hosts.status import ContainerStatus
 from drydock.jobs.dispatcher import DispatchError, lock_scope, name_key
-from drydock.models import Host, Job, JobTarget
+from drydock.models import Host, Job, JobTarget, UpdatePolicy
 from drydock.routes.auth import client_ip
 from drydock.routes.hosts import DOCKER_ERRORS, open_host, release, target
 from drydock.security.rbac import Role, require_role
@@ -219,6 +219,7 @@ def page(
         "verdicts": {},
         "notice": notice,  # (text, whether it went well) after a check for updates
         "stack_newer": 0,  # members of the filtered stack with a newer image
+        "auto_update": {},  # container ID: [(update policy, its next run)]
     }
     if chosen is not None:
         snap = collector.snapshot(chosen.id)
@@ -248,6 +249,18 @@ def page(
             if query:
                 rows = [c for c in rows if matches(c, query.lower(), admin)]
             context["rows"] = sort_rows(rows, sort, order == "desc")
+            policies = list(
+                db.scalars(select(UpdatePolicy).where(UpdatePolicy.host_id == chosen.id))
+            )
+            scheduler = request.app.state.scheduler
+            context["auto_update"] = {
+                c.id: [
+                    (p, scheduler.next_update_time(p.id) if p.enabled else None)
+                    for p in policies
+                    if (p.target_type, p.target) in (("container", c.name), ("stack", c.project))
+                ]
+                for c in context["rows"]
+            }
             covers = covering_jobs(db, chosen.id)
             context["jobs_of"] = {
                 c.id: list(

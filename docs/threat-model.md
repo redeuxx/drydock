@@ -651,6 +651,16 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 - `tests/test_restore_dispatch.py::test_startup_recovery_rolls_back_an_interrupted_update`
 - `tests/test_updates_docker.py::test_a_stack_update_is_all_or_nothing`
 
+### T46. Update policies as a way to change containers unattended
+
+**Threat:** an operator or a forged request schedules updates of containers it should not touch, or a policy updates without the backup it promised.
+**Defence:** only admins create, edit and delete update policies; operators may only run one now. Every change and every run is audited with a CSRF token checked. A policy's backup job must back up that very container or stack on that host, and by default a backup first that does not end done stops the update. Scheduled runs go through the same engine, refusals and locks as an update by hand (T45).
+**Tests:**
+- `tests/test_update_policies.py::test_policies_need_their_roles_and_are_audited`
+- `tests/test_update_policies.py::test_the_form_refuses_what_cannot_work`
+- `tests/test_update_policies.py::test_run_now_is_for_operators_and_audited`
+- `tests/test_update_policies.py::test_the_backup_first_must_succeed_unless_told_otherwise`
+
 ## Accepted risks
 
 These are known limits of v1. The README and docs/ explain each one to operators; no test can remove them.

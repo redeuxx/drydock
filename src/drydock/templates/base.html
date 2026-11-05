@@ -24,7 +24,7 @@
       <a href="/" class="mr-2 flex items-center gap-2 text-xl font-bold tracking-tight">{{ logo() }}Drydock</a>
       {% if auth %}
       {% set current = request.url.path %}
-      {% set manage = [("/jobs", "Jobs", Role.viewer), ("/runs", "Runs", Role.viewer), ("/backups", "Backups", Role.viewer), ("/restore", "Restore", Role.admin), ("/hooks", "Hooks", Role.admin), ("/hosts", "Hosts", Role.admin), ("/storage", "Storage", Role.admin)] %}
+      {% set manage = [("/jobs", "Jobs", Role.viewer), ("/runs", "Runs", Role.viewer), ("/backups", "Backups", Role.viewer), ("/updates", "Updates", Role.operator), ("/restore", "Restore", Role.admin), ("/hooks", "Hooks", Role.admin), ("/hosts", "Hosts", Role.admin), ("/storage", "Storage", Role.admin)] %}
       {% set ns = namespace(manage_active=false) %}
       {% for href, label, minimum in manage %}{% if current == href or current.startswith(href + "/") %}{% set ns.manage_active = true %}{% endif %}{% endfor %}
       <nav aria-label="Main">

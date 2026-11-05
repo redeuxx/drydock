@@ -78,12 +78,12 @@
       <h2 id="next-heading" class="card-title">Next scheduled runs</h2>
       {% if upcoming %}
       <ul class="flex flex-col gap-1 text-sm">
-        {% for when, job in upcoming %}
-        <li><a class="link" href="/jobs/{{ job.id }}">{{ job.name }}</a> <span class="opacity-70">{{ when|stamp(False) }}</span></li>
+        {% for when, name, link in upcoming %}
+        <li>{% if link %}<a class="link" href="{{ link }}">{{ name }}</a>{% else %}{{ name }}{% endif %} <span class="opacity-70">{{ when|stamp(False) }}</span></li>
         {% endfor %}
       </ul>
       {% else %}
-      <p class="text-sm opacity-70">No enabled job has a schedule.</p>
+      <p class="text-sm opacity-70">No enabled job or update policy has a schedule.</p>
       {% endif %}
     </div>
   </section>

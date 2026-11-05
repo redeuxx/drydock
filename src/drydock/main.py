@@ -52,6 +52,7 @@ from drydock.routes import (
     runs,
     storage,
     system,
+    updates,
     users,
 )
 from drydock.security.headers import BodySizeLimitMiddleware, SecurityHeadersMiddleware
@@ -343,6 +344,7 @@ def create_app(settings: Settings) -> FastAPI:
         containers,
         logs,
         activity,
+        updates,
     )
     for module in routers:
         app.include_router(module.router)

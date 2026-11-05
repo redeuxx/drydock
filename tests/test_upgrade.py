@@ -109,13 +109,19 @@ async def test_a_populated_database_upgrades(tmp_path: Path, fixture: Path) -> N
             "restore_id": first("SELECT min(id) FROM runs WHERE kind = 'restore'"),
             "target_id": first("SELECT min(id) FROM notification_targets"),
         }
+        policies = browser.sql("SELECT min(id) FROM update_policies")[0][0]
         viewer = first("SELECT id FROM users WHERE username = 'viewer'")
         hosts = [host_id for (host_id,) in browser.sql("SELECT id FROM hosts")]
         for method, path, _route in api_routes(browser.app):
             if method != "GET" or path in GET_WRITE_EXEMPTIONS:
                 continue
-            # /setup is gone once a superadmin exists; the log routes need a container.
+            # /setup is gone once a superadmin exists; the log routes need a container; a
+            # database from before 0018 holds no update policy.
             expected = 404 if path in ("/setup", "/logs/lines", "/logs/download") else 200
+            if "{policy_id}" in path:
+                if policies is None:
+                    expected = 404
+                ids["policy_id"] = policies or 999999
             for host_id in hosts if "{host_id}" in path else hosts[:1]:
                 url = fill(path, viewer, host_id=host_id, container_id="a" * 64, **ids)
                 response = await browser.get(url)

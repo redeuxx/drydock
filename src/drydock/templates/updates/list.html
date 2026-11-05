@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% from "_macros.html" import submit %}
+{% block title %}Update policies{% endblock %}
+{% block content %}
+<div class="mb-4 flex flex-wrap items-center gap-3">
+  <h1 class="text-3xl font-bold">Update policies</h1>
+  {% if auth.user.role >= Role.admin %}<a href="/updates/new" class="btn btn-primary ml-auto">New update policy</a>{% endif %}
+</div>
+<p class="mb-4 text-sm opacity-70">Scheduled updates of a container or a Compose stack to the newest image of its tag, each put back if the new container does not stay up or become healthy (<a class="link" href="https://github.com/redeuxx/drydock/blob/main/docs/updates.md" target="_blank" rel="noopener noreferrer">how it works</a>). Update one container at once from the containers page.</p>
+<div class="overflow-hidden rounded-box border border-base-300 bg-base-100">
+  <table class="table table-zebra table-sm table-fixed w-full">
+    <thead><tr>
+      <th scope="col" class="w-40">Name</th>
+      <th scope="col">Updates</th>
+      <th scope="col" class="max-md:hidden">Schedule</th>
+      <th scope="col" class="w-48 max-lg:hidden">Next run</th>
+      <th scope="col" class="w-40 max-lg:hidden">Backup first</th>
+      <th scope="col" class="w-36"></th>
+    </tr></thead>
+    <tbody>
+      {% for p, label, when in rows %}
+      <tr>
+        <td class="truncate font-semibold" title="{{ p.name }}">{% if auth.user.role >= Role.admin %}<a class="link" href="/updates/{{ p.id }}">{{ p.name }}</a>{% else %}{{ p.name }}{% endif %}{% if not p.enabled %} <span class="badge badge-soft badge-neutral badge-sm">disabled</span>{% endif %}</td>
+        <td class="truncate" title="{{ p.target_type }} {{ p.target }} on {{ hosts.get(p.host_id, '') }}">{{ "Stack" if p.target_type == "stack" else "Container" }} <a class="link" href="/containers?{{ ({'host': p.host_id, 'q': p.target} if p.target_type == 'container' else {'host': p.host_id, 'stack': p.target})|urlencode }}">{{ p.target }}</a> <span class="opacity-70">on {{ hosts.get(p.host_id, "") }}</span></td>
+        <td class="truncate max-md:hidden" title="{{ p.cron }}">{{ label }}</td>
+        <td class="truncate max-lg:hidden">{{ when|stamp(False) if when else "" }}</td>
+        <td class="truncate max-lg:hidden">{{ jobs.get(p.backup_job_id, "") if p.backup_job_id else "No" }}</td>
+        <td>{% if p.enabled %}
+          <form method="post" action="/updates/{{ p.id }}/run" hx-post="/updates/{{ p.id }}/run" hx-confirm="Run update policy {{ p.name }} now?" hx-nonce="{{ csp_nonce }}">
+            <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+            {{ submit("Run now", "btn-xs", p.name) }}
+          </form>
+        {% endif %}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6">No update policies yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

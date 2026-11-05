@@ -29,6 +29,7 @@ OPEN = ("queued", "verifying", "running", "awaiting_confirmation")
 ALERTS = {
     "host.hostkey_mismatch": ("Host key mismatch on host {id}", "/hosts/{id}"),
     "job.schedule_missed": ("A scheduled run of job {id} was missed", "/jobs/{id}"),
+    "update.schedule_missed": ("A scheduled update of policy {id} was missed", "/updates/{id}"),
     "storage.oauth_revoked": ("Google Drive storage {id} needs reconnecting", "/storage/{id}"),
 }
 
@@ -160,7 +161,7 @@ def alert_item(event: AuditEvent, since: datetime) -> Item:
     title, link = ALERTS[event.action]
     _, _, ident = (event.target or "").partition(":")
     ident = ident if ident.isdigit() else "?"
-    level = "warning" if event.action == "job.schedule_missed" else "error"
+    level = "warning" if event.action.endswith(".schedule_missed") else "error"
     return Item(
         event.ts,
         level,

@@ -18,7 +18,17 @@ from drydock import audit, feed, templating
 from drydock.archive.writer import AGE_DIR
 from drydock.db import get_db
 from drydock.jobs.targets import MAX_TARGETS
-from drydock.models import AuditEvent, Backup, Host, Job, Run, StorageTarget, User, utcnow
+from drydock.models import (
+    AuditEvent,
+    Backup,
+    Host,
+    Job,
+    Run,
+    StorageTarget,
+    UpdatePolicy,
+    User,
+    utcnow,
+)
 from drydock.routes.auth import client_ip, safe_next
 from drydock.routes.hosts import target
 from drydock.security.rbac import Role, require_role
@@ -113,13 +123,21 @@ def home(request: Request, auth: Viewer, db: Session = Depends(get_db)) -> Respo
         select(func.count()).select_from(Run).where(Run.status.in_(("queued", "running")))
     )
     scheduler = request.app.state.scheduler
+    operator = auth.user.role >= Role.operator
+    # (when, name, link): jobs and update policies together.
     upcoming = sorted(
-        (
-            (when, job)
+        [
+            (when, job.name, f"/jobs/{job.id}")
             for job in jobs
             if job.enabled and job.cron and (when := scheduler.next_run_time(job.id)) is not None
-        ),
-        key=lambda pair: pair[0],
+        ]
+        + [
+            # The update pages are for operators and up.
+            (when, f"Update: {policy.name}", "/updates" if operator else None)
+            for policy in db.scalars(select(UpdatePolicy).where(UpdatePolicy.enabled))
+            if (when := scheduler.next_update_time(policy.id)) is not None
+        ],
+        key=lambda entry: entry[0],
     )[:NEXT_RUNS]
     backups = db.execute(select(func.count(), func.coalesce(func.sum(Backup.size), 0))).one()
     context: dict[str, Any] = {

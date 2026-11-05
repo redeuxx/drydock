@@ -20,7 +20,7 @@ from drydock.hosts.manager import HostManager
 from drydock.hosts.status import ContainerStatus, HostSnapshot
 from drydock.jobs.dispatcher import Dispatcher, Target
 from drydock.jobs.runlog import RunLog, log_path
-from drydock.models import Backup, Run, utcnow
+from drydock.models import Backup, Run, UpdatePolicy, utcnow
 from drydock.notify import Notifier
 from drydock.restore import apply as restore_apply
 from drydock.restore import plan as restore_plan
@@ -103,6 +103,10 @@ EXPECTED_MIN_ROLE = [
     ({"GET"}, re.compile(r"^/containers/[^/]+/[^/]+/inspect$"), Role.admin),
     ({"GET"}, re.compile(r"^/logs"), Role.admin),
     ({"POST"}, re.compile(r"^/activity/clear$"), Role.admin),
+    ({"GET", "POST"}, re.compile(r"^/updates/new$"), Role.admin),
+    ({"POST"}, re.compile(r"^/updates/[^/]+/run$"), Role.operator),
+    ({"GET"}, re.compile(r"^/updates$"), Role.operator),
+    ({"GET", "POST"}, re.compile(r"^/updates"), Role.admin),
     ({"GET", "POST"}, re.compile(r".*"), Role.viewer),
 ]
 # Every route the app serves. A new route fails this test until it is added here,
@@ -127,6 +131,13 @@ INVENTORY = {
     ("GET", "/logs/download"),
     ("GET", "/activity"),
     ("POST", "/activity/clear"),
+    ("GET", "/updates"),
+    ("POST", "/updates"),
+    ("GET", "/updates/new"),
+    ("GET", "/updates/{policy_id}"),
+    ("POST", "/updates/{policy_id}"),
+    ("POST", "/updates/{policy_id}/delete"),
+    ("POST", "/updates/{policy_id}/run"),
     ("POST", "/feed/read"),
     ("GET", "/about"),
     ("GET", "/hosts"),
@@ -254,6 +265,7 @@ def fill(path: str, user_id: int, **ids: int) -> str:
         "target_id",
         "upload_id",
         "container_id",
+        "policy_id",
     ):
         path = path.replace("{" + name + "}", str(ids.get(name, user_id)))
     return path.replace("{user_id}", str(user_id))
@@ -390,8 +402,12 @@ async def add_backup_objects(browser: Browser, host_id: int) -> dict[str, int]:
         )
         db.add_all([run, restore])
         db.add(Backup(job_id=job_id, storage_target_id=storage_id, name="a", size=1, sha256="0"))
+        policy = UpdatePolicy(
+            name="weekly", host_id=host_id, target_type="container", target="web", cron="0 4 * * 0"
+        )
+        db.add(policy)
         db.flush()
-        run_id, restore_id = run.id, restore.id
+        run_id, restore_id, policy_id = run.id, restore.id, policy.id
     RunLog(log_path(browser.settings.data_dir, run_id))("A line.")
     return {
         "storage_id": storage_id,
@@ -400,6 +416,7 @@ async def add_backup_objects(browser: Browser, host_id: int) -> dict[str, int]:
         "run_id": run_id,
         "restore_id": restore_id,
         "target_id": target_id,
+        "policy_id": policy_id,
     }
 
 
@@ -768,6 +785,36 @@ AUDITED_SUCCESS = [
     ("/runs/{run_id}/dismiss", {}, "run.dismiss", 303),
     ("/hooks/{hook_id}/delete", {}, "hook.delete", 303),
     ("/storage/{storage_id}/delete", {}, "storage.delete", 303),
+    (
+        "/updates",
+        {
+            "name": "nightly",
+            "host_id": "{host_id}",
+            "target_type": "container",
+            "target": "web",
+            "cron_preset": "custom",
+            "cron": "0 4 * * 0",
+            "enabled": "1",
+        },
+        "update_policy.create",
+        303,
+    ),
+    (
+        "/updates/{policy_id}",
+        {
+            "name": "nightly",
+            "host_id": "{host_id}",
+            "target_type": "stack",
+            "target": "app",
+            "cron_preset": "custom",
+            "cron": "0 5 * * 0",
+        },
+        "update_policy.update",
+        303,
+    ),
+    # Docker's side faked (Dispatcher.submit_policy): a run starts.
+    ("/updates/{policy_id}/run", {}, "update_policy.run", 303),
+    ("/updates/{policy_id}/delete", {}, "update_policy.delete", 303),
     ("/activity/clear", {"host": "{host_id}"}, "activity.clear", 303),
     ("/hosts/{host_id}/delete", {}, "host.delete", 303),
     ("/reauth", {"password": PASSWORD, "next": "/"}, "auth.reauth", 303),
@@ -879,7 +926,11 @@ async def test_every_unsafe_route_audits_its_success(fresh: Browser, monkeypatch
     async def queued(host_id, ids, by, label, *, project=None) -> int:
         return 1
 
+    async def policy_queued(policy_id, by) -> int:
+        return 1
+
     monkeypatch.setattr(fresh.app.state.dispatcher, "submit_update", queued)
+    monkeypatch.setattr(fresh.app.state.dispatcher, "submit_policy", policy_queued)
     app_stack = HostSnapshot(
         host_id=0,
         taken_at=utcnow(),
@@ -983,6 +1034,8 @@ async def test_every_unsafe_route_audits_its_success(fresh: Browser, monkeypatch
         assert response.status_code == status, f"POST {path}: {response.status_code}"
         if path in names:
             ids[names[path]] = int(response.headers["location"].rsplit("/", 1)[1])
+        if path == "/updates":  # it lands on the list, not the policy
+            ids["policy_id"] = fresh.sql("SELECT max(id) FROM update_policies")[0][0]
         if path == "/jobs/{job_id}/run":
             ids["run_id"] = int(response.headers["location"].rsplit("/", 1)[1])
         if path == "/restore/from-storage":

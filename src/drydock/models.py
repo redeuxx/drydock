@@ -309,6 +309,39 @@ class JobNotification(Base):
     on_failure: Mapped[bool] = mapped_column(default=True)
 
 
+class UpdatePolicy(Base):
+    """A scheduled update of a container or a Compose stack (updates/apply.py), optionally
+    after a backup by one of the jobs, telling a notification target how it went."""
+
+    __tablename__ = "update_policies"
+    __table_args__ = (
+        CheckConstraint(
+            in_list("target_type", TARGET_TYPES), name="ck_update_policies_target_type"
+        ),
+        {"sqlite_autoincrement": True},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(64, collation="NOCASE"), unique=True)
+    host_id: Mapped[int] = mapped_column(ForeignKey("hosts.id", ondelete="RESTRICT"), index=True)
+    target_type: Mapped[str] = mapped_column(String(16))
+    target: Mapped[str] = mapped_column(String(255))  # a container's name, or a project's
+    cron: Mapped[str] = mapped_column(String(100))
+    timezone: Mapped[str | None] = mapped_column(String(64), default=None)  # None: TZ
+    backup_job_id: Mapped[int | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="SET NULL"), default=None
+    )
+    stop_on_failed_backup: Mapped[bool] = mapped_column(default=True)
+    notify_target_id: Mapped[int | None] = mapped_column(
+        ForeignKey("notification_targets.id", ondelete="SET NULL"), default=None
+    )
+    notify_success: Mapped[bool] = mapped_column(default=False)  # failures always tell
+    enabled: Mapped[bool] = mapped_column(default=True)
+    last_fired_at: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
 class Hook(Base):
     """Runs argv through exec in one container of a job's targets.
 

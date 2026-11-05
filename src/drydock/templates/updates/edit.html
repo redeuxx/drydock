@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% from "_macros.html" import alerts, submit %}
+{% block title %}{% if policy %}Edit update policy {{ policy.name }}{% else %}New update policy{% endif %}{% endblock %}
+{% block content %}
+<div class="mb-4 flex flex-wrap items-center gap-3">
+  <h1 class="text-3xl font-bold break-all">{% if policy %}Edit update policy {{ policy.name }}{% else %}New update policy{% endif %}</h1>
+  <a href="/updates" class="btn btn-ghost ml-auto">Back to the policies</a>
+</div>
+<section class="card bg-base-100 shadow-sm">
+  <div class="card-body">
+    {{ alerts(errors) }}
+    <p class="text-sm opacity-70">On its schedule, drydock updates the container, or every container of the stack that has a newer image, as described in <a class="link" href="https://github.com/redeuxx/drydock/blob/main/docs/updates.md" target="_blank" rel="noopener noreferrer">docs/updates.md</a>: it is put back if the new one does not stay up or become healthy. A tag like <code>latest</code> can move to a new major version: pin minor version tags for what matters.</p>
+    <form method="post" action="/updates{% if policy %}/{{ policy.id }}{% endif %}" hx-post="/updates{% if policy %}/{{ policy.id }}{% endif %}" hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-1">
+      <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+      <label class="label text-sm" for="policy-enabled"><input id="policy-enabled" type="checkbox" class="checkbox checkbox-sm" name="enabled" value="1"{% if form.enabled %} checked{% endif %}> Enabled</label>
+      <label class="fieldset-legend" for="policy-name">Name</label>
+      <input id="policy-name" class="input w-full" name="name" value="{{ form.name }}" maxlength="64" required>
+      <label class="fieldset-legend" for="policy-host">Host</label>
+      <select id="policy-host" class="select w-full" name="host_id" required>
+        <option value="">Choose a host</option>
+        {% for h in hosts %}<option value="{{ h.id }}"{% if form.host_id == h.id|string %} selected{% endif %}>{{ h.name }}</option>{% endfor %}
+      </select>
+      <fieldset class="fieldset">
+        <legend class="fieldset-legend">What to update</legend>
+        <label class="label text-sm"><input type="radio" class="radio radio-sm" name="target_type" value="container"{% if form.target_type == "container" %} checked{% endif %}> A container</label>
+        <label class="label text-sm"><input type="radio" class="radio radio-sm" name="target_type" value="stack"{% if form.target_type == "stack" %} checked{% endif %}> A Compose stack (every container with a newer image, in dependency order, all or nothing)</label>
+        <label class="label text-sm" for="policy-target">Container name or Compose project</label>
+        <input id="policy-target" class="input w-full" name="target" value="{{ form.target }}" maxlength="255" required>
+      </fieldset>
+      <div class="fieldset" data-schedule>
+        <label class="fieldset-legend" for="policy-cron-preset">Schedule</label>
+        <select id="policy-cron-preset" class="select w-full" name="cron_preset" data-cron-preset>
+          {% for value, label in presets.items() %}<option value="{{ value }}"{% if form.cron_preset == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select>
+        <div data-cron-custom>
+          <label class="label text-sm" for="policy-cron">Cron expression</label>
+          <input id="policy-cron" class="input w-full font-mono" name="cron" value="{{ form.cron }}" autocomplete="off" maxlength="100" placeholder="0 4 * * 0">
+        </div>
+        <label class="label text-sm" for="policy-timezone">Time zone</label>
+        <select id="policy-timezone" class="select w-full" name="timezone">
+          <option value=""{% if not form.timezone %} selected{% endif %}>Drydock's time zone ({{ default_tz }})</option>
+          {% if form.timezone and form.timezone not in zones %}<option value="{{ form.timezone }}" selected>{{ form.timezone }} (no longer listed)</option>{% endif %}
+          {% for zone in zones %}<option value="{{ zone }}"{% if form.timezone == zone %} selected{% endif %}>{{ zone }}</option>{% endfor %}
+        </select>
+        <div id="policy-cron-preview" class="text-sm" aria-live="polite" aria-busy="true" hx-get="/jobs/cron-preview" hx-trigger="load, change from:#policy-cron-preset, input changed delay:400ms from:#policy-cron, change from:#policy-timezone" hx-include="#policy-cron-preset, #policy-cron, #policy-timezone" hx-target="this" hx-select="#cron-preview" hx-swap="innerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}"></div>
+      </div>
+      <label class="fieldset-legend" for="policy-backup">Back up first</label>
+      <select id="policy-backup" class="select w-full" name="backup_job_id">
+        <option value="">No backup first</option>
+        {% for job in jobs %}<option value="{{ job.id }}"{% if form.backup_job_id == job.id|string %} selected{% endif %}>{{ job.name }}</option>{% endfor %}
+      </select>
+      <p class="label whitespace-normal">A job that backs up this container or stack on this host. Drydock runs it and waits for every one of its targets.</p>
+      <label class="label text-sm"><input type="checkbox" class="checkbox checkbox-sm" name="stop_on_failed_backup" value="1"{% if form.stop_on_failed_backup %} checked{% endif %}> Do not update when the backup first fails</label>
+      <label class="fieldset-legend" for="policy-notify">Tell</label>
+      <select id="policy-notify" class="select w-full" name="notify_target_id">
+        <option value="">Nobody</option>
+        {% for t in targets %}<option value="{{ t.id }}"{% if form.notify_target_id == t.id|string %} selected{% endif %}>{{ t.name }}</option>{% endfor %}
+      </select>
+      <label class="label text-sm"><input type="checkbox" class="checkbox checkbox-sm" name="notify_success" value="1"{% if form.notify_success %} checked{% endif %}> Also when it succeeds (failures are always told)</label>
+      <div class="mt-2">{{ submit("Save") }}</div>
+    </form>
+    {% if policy %}
+    <form method="post" action="/updates/{{ policy.id }}/delete" hx-post="/updates/{{ policy.id }}/delete" hx-confirm="Delete update policy {{ policy.name }}? Its past runs stay." hx-nonce="{{ csp_nonce }}" class="mt-4">
+      <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+      {{ submit("Delete", "btn-error btn-outline") }}
+    </form>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}
