@@ -3,6 +3,7 @@
 from datetime import UTC, datetime
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -85,6 +86,30 @@ class AuditEvent(Base):
     target: Mapped[str | None] = mapped_column(String(255))
     outcome: Mapped[str] = mapped_column(String(16))
     details: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class DockerEvent(Base):
+    """A container event from a host's Docker daemon (hosts/events.py): only the fields
+    the activity page shows, never labels or commands. Not append-only: retention prunes
+    it and admins may clear it. A deleted host's events go with it."""
+
+    __tablename__ = "docker_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "host_id", "time_ns", "container_id", "action", name="uq_docker_events_event"
+        ),
+        Index("ix_docker_events_time", "time_ns", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    host_id: Mapped[int] = mapped_column(ForeignKey("hosts.id", ondelete="CASCADE"))
+    time_ns: Mapped[int] = mapped_column(BigInteger)  # Docker's timeNano
+    action: Mapped[str] = mapped_column(String(32))
+    container_id: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(255))
+    image: Mapped[str] = mapped_column(String(255))
+    exit_code: Mapped[int | None] = mapped_column(Integer)
+    health: Mapped[str | None] = mapped_column(String(16))
 
 
 class Host(Base):

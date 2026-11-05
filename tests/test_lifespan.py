@@ -50,6 +50,7 @@ async def go():
             "scheduler": app.state.scheduler.running,
             "rclone": app.state.rclone.pid is not None,
             "status": app.state.status.running,
+            "events": app.state.events.running,
         }))
 
 asyncio.run(go())
@@ -64,6 +65,7 @@ async def test_primary_process_runs_startup_hooks(settings: Settings, monkeypatc
         assert calls == [browser.app]
         assert browser.app.state.scheduler.running
         assert browser.app.state.status.running
+        assert browser.app.state.events.running
 
 
 async def test_second_process_cannot_take_the_flock(settings: Settings, caplog) -> None:
@@ -93,6 +95,7 @@ async def test_second_process_cannot_take_the_flock(settings: Settings, caplog) 
         "scheduler": False,
         "rclone": False,
         "status": False,
+        "events": False,
     }
     assert "ANOTHER DRYDOCK PROCESS HOLDS" in result.stderr
 

@@ -338,3 +338,69 @@ async def test_logs_through_the_proxy_without_gaps_or_repeats(admin: Browser) ->
         assert gone.status_code == 502 and gone.text == "No such container any more."
     finally:
         handle.close()
+
+
+# CONTAINER EVENTS ON A REAL DAEMON
+
+
+@needs_docker
+async def test_container_events_through_the_proxy_are_stored(admin: Browser) -> None:
+    handle = await docker_client.run_blocking(host_docker)
+    containers = handle.client.containers
+    try:
+        await docker_client.run_blocking(helper.ensure_image, handle.client, IMAGE)
+        host = Host(name="local", kind="local", docker_url=DOCKER_URL, enabled=True)
+        host_id = await docker_client.run_blocking(insert_host, admin, host)
+        collector = admin.app.state.events
+        await collector.supervise()  # now, not at its next check
+        await wait_until(
+            lambda: collector._follows[host_id].stream is not None, 30, "the event stream"
+        )
+        quitter = await docker_client.run_blocking(
+            functools.partial(
+                containers.run,
+                IMAGE,
+                ["sh", "-c", "exit 3"],
+                detach=True,
+                labels={TEST_LABEL: "1", "app.token": "hunter2"},
+                network_mode="none",
+            )
+        )
+        sleeper = await docker_client.run_blocking(
+            functools.partial(
+                containers.run,
+                IMAGE,
+                ["sleep", "3600"],
+                detach=True,
+                init=True,
+                labels={TEST_LABEL: "1"},
+                network_mode="none",
+            )
+        )
+        try:
+            await docker_client.run_blocking(
+                sleeper.exec_run, ["sh", "-c", "echo hunter2 > /dev/null"]
+            )
+
+            def actions(container_id: str) -> set[str]:
+                rows = admin.sql(
+                    "SELECT action FROM docker_events WHERE container_id = ?", (container_id,)
+                )
+                return {action for (action,) in rows}
+
+            await wait_until(
+                lambda: {"create", "start", "die"} <= actions(quitter.id), 30, "its events"
+            )
+            await wait_until(lambda: "exec_start" in actions(sleeper.id), 30, "the exec")
+            (row,) = admin.sql(
+                "SELECT host_id, name, image, exit_code FROM docker_events "
+                "WHERE container_id = ? AND action = 'die'",
+                (quitter.id,),
+            )
+            assert row == (host_id, quitter.name, IMAGE, 3)
+            everything = admin.sql("SELECT * FROM docker_events")
+            assert "hunter2" not in repr(everything), "no labels, no exec commands"
+        finally:
+            await docker_client.run_blocking(remove, handle.client, quitter, sleeper)
+    finally:
+        handle.close()

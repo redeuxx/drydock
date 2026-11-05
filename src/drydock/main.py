@@ -29,6 +29,7 @@ from drydock.config import DEFAULT_PROXIES, ConfigError, Settings, load_settings
 from drydock.crypto import Crypto
 from drydock.hosts import logs as container_logs
 from drydock.hosts.client import run_blocking
+from drydock.hosts.events import EventCollector
 from drydock.hosts.manager import HostManager, load_instance_id
 from drydock.hosts.status import StatusCollector
 from drydock.jobs.dispatcher import Dispatcher
@@ -115,6 +116,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     engine = db.make_engine(settings.data_dir / "drydock.db")
     host_manager: HostManager | None = None
     status: StatusCollector | None = None
+    events: EventCollector | None = None
     dispatcher: Dispatcher | None = None
     scheduler: Scheduler | None = None
     notifier: Notifier | None = None
@@ -130,6 +132,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             load_instance_id(app.state.sessionmaker),
         )
         status = app.state.status = StatusCollector(app.state.sessionmaker, host_manager)
+        events = app.state.events = EventCollector(app.state.sessionmaker, host_manager)
         # Log reads wait on slow hosts on threads of their own, never the routes' pool.
         app.state.log_limiter = anyio.CapacityLimiter(container_logs.THREADS)
         notifier = app.state.notifier = Notifier(settings, app.state.sessionmaker, app.state.crypto)
@@ -186,6 +189,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await host_manager.start()
             # Container status reads through the tunnels: only here, like them.
             status.start()
+            # Events stream through the tunnels too, and only one process stores them.
+            events.start()
             await dispatcher.start()
             # Only under the flock: a second process never runs scheduled jobs.
             await scheduler.start()
@@ -202,6 +207,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await rclone.close()  # after the dispatcher: its runs upload through rclone
         if status is not None:  # before the tunnels it reads through close
             await status.close()
+        if events is not None:  # likewise; stores what it has left
+            await events.close()
         if host_manager is not None:
             await host_manager.close()
         engine.dispose()

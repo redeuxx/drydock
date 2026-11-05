@@ -205,6 +205,7 @@ def test_every_base_image_is_pinned_by_digest() -> None:
 PROXY_ENABLED = {
     "CONTAINERS",
     "DISTRIBUTION",
+    "EVENTS",
     "IMAGES",
     "VOLUMES",
     "NETWORKS",
@@ -222,7 +223,7 @@ PROXY_ENABLED = {
     "PING",
 }
 # Every other flag that linuxserver/socket-proxy 3.4.6 reads. Each must be set to 0
-# explicitly: the image defaults EVENTS, LIBPOD_PING and LIBPOD_VERSION to 1.
+# explicitly: the image defaults LIBPOD_PING and LIBPOD_VERSION to 1.
 PROXY_DISABLED = {
     "ALLOW_CHANGES",
     "ALLOW_EXPORT",
@@ -231,7 +232,6 @@ PROXY_DISABLED = {
     "BUILD",
     "COMMIT",
     "CONFIGS",
-    "EVENTS",
     "GRPC",
     "NODES",
     "PLUGINS",

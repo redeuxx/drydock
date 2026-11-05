@@ -6,7 +6,7 @@ Drydock talks to every host through the Docker Engine API, versions 1.44 to 1.56
 
 ## The local host
 
-`compose.yaml` runs [linuxserver/socket-proxy](https://github.com/linuxserver/docker-socket-proxy) next to drydock. Only the proxy mounts `/var/run/docker.sock` (read-only, on an `internal` network with no route out); drydock reaches it at `tcp://socket-proxy:2375` and never mounts the socket. The proxy allows containers, images, volumes, networks, exec, archive, start, stop, restart, pause, unpause and container logs (for the [logs page](#container-logs)), plus the read-only registry lookup `GET /distribution/<image>/json` (see [Images stored by reference](backups.md#images-stored-by-reference)). It denies everything else, including events, build, commit, swarm, secrets, plugins and system.
+`compose.yaml` runs [linuxserver/socket-proxy](https://github.com/linuxserver/docker-socket-proxy) next to drydock. Only the proxy mounts `/var/run/docker.sock` (read-only, on an `internal` network with no route out); drydock reaches it at `tcp://socket-proxy:2375` and never mounts the socket. The proxy allows containers, images, volumes, networks, exec, archive, start, stop, restart, pause, unpause, container logs (for the [logs page](#container-logs)) and events (for [activity](#activity)), plus the read-only registry lookup `GET /distribution/<image>/json` (see [Images stored by reference](backups.md#images-stored-by-reference)). It denies everything else, including build, commit, swarm, secrets, plugins and system.
 
 **The socket proxy is not a security boundary.** It narrows the API to what drydock uses, which limits accidents and makes misuse noisier, but the endpoints drydock needs (container create, exec, archive) are already enough to take over the host. Treat anything that can reach `socket-proxy:2375` as root on the host; that is why it sits on an internal network shared only with drydock.
 
@@ -68,6 +68,16 @@ For them drydock reads each host's containers (list and inspect), their one-shot
 Application logs routinely hold tokens, email addresses and stack traces with secrets, so only admins read them, and drydock never stores them. Escape sequences and control characters are removed, a line longer than 16 KiB is cut, and one update reads at most 2 MiB of logs, shared by the containers shown (a busy log catches up over the next updates). Reading a log is not audited: drydock audits changes, not reads.
 
 The local host's socket proxy allows `GET /containers/<id>/logs` for this (`ALLOW_LOGS=1` in `compose.yaml`); an install from before this version needs the new `compose.yaml` and `docker compose up -d`, which recreates the proxy. SSH hosts need nothing new.
+
+## Activity
+
+Drydock keeps a record of what happens to containers on every enabled host: created, started, stopped, died (with the exit code), killed, restarted, paused, health check results, exec sessions and so on, as Docker reports them. Each host's card on the dashboard counts its events today (in drydock's time zone) and in all.
+
+Unlike the container status, this runs all the time, whether or not anyone looks: one long-lived `GET /events` stream per host (container events only), over the same connection as everything else. A host's first stream starts from the daemon's present. When a stream drops, drydock opens it again after a growing pause (up to a minute) from the newest event it stored for that host, so a short outage or a drydock restart within Docker's own event buffer loses nothing, and an event sent twice is stored once. A disabled host is not followed. Drydock leaves out its own helper containers.
+
+Only the time, the action, the container's ID, name and image, a die's exit code and a health check's result are stored. Docker's events also carry every label of the container and, for exec sessions, the command line; drydock drops all of that, since either can hold secrets. Events are written in batches, so hundreds of containers created at once (a CI runner) cost a few database writes. Drydock keeps 30 days of events and at most 200,000 in all, pruned at start and hourly, so a very busy host can push older events of every host out sooner. Deleting a host deletes its events, and a host whose connection changes (another daemon) is followed from that moment on.
+
+The local host's socket proxy allows `GET /events` for this (`EVENTS=1` in `compose.yaml`); an install from before this version needs the new `compose.yaml`. SSH hosts need nothing new.
 
 ## Helper containers
 

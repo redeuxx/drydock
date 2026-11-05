@@ -65,7 +65,6 @@ def test_proxy_negotiates_a_supported_api_version() -> None:
 @pytest.mark.parametrize(
     ("method", "path"),
     [
-        ("GET", "/events"),
         ("GET", "/system/df"),
         ("POST", "/build"),
         ("POST", "/auth"),

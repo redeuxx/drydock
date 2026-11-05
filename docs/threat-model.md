@@ -619,6 +619,17 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 - `tests/test_logs.py::test_long_lines_are_cut_with_a_marker`
 - `tests/test_status_docker.py::test_logs_through_the_proxy_without_gaps_or_repeats`
 
+### T43. Secrets and floods in stored container events
+
+**Threat:** Docker events carry every label of a container and, for exec sessions, the command line, either of which can hold a secret; storing them would put secrets in the database and in front of every role. A host that creates containers by the hundred (a CI runner) fills the database or ties up its write lock.
+**Defence:** drydock stores only the time, the action (an exec's command, which Docker puts in the action, is cut off), the container's ID, name and image, a die's exit code and a health result whose value is one of three words; everything else is dropped as it arrives. Events are written in batches, kept for 30 days and at most 200,000 rows, and the socket proxy allows only `GET /events` beyond what drydock already had.
+**Tests:**
+- `tests/test_events.py::test_an_event_keeps_only_its_few_fields`
+- `tests/test_events.py::test_exec_commands_and_labels_are_never_kept`
+- `tests/test_events.py::test_retention_keeps_30_days_and_the_newest_rows`
+- `tests/test_events.py::test_a_burst_is_stored_in_one_transaction`
+- `tests/test_status_docker.py::test_container_events_through_the_proxy_are_stored`
+
 ## Accepted risks
 
 These are known limits of v1. The README and docs/ explain each one to operators; no test can remove them.

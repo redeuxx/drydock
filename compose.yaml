@@ -64,7 +64,7 @@ services:
     stop_grace_period: 90s
 
   # Filters the local Docker API down to what drydock uses. Every flag is listed so the
-  # image's defaults (EVENTS=1, the libpod PING and VERSION) never apply. Note that POST=1
+  # image's defaults (the libpod PING and VERSION) never apply. Note that POST=1
   # also allows PUT and DELETE on the enabled sections.
   socket-proxy:
     image: lscr.io/linuxserver/socket-proxy:3.4.6-r0-ls102@sha256:8c059dcb7f496212967dcf1d4136f727f2a23eea4da881945c12b1414aafdf4c
@@ -83,6 +83,9 @@ services:
       # Read-only registry lookup (GET /distribution/<ref>/json): drydock stores an image by
       # reference only when the registry confirms its exact digest (PLAN.md decision 9).
       DISTRIBUTION: "1"
+      # Container events (GET /events) for the activity page; drydock filters them to
+      # containers and keeps only a few fields (docs/hosts.md, Activity).
+      EVENTS: "1"
       EXEC: "1"
       IMAGES: "1"
       INFO: "1"
@@ -98,7 +101,6 @@ services:
       BUILD: "0"
       COMMIT: "0"
       CONFIGS: "0"
-      EVENTS: "0"
       GRPC: "0"
       NODES: "0"
       PLUGINS: "0"

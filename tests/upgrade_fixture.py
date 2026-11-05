@@ -225,6 +225,19 @@ async def populate(browser: Browser) -> None:
                     expires_at=now + timedelta(days=36500),
                 )
             )
+        if hasattr(models, "DockerEvent"):  # added in revision 0016
+            db.add_all(
+                models.DockerEvent(
+                    host_id=local,
+                    time_ns=1_793_815_200_000_000_000 + i,
+                    action=action,
+                    container_id="f" * 64,
+                    name="web",
+                    image="nginx:1.27",
+                    exit_code=0 if action == "die" else None,
+                )
+                for i, action in enumerate(("create", "start", "die"))
+            )
         assert db.query(Host).count() == 2
 
 

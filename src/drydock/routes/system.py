@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from drydock import audit, feed
+from drydock import audit, feed, templating
 from drydock.archive.writer import AGE_DIR
 from drydock.db import get_db
 from drydock.jobs.targets import MAX_TARGETS
@@ -37,6 +37,13 @@ FAILURE_DAYS = 7
 # DASHBOARD
 
 
+def event_counts(request: Request, db: Session) -> dict[int, tuple[int, int]]:
+    """Each host's stored Docker events (hosts/events.py): today in drydock's zone, and
+    in all."""
+    today = datetime.now(templating.DISPLAY_ZONE).replace(hour=0, minute=0, second=0, microsecond=0)
+    return request.app.state.events.counts(db, today)
+
+
 def environments(request: Request, db: Session, auth: Auth) -> list[tuple[Any, ...]]:
     """(host, connection status, status snapshot or None, its address for admins) for
     every host, from the status collector's cache. Marks every host as shown, so the
@@ -56,7 +63,13 @@ def host_status(request: Request, auth: Viewer, db: Session = Depends(get_db)) -
     """The dashboard's environment cards (#host-status): the cards alone for its poller, or a
     page of their own. Reads only what the collector last read: never calls Docker."""
     template = "status/_hosts.html" if is_htmx(request) else "status/hosts.html"
-    return render(request, template, auth=auth, environments=environments(request, db, auth))
+    return render(
+        request,
+        template,
+        auth=auth,
+        environments=environments(request, db, auth),
+        event_counts=event_counts(request, db),
+    )
 
 
 @router.get("/")
@@ -116,6 +129,7 @@ def home(request: Request, auth: Viewer, db: Session = Depends(get_db)) -> Respo
         "backup_count": backups[0],
         "backup_bytes": backups[1],
         "environments": environments(request, db, auth),
+        "event_counts": event_counts(request, db),
         "storage": [],
     }
     if auth.user.role >= Role.admin:  # the pages these link to are admins' too

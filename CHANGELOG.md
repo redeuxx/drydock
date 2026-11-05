@@ -4,7 +4,7 @@ Notable changes to drydock. Versions follow [semantic versioning](https://semver
 
 ## Unreleased
 
-**Upgrading:** pull the new `compose.yaml` before `docker compose up -d`. Its socket proxy allows container logs (`ALLOW_LOGS=1`), which the logs page needs.
+**Upgrading:** this version adds a database table, so copy the `drydock-data` volume first ([Upgrading](docs/operations.md#upgrading)). Pull the new `compose.yaml` before `docker compose up -d`: its socket proxy allows container logs (`ALLOW_LOGS=1`) for the logs page and events (`EVENTS=1`) for the activity record.
 
 ### Dashboard
 - Live container status: a card per host, for every role, with its containers by state, unhealthy containers by name, CPU and memory, images, volumes, networks and Compose stacks. Cards refresh every 10 seconds from what drydock last read, and drydock reads a host only while a page shows the cards, so pages never call Docker. It replaces the admins' list of hosts.
@@ -12,6 +12,7 @@ Notable changes to drydock. Versions follow [semantic versioning](https://semver
 - The status cards show memory as used of total.
 - Container actions on the containers page: operators start, stop, restart, pause and unpause one container or the selected ones (stop and restart ask first), each audited. Drydock refuses its own containers and helpers, and containers a backup or restore is using. Admins can inspect a container, with environment values and secret-looking labels hidden.
 - Logs page (admins only): container logs, live, from their last 100 to 5,000 lines, with stderr marked, pause and clear. One container, or up to 10 merged by time or side by side, or a whole Compose stack. Hide timestamps, unwrap lines, change the text size, search, copy or download. Pick containers from a filterable list with favourites. Escape sequences are removed and reads are capped, so a chatty container cannot exhaust drydock's memory.
+- Container events from every host are recorded (created, started, died with its exit code, health results and more), always on, with nothing lost across short drops. Only a few fields are kept, never labels or exec commands; 30 days and at most 200,000 events. Each host's card counts them.
 - Pages that poll in the background (the status cards, a run's live log) no longer count as activity: a tab left open cannot keep a session past its 1 hour idle timeout, and polls skip their turn while the tab is hidden.
 - Dismiss a failed or interrupted run from "Needs attention" (operators and up). The run, its log and the failure count stay.
 - Filter the run list by status. The "Failed" and "Running or queued" tiles open the list filtered to their runs.
