@@ -78,14 +78,17 @@ SORTS: dict[str, Callable[[ContainerStatus], Any]] = {
     "stack": lambda c: c.project.lower() if c.project else None,
 }
 # Uptime sorts by when the container started: the longest up comes first ascending.
-# The status filter: the dashboard cards' counters link here with these keys.
-STATUSES: dict[str, tuple[str, Callable[[ContainerStatus], bool]]] = {
-    "running": ("Running", lambda c: c.state == "running"),
-    "exited": ("Stopped (exited or dead)", lambda c: c.state in ("exited", "dead")),
-    "paused": ("Paused", lambda c: c.state == "paused"),
-    "restarting": ("Restarting", lambda c: c.state == "restarting"),
-    "created": ("Created", lambda c: c.state == "created"),
-    "unhealthy": ("Unhealthy", lambda c: c.health == "unhealthy"),
+# The status filter: the dashboard cards' counters link here with these keys. Each test
+# takes the row and the update checker's verdicts by container ID.
+Verdicts = dict[str, Any]
+STATUSES: dict[str, tuple[str, Callable[[ContainerStatus, Verdicts], bool]]] = {
+    "running": ("Running", lambda c, v: c.state == "running"),
+    "exited": ("Stopped (exited or dead)", lambda c, v: c.state in ("exited", "dead")),
+    "paused": ("Paused", lambda c, v: c.state == "paused"),
+    "restarting": ("Restarting", lambda c, v: c.state == "restarting"),
+    "created": ("Created", lambda c, v: c.state == "created"),
+    "unhealthy": ("Unhealthy", lambda c, v: c.health == "unhealthy"),
+    "updates": ("Update available", lambda c, v: c.id in v and v[c.id].state == "update"),
 }
 
 
@@ -176,6 +179,7 @@ def page(
     db: Session,
     view: View,
     outcomes: list[Outcome] | None = None,
+    notice: tuple[str, bool] | None = None,
 ) -> Response:
     host, sort, order, status, stack, q = (
         view.host,
@@ -210,10 +214,17 @@ def page(
         "jobs_of": {},
         "outcomes": outcomes or [],
         "verbs": ACTIONS,
+        "checks": None,
+        "verdicts": {},
+        "notice": notice,  # (text, whether it went well) after a check for updates
     }
     if chosen is not None:
         snap = collector.snapshot(chosen.id)
+        checks = request.app.state.updates.result(chosen.id)
+        verdicts = checks.verdicts if checks is not None else {}
         context |= {
+            "checks": checks,
+            "verdicts": verdicts,
             "state": request.app.state.hosts.status(chosen),
             "snap": snap,
             "where": target(chosen) if admin else None,
@@ -223,7 +234,7 @@ def page(
             context["stacks"] = sorted({c.project for c in snap.containers if c.project})
             rows = list(snap.containers)
             if status:
-                rows = [c for c in rows if STATUSES[status][1](c)]
+                rows = [c for c in rows if STATUSES[status][1](c, verdicts)]
             if stack:
                 rows = [c for c in rows if c.project == stack]
             if query:
@@ -244,6 +255,7 @@ def page(
     # picker swaps #main, so it takes the page.
     partial = (
         outcomes is None
+        and notice is None
         and is_htmx(request)
         and request.headers.get("hx-target", "").endswith("#containers")
     )
@@ -454,6 +466,65 @@ def redacted(info: dict[str, Any]) -> dict[str, Any]:
                 k: "***" if SECRET_KEY_RE.search(str(k)) else v for k, v in config["Labels"].items()
             }
     return info
+
+
+@router.post("/containers/check-updates")
+def check_updates(
+    request: Request,
+    auth: Operator,
+    host: Annotated[int, Form()],
+    db: Session = Depends(get_db),
+    sort: Annotated[str, Form()] = "name",
+    order: Annotated[str, Form()] = "asc",
+    status: Annotated[str, Form()] = "",
+    stack: Annotated[str, Form()] = "",
+    q: Annotated[str, Form()] = "",
+) -> Response:
+    """Asks the registries now which containers of the host have a newer image (at most
+    once a minute per host). Audited: it makes drydock contact registries."""
+    view = View(host, sort, order, status, stack, q)
+    target_host = db.get(Host, host)
+    if target_host is None:
+        raise HTTPException(status_code=404)
+    release(db, target_host)
+    checker = request.app.state.updates
+    wait = checker.wait_before_asking(target_host.id)
+    if not target_host.enabled:
+        notice, error = ("The host is disabled.", False), "disabled"
+    elif not request.app.state.primary:
+        notice = ("This drydock process is not the one that reaches the hosts.", False)
+        error = "not primary"
+    elif wait:
+        notice, error = (f"Checked moments ago; try again in {wait} s.", False), "too soon"
+    else:
+        # ponytail: the request waits for the whole check, one registry lookup after
+        # another (each at most 10 s). Run it in the background if hosts with many images
+        # on slow registries outlast a reverse proxy's timeout.
+        checks = anyio.from_thread.run(checker.check_now, target_host)
+        error = checks.error
+        if checks.error:
+            notice = (f"Checking for updates failed: {checks.error}", False)
+        else:
+            found, failed = checks.count("update"), checks.count("error")
+            text = f"{found} container{'' if found == 1 else 's'} with a newer image."
+            if failed:
+                text += f" {failed} could not be checked (see each row)."
+            notice = (text, True)
+    audit.record(
+        db,
+        actor=auth.user.username,
+        action="container.check_updates",
+        target=f"host:{target_host.id}",
+        outcome="success" if error is None else "failure",
+        ip=client_ip(request),
+        details={"host": target_host.name} | ({} if error is None else {"error": error}),
+    )
+    db.commit()
+    if not is_htmx(request):
+        return see_other(request, view.url)
+    response = page(request, auth, db, view, notice=notice)
+    response.headers["HX-Replace-Url"] = view.url
+    return response
 
 
 @router.get("/containers/{host_id}/{container_id}/inspect")

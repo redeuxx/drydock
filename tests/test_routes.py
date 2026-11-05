@@ -19,7 +19,7 @@ from drydock.hosts import ssh
 from drydock.hosts.manager import HostManager
 from drydock.jobs.dispatcher import Dispatcher, Target
 from drydock.jobs.runlog import RunLog, log_path
-from drydock.models import Backup, Run
+from drydock.models import Backup, Run, utcnow
 from drydock.notify import Notifier
 from drydock.restore import apply as restore_apply
 from drydock.restore import plan as restore_plan
@@ -29,6 +29,7 @@ from drydock.security import csrf
 from drydock.security.rbac import Role, authenticated
 from drydock.storage import certs, gdrive_oauth
 from drydock.storage.rclone import RcloneBackend
+from drydock.updates.check import HostChecks
 from tests.conftest import PASSWORD, Browser, add_user
 from tests.rclone_support import certificate
 from tests.restore_support import build_archive, container_inspect, image_tar
@@ -95,6 +96,7 @@ EXPECTED_MIN_ROLE = [
     ({"GET"}, re.compile(r"^/jobs/[^/]+/edit$"), Role.admin),
     ({"POST"}, re.compile(r"^/jobs"), Role.admin),
     ({"POST"}, re.compile(r"^/containers/actions$"), Role.operator),
+    ({"POST"}, re.compile(r"^/containers/check-updates$"), Role.operator),
     ({"GET"}, re.compile(r"^/containers/[^/]+/[^/]+/inspect$"), Role.admin),
     ({"GET"}, re.compile(r"^/logs"), Role.admin),
     ({"POST"}, re.compile(r"^/activity/clear$"), Role.admin),
@@ -113,6 +115,7 @@ INVENTORY = {
     ("GET", "/status/hosts"),
     ("GET", "/containers"),
     ("POST", "/containers/actions"),
+    ("POST", "/containers/check-updates"),
     ("GET", "/containers/{host_id}/{container_id}/inspect"),
     ("GET", "/logs"),
     ("GET", "/logs/lines"),
@@ -661,6 +664,8 @@ AUDITED_SUCCESS = [
         "container.start",
         303,
     ),
+    # Docker's side faked (UpdateChecker.check_now): nothing to update.
+    ("/containers/check-updates", {"host": "{host_id}"}, "container.check_updates", 303),
     (
         "/storage",
         {"name": "backups", "path": "{storage_root}", "enabled": "1"},
@@ -856,6 +861,11 @@ async def test_every_unsafe_route_audits_its_success(fresh: Browser, monkeypatch
         "run_actions",
         lambda request, auth, host, verb, chosen: [containers_routes.Outcome(verb, "web")],
     )
+
+    async def nothing_newer(host) -> HostChecks:
+        return HostChecks(utcnow())
+
+    monkeypatch.setattr(fresh.app.state.updates, "check_now", nothing_newer)
     # The storage root doubles as the allowed restore path.
     root_path = fresh.settings.local_storage_roots[0]
     allowed = dataclasses.replace(fresh.settings, restore_paths=(root_path,))

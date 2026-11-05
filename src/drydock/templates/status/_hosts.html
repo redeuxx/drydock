@@ -68,6 +68,11 @@
         <div class="flex justify-between"><dt class="flex items-center gap-1 opacity-70">{{ icon("layers", "size-3.5") }}Stacks</dt><dd class="font-semibold" title="{{ stacks_running }} running, {{ stacks_partial }} partly running, {{ stacks_stopped }} stopped">{{ stacks_running + stacks_partial + stacks_stopped }} <span class="font-normal"><span class="text-success">{{ stacks_running }}</span>/<span class="text-warning">{{ stacks_partial }}</span>/<span class="opacity-70">{{ stacks_stopped }}</span></span></dd></div>
         <div class="flex justify-between"><dt class="flex items-center gap-1 opacity-70">{{ icon("hard-drive", "size-3.5") }}Volumes</dt><dd class="font-semibold">{{ snap.volumes }}</dd></div>
         <div class="flex justify-between"><dt class="flex items-center gap-1 opacity-70">{{ icon("network", "size-3.5") }}Networks</dt><dd class="font-semibold">{{ snap.networks }}</dd></div>
+        {% set checks = update_checks.get(host.id) %}
+        {% set newer = checks.count("update", snap.containers|map(attribute="id")) if checks else 0 %}
+        {% if newer %}
+        <div class="col-span-2 flex justify-between"><dt class="flex items-center gap-1 opacity-70">{{ icon("package", "size-3.5") }}Updates</dt><dd><a class="font-semibold text-info hover:underline" href="/containers?host={{ host.id }}&amp;status=updates">{{ newer }} with a newer image</a></dd></div>
+        {% endif %}
         {% set today, total = event_counts.get(host.id, (0, 0)) %}
         <div class="col-span-2 flex justify-between"><dt class="flex items-center gap-1 opacity-70">{{ icon("activity", "size-3.5") }}Container events</dt><dd><a class="hover:underline" href="/activity?host={{ host.id }}&amp;range=all"><span class="font-semibold">{{ today }}</span> <span class="opacity-70">today,</span> <span class="font-semibold">{{ total }}</span> <span class="opacity-70">stored</span></a></dd></div>
       </dl>

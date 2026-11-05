@@ -61,6 +61,7 @@ from drydock.security.sessions import Auth, LoginRequired, clear_cookie
 from drydock.storage import gdrive_oauth
 from drydock.storage.rclone_rc import RcloneDaemon
 from drydock.templating import is_htmx, render, set_zone
+from drydock.updates.check import UpdateChecker
 
 log = logging.getLogger("drydock")
 
@@ -118,6 +119,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     host_manager: HostManager | None = None
     status: StatusCollector | None = None
     events: EventCollector | None = None
+    updates: UpdateChecker | None = None
     dispatcher: Dispatcher | None = None
     scheduler: Scheduler | None = None
     notifier: Notifier | None = None
@@ -134,6 +136,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         status = app.state.status = StatusCollector(app.state.sessionmaker, host_manager)
         events = app.state.events = EventCollector(app.state.sessionmaker, host_manager)
+        updates = app.state.updates = UpdateChecker(app.state.sessionmaker, host_manager)
         # Log reads wait on slow hosts on threads of their own, never the routes' pool.
         app.state.log_limiter = anyio.CapacityLimiter(container_logs.THREADS)
         notifier = app.state.notifier = Notifier(settings, app.state.sessionmaker, app.state.crypto)
@@ -192,6 +195,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             status.start()
             # Events stream through the tunnels too, and only one process stores them.
             events.start()
+            updates.start()  # asks registries, through the hosts' daemons
             await dispatcher.start()
             # Only under the flock: a second process never runs scheduled jobs.
             await scheduler.start()
@@ -210,6 +214,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await status.close()
         if events is not None:  # likewise; stores what it has left
             await events.close()
+        if updates is not None:
+            await updates.close()
         if host_manager is not None:
             await host_manager.close()
         engine.dispose()

@@ -84,6 +84,19 @@
   <button type="submit" name="action" value="pause" class="btn btn-xs">Pause</button>
   <button type="submit" name="action" value="unpause" class="btn btn-xs">Unpause</button>
 </form>
+{# Asks the registries now (routes/containers.py check_updates); otherwise drydock checks
+   every 6 hours. #}
+<form id="check-updates" method="post" action="/containers/check-updates" hx-post="/containers/check-updates" hx-nonce="{{ csp_nonce }}" class="mb-2 flex flex-wrap items-center gap-2 text-sm">
+  <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+  <input type="hidden" name="host" value="{{ chosen.id }}">
+  <input type="hidden" name="sort" value="{{ sort }}">
+  <input type="hidden" name="order" value="{{ order }}">
+  <input type="hidden" name="status" value="{{ status }}">
+  <input type="hidden" name="stack" value="{{ stack }}">
+  <input type="hidden" name="q" value="{{ q }}">
+  <button type="submit" class="btn btn-xs">Check for updates</button>
+  <span class="opacity-70">{% if checks %}{{ checks.count("update", snap.containers|map(attribute="id")) }} with a newer image, checked {{ checks.checked_at|ago }}{% if checks.error %} ({{ checks.error }}){% endif %}{% else %}Not checked yet{% endif %}</span>
+</form>
 {{ confirm("confirm-stop", "stop", "Stop", "Stop the selected containers? Each gets its own stop timeout to shut down.") }}
 {{ confirm("confirm-restart", "restart", "Restart", "Restart the selected containers?") }}
 {% endif %}
@@ -108,7 +121,8 @@
       <tr class="relative hover:bg-base-200">
         {% if operator %}<td><input type="checkbox" form="container-actions" name="id" value="{{ c.id }}" class="checkbox checkbox-xs relative z-10" data-select aria-label="Select {{ c.name }}"></td>{% endif %}
         <td class="truncate font-semibold"><button type="button" class="cursor-pointer after:absolute after:inset-0" commandfor="ctr-{{ loop.index }}" command="show-modal" aria-haspopup="dialog" title="{{ c.name }}">{{ c.name }}</button></td>
-        <td class="truncate max-md:hidden" title="{{ c.image }}">{{ c.image }}</td>
+        {% set v = verdicts.get(c.id) %}
+        <td class="truncate max-md:hidden" title="{{ c.image }}">{% if v and v.state == "update" %}<span class="badge badge-soft badge-info badge-xs mr-1" title="{{ v.reason }}">update</span>{% endif %}{{ c.image }}</td>
         <td class="truncate">
           <span class="badge badge-soft badge-sm {{ state_tones.get(c.state, 'badge-neutral') }}">{{ c.state }}</span>
           {% if c.health %}<span class="ml-1 inline-block size-2 rounded-full {{ health_tones[c.health] }}" title="{{ c.health }}"></span><span class="sr-only">, {{ c.health }}</span>{% endif %}
@@ -146,6 +160,8 @@
     <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
       <dt class="font-semibold">ID</dt><dd class="font-mono text-xs break-all">{{ c.id }}</dd>
       <dt class="font-semibold">Image</dt><dd class="break-all">{{ c.image }}</dd>
+      {% set v = verdicts.get(c.id) %}
+      <dt class="font-semibold">Updates</dt><dd>{% if v %}{{ v.reason }}{% if v.latest %} <span class="font-mono text-xs opacity-70">({{ v.latest[7:19] }})</span>{% endif %}{% else %}Not checked yet.{% endif %}</dd>
       <dt class="font-semibold">State</dt><dd>{{ c.state }}{% if c.health %}, {{ c.health }}{% endif %}</dd>
       <dt class="font-semibold">Status</dt><dd>{{ c.status }}</dd>
       <dt class="font-semibold">Started</dt><dd>{{ c.started_at|stamp }}</dd>

@@ -36,6 +36,9 @@
   </select>
   <noscript><button type="submit" class="btn btn-sm">Apply</button></noscript>
 </form>
+{% if notice %}
+<div role="alert" class="alert {{ 'alert-success' if notice[1] else 'alert-warning' }} alert-soft mb-3 text-sm"><span>{{ notice[0] }}</span></div>
+{% endif %}
 {% if outcomes %}
 {% set failed = outcomes|selectattr("error")|list %}
 <div role="alert" class="alert {{ 'alert-warning' if failed else 'alert-success' }} alert-soft mb-3 text-sm">

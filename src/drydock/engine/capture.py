@@ -342,6 +342,16 @@ def add_compose_files(env: CaptureEnv, plan: Plan, log: Log) -> None:
 # MANIFEST
 
 
+def distribution_digest(api, ref: str) -> str:
+    """The digest the registry serves for ref (a tag or repo@digest reference), through the
+    daemon: GET /distribution/<ref>/json, which the socket proxy allows as a read-only
+    lookup. For a multi-platform image it is the index digest, as RepoDigests records it.
+    Uses docker-py's private _get, _url and _result for the timeout. Raises a Docker or
+    requests error, or ValueError, KeyError or TypeError for an answer not understood."""
+    response = api._get(api._url("/distribution/{0}/json", ref), timeout=DISTRIBUTION_TIMEOUT)
+    return api._result(response, json=True)["Descriptor"]["digest"]
+
+
 def registry_confirms(api, digests: list[str], cancel: threading.Event) -> tuple[str | None, str]:
     """The first RepoDigest whose registry still serves exactly that digest, or None and why.
 
@@ -358,10 +368,7 @@ def registry_confirms(api, digests: list[str], cancel: threading.Event) -> tuple
             reason = "its registry digest is malformed"
             continue
         try:
-            response = api._get(
-                api._url("/distribution/{0}/json", repo_digest), timeout=DISTRIBUTION_TIMEOUT
-            )
-            found = api._result(response, json=True)["Descriptor"]["digest"]
+            found = distribution_digest(api, repo_digest)
         except (docker.errors.DockerException, requests.RequestException) as exc:
             reason = f"the registry lookup failed ({type(exc).__name__})"
             continue

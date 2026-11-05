@@ -44,6 +44,11 @@ def event_counts(request: Request, db: Session) -> dict[int, tuple[int, int]]:
     return request.app.state.events.counts(db, today)
 
 
+def update_checks(request: Request) -> dict[int, Any]:
+    """Each host's last check for newer images (updates/check.py), if it had one."""
+    return request.app.state.updates.results()
+
+
 def environments(request: Request, db: Session, auth: Auth) -> list[tuple[Any, ...]]:
     """(host, connection status, status snapshot or None, its address for admins) for
     every host, from the status collector's cache. Marks every host as shown, so the
@@ -69,6 +74,7 @@ def host_status(request: Request, auth: Viewer, db: Session = Depends(get_db)) -
         auth=auth,
         environments=environments(request, db, auth),
         event_counts=event_counts(request, db),
+        update_checks=update_checks(request),
     )
 
 
@@ -130,6 +136,7 @@ def home(request: Request, auth: Viewer, db: Session = Depends(get_db)) -> Respo
         "backup_bytes": backups[1],
         "environments": environments(request, db, auth),
         "event_counts": event_counts(request, db),
+        "update_checks": update_checks(request),
         "storage": [],
     }
     if auth.user.role >= Role.admin:  # the pages these link to are admins' too
