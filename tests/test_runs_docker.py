@@ -687,15 +687,20 @@ async def test_drydock_killed_mid_backup(
         assert helpers_left(targets.client, instance_id)
         assert staged_files(settings)
         async with running(settings) as browser:
-            await wait_until(lambda: targets.running(box), 30, "recovery restarting it")
+            log_path = runlog.log_path(settings.data_dir, 1)
+            # The log line, not the container's state: Docker reports it running before
+            # the start call returns and recovery logs it.
+            await wait_until(
+                lambda: "Started container" in log_path.read_text(), 30, "recovery restarting it"
+            )
+            assert targets.running(box)
             status = browser.sql("SELECT status, error FROM runs")
             assert status == [("interrupted", "Drydock stopped before the run finished.")]
             assert staged_files(settings) == []
             await wait_until(
                 lambda: not helpers_left(targets.client, instance_id), 30, "the reaper"
             )
-            log = runlog.log_path(settings.data_dir, 1).read_text()
-            assert "Interrupted" in log and "Started container" in log
+            assert "Interrupted" in log_path.read_text()
         assert stored_files(settings) == []
     finally:
         if proc.poll() is None:
