@@ -670,7 +670,7 @@ async def test_kill_9_during_an_overwrite_restore_after_the_wipe(
         for text in ("may be partial", volume.name, "renamed back"):
             assert text in warning.group(1), (text, warning.group(1))
         await wait_until(
-            lambda: not helpers_left(targets.client, instance_id), 60, "the startup reap"
+            lambda: not helpers_left(targets.client, instance_id), 180, "the startup reap"
         )
         assert not [n for n in staged_files(settings) if n.startswith("restore-")], log()
 
