@@ -1,9 +1,13 @@
-{# The next lines of a container's log (routes/logs.py), and the poller for the ones after
-   them. #log-chunk replaces the poller that asked, so its lines land at the end of the log
-   and a new poller follows them. frontend/app.ts keeps the log scrolled to the bottom only
-   if the reader was there, and drops the oldest lines past the chosen count.
-   Lines are the container's own text: autoescaped only. #}
+{# The next lines of one or more containers' logs (routes/logs.py), merged by time, and
+   the poller for the ones after them. #log-chunk replaces the poller that asked, so its
+   lines land at the end of the log and a new poller follows them. frontend/app.ts keeps
+   the log scrolled to the bottom only if the reader was there, drops the oldest lines past
+   the chosen count, and marks search matches. With several containers each line starts
+   with its container's name, in that container's colour.
+   Lines and names are the host's own text: autoescaped only. #}
+{% set colours = ["text-info", "text-success", "text-warning", "text-secondary", "text-accent", "text-primary"] %}
 <div id="log-chunk">
-{%- for line in lines %}<div data-line{% if line.stream == "stderr" %} class="text-error"{% endif %}><span class="select-none opacity-60">{{ line.when|clock }}</span> {{ line.text }}</div>{% endfor -%}
-<span id="log-poller" hx-get="{{ next_url }}" hx-trigger="every 2s" hx-target="this" hx-select="#log-chunk" hx-swap="outerHTML strip:true ignoreTitle:true" hx-sync="this:drop" hx-nonce="{{ csp_nonce }}"></span>
+{%- for notice in lost %}<div data-line class="text-warning" role="status">{{ notice }}</div>{% endfor -%}
+{%- for i, line in lines %}<div data-line{% if line.stream == "stderr" %} class="text-error"{% endif %}><span data-stamp class="select-none opacity-60 group-data-[nostamps]:hidden">{{ line.when|clock }} </span>{% if named %}<span class="font-semibold {{ colours[i % colours|length] }}">{{ names[i] }}</span> {% endif %}<span data-text>{{ line.text }}</span></div>{% endfor -%}
+<span data-log-poller hx-get="{{ next_url }}" hx-trigger="every 2s" hx-target="this" hx-select="#log-chunk" hx-swap="outerHTML strip:true ignoreTitle:true" hx-sync="this:drop" hx-nonce="{{ csp_nonce }}"></span>
 </div>

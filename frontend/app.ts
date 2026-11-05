@@ -60,9 +60,9 @@ function isFieldRegion(target: unknown): target is HTMLElement {
 
 // POLLERS
 //
-// Elements that refresh themselves with hx-trigger "every Ns": a log poller (#log-poller,
-// new lines every 2 seconds for a run's log, routes/runs.py, or a container's,
-// routes/logs.py) and every [data-poller] region, such as
+// Elements that refresh themselves with hx-trigger "every Ns": a log poller (new lines
+// every 2 seconds: #log-poller for a run's log, routes/runs.py, and [data-log-poller] for
+// containers' logs, routes/logs.py) and every [data-poller] region, such as
 // the dashboard's environment cards, whose attribute names them in error messages. Polls
 // are background traffic: they never hide an error left by a user action, a failing poll
 // shows its error once instead of re-announcing it on every poll, and an error answer
@@ -80,11 +80,11 @@ let followed: HTMLElement | null = null; // the log a poller's swap appends to
 let pollErrorShown = false;
 
 function isLogPoller(element: unknown): boolean {
-  return element instanceof Element && element.id === POLLER_ID;
+  return element instanceof Element && (element.id === POLLER_ID || element.hasAttribute("data-log-poller"));
 }
 
 function isPoller(element: unknown): boolean {
-  return element instanceof Element && (element.id === POLLER_ID || element.hasAttribute("data-poller"));
+  return isLogPoller(element) || (element instanceof Element && element.hasAttribute("data-poller"));
 }
 
 function pollerName(element: unknown): string {
@@ -104,7 +104,7 @@ document.addEventListener("htmx:config:request", (event) => {
   if (!isPoller(ctx.sourceElement)) return;
   // Nobody is looking, a dialog in the region is open (the swap would close it), or the
   // reader paused the log: skip this turn, the next tick polls.
-  const paused = logOf(ctx.sourceElement)?.hasAttribute("data-paused");
+  const paused = ctx.sourceElement.closest("[data-paused]") !== null;
   if (document.hidden || paused || ctx.sourceElement.querySelector("dialog[open]")) {
     event.preventDefault();
     return;
@@ -274,10 +274,14 @@ try {
 
 // THE LOGS PAGE
 //
-// Pause stops the log's polls (the poller keeps its place, so nothing is missed), Clear
-// empties the view only. The filter box hides containers whose name lacks its text. A
-// star marks a favourite, kept per host in this browser and listed first; like the host,
-// a convenience only.
+// Everything here works on what was read; nothing is read again. Pause stops the logs'
+// polls (each poller keeps its place, so nothing is missed), Clear empties the view only.
+// The options set data attributes on #log-view that the logs restyle by (timestamps, line
+// wrap, text size). Search marks matches in the lines shown, new ones included, by
+// rebuilding each line's text from text nodes (never markup). Copy takes the lines as
+// shown. The filter box hides containers whose name lacks its text. A star marks a
+// favourite, kept per host in this browser and listed first; like the host, a
+// convenience only.
 
 const FAVOURITES_KEY = "drydock.logs.favourites";
 
@@ -309,19 +313,81 @@ function showFavourites(): void {
   list.append(...items.sort((a, b) => rank(a) - rank(b)));
 }
 
+function logView(): HTMLElement | null {
+  return document.getElementById("log-view");
+}
+
+function searchText(): string {
+  return document.querySelector<HTMLInputElement>("[data-log-search]")?.value.trim().toLowerCase() ?? "";
+}
+
+function markLine(line: Element, query: string): boolean {
+  const span = line.querySelector<HTMLElement>("[data-text]");
+  if (!span) return false;
+  const text = span.textContent ?? "";
+  const lower = text.toLowerCase();
+  if (!query || !lower.includes(query)) {
+    if (span.childElementCount) span.textContent = text;
+    return false;
+  }
+  const parts: Node[] = [];
+  let at = 0;
+  for (let found = lower.indexOf(query); found !== -1; found = lower.indexOf(query, at)) {
+    parts.push(document.createTextNode(text.slice(at, found)));
+    const mark = document.createElement("mark");
+    mark.textContent = text.slice(found, found + query.length);
+    parts.push(mark);
+    at = found + query.length;
+  }
+  parts.push(document.createTextNode(text.slice(at)));
+  span.replaceChildren(...parts);
+  return true;
+}
+
+// Each line is marked once for the search shown (data-marked), so a poll marks only the
+// lines it brought.
+function markLines(lines: Iterable<Element>): void {
+  const query = searchText();
+  for (const line of lines) {
+    markLine(line, query);
+    line.setAttribute("data-marked", "");
+  }
+}
+
+function countMatches(): void {
+  const query = searchText();
+  const view = logView();
+  const count = document.querySelector<HTMLElement>("[data-log-matches]");
+  if (!view || !count) return;
+  const matching = query ? view.querySelectorAll("[data-line] mark").length : 0;
+  count.textContent = query ? `${matching} match${matching === 1 ? "" : "es"}` : "";
+}
+
 document.addEventListener("click", (event) => {
   if (!(event.target instanceof Element)) return;
-  const log = document.getElementById("container-log");
+  const view = logView();
   const pause = event.target.closest<HTMLButtonElement>("[data-log-pause]");
-  if (pause && log) {
-    const paused = !log.hasAttribute("data-paused");
-    log.toggleAttribute("data-paused", paused);
+  if (pause && view) {
+    const paused = !view.hasAttribute("data-paused");
+    view.toggleAttribute("data-paused", paused);
     pause.setAttribute("aria-pressed", String(paused));
     pause.textContent = paused ? "Resume" : "Pause";
     return;
   }
-  if (event.target.closest("[data-log-clear]") && log) {
-    for (const line of log.querySelectorAll("[data-line]")) line.remove();
+  if (event.target.closest("[data-log-clear]") && view) {
+    for (const line of view.querySelectorAll("[data-line]")) line.remove();
+    countMatches();
+    return;
+  }
+  if (event.target.closest("[data-log-copy]") && view) {
+    const text = [...view.querySelectorAll<HTMLElement>("[data-line]")].map((line) => line.innerText).join("\n");
+    const refused = () => showClientError("Copying needs HTTPS. Select the lines and copy them instead.");
+    // The clipboard needs HTTPS (or localhost); plain HTTP leaves selecting by hand.
+    if (!window.isSecureContext || !navigator.clipboard) {
+      refused();
+    } else {
+      navigator.clipboard.writeText(text).then(() => hideClientError(), refused);
+    }
     return;
   }
   const star = event.target.closest<HTMLButtonElement>("[data-star]");
@@ -341,8 +407,24 @@ document.addEventListener("click", (event) => {
   showFavourites();
 });
 
+document.addEventListener("change", (event) => {
+  const field = event.target;
+  const view = logView();
+  if (!view || !(field instanceof HTMLElement)) return;
+  if (field instanceof HTMLInputElement && field.dataset.logOption) {
+    view.toggleAttribute(`data-${field.dataset.logOption}`, !field.checked);
+  } else if (field instanceof HTMLSelectElement && field.hasAttribute("data-log-size")) {
+    view.dataset.size = field.value;
+  }
+});
+
 document.addEventListener("input", (event) => {
   const box = event.target;
+  if (box instanceof HTMLInputElement && box.hasAttribute("data-log-search")) {
+    markLines(logView()?.querySelectorAll("[data-line]") ?? []);
+    countMatches();
+    return;
+  }
   if (!(box instanceof HTMLInputElement) || !box.hasAttribute("data-log-filter")) return;
   const text = box.value.trim().toLowerCase();
   for (const item of document.querySelectorAll<HTMLElement>("[data-favourites] li[data-name]")) {
@@ -369,9 +451,11 @@ document.addEventListener("htmx:after:swap", (event) => {
   const target = event.detail.ctx.target;
   if (isPoller(target)) {
     if (isLogPoller(target) && followed) {
+      if (searchText()) markLines(followed.querySelectorAll("[data-line]:not([data-marked])"));
       const max = Number(followed.dataset.maxLines);
       const lines = followed.querySelectorAll("[data-line]");
       for (let i = 0; max > 0 && i < lines.length - max; i++) lines[i]?.remove();
+      if (searchText()) countMatches(); // after the oldest lines went
       if (followLog) followed.scrollTop = followed.scrollHeight;
       followed = null;
     }

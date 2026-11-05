@@ -166,48 +166,81 @@ def test_read_stops_at_the_byte_cap() -> None:
 
 async def test_logs_are_for_admins_only(admin: Browser, monkeypatch) -> None:
     _, host_id = await a_host_with_containers(admin, monkeypatch)
-    lines = f"/logs/lines?host={host_id}&container={'a' * 64}"
+    paths = [f"/logs?host={host_id}"] + [
+        f"/logs/{kind}?host={host_id}&c={'a' * 64}" for kind in ("lines", "download")
+    ]
     assert 'href="/logs"' in (await admin.get("/")).text
     await add_user(admin, "runner", "operator")
     await add_user(admin, "watcher", "viewer")
     for user in ("runner", "watcher"):
         await admin.login(user)
         assert 'href="/logs"' not in (await admin.get("/")).text
-        assert (await admin.get(f"/logs?host={host_id}")).status_code == 403
-        assert (await admin.get(lines)).status_code == 403
+        for path in paths:
+            assert (await admin.get(path)).status_code == 403, path
+
+
+def pollers(page: str) -> list[str]:
+    return [
+        url.replace("&amp;", "&")
+        for url in re.findall(r'<span data-log-poller hx-get="([^"]*)"[^>]*hx-nonce="', page)
+    ]
 
 
 async def test_the_page_lists_the_cache_and_never_calls_docker(admin: Browser, monkeypatch) -> None:
     collector, host_id = await a_host_with_containers(admin, monkeypatch)
+    a, b, c = "a" * 64, "b" * 64, "c" * 64
     page = (await admin.get(f"/logs?host={host_id}")).text
     assert MARKUP in page and "<img src=x" not in page
     assert page.index('data-name="cache"') < page.index('data-name="web"'), "by name"
-    assert "Choose a container" in page and 'id="log-poller"' not in page
+    assert "Choose a container" in page and not pollers(page)
+    # The stack app (db, cache) can be shown whole, side by side.
+    stack = f'href="/logs?host={host_id}&amp;c={c}&amp;c={b}&amp;mode=grouped&amp;tail=500"'
+    assert stack in page and '>app <span class="opacity-60">(2)</span>' in page
     assert collector._viewed_at > 0
 
-    page = (await admin.get(f"/logs?host={host_id}&container={'a' * 64}&tail=1000")).text
+    page = (await admin.get(f"/logs?host={host_id}&c={a}&tail=1000")).text
     assert '<h2 id="log-title"' in page and 'title="web">web</h2>' in page
-    poller = re.search(r'<span id="log-poller"[^>]*>', page)
-    assert poller is not None
-    assert f'hx-get="/logs/lines?host={host_id}&amp;container={"a" * 64}&amp;tail=1000"' in (
-        poller.group(0)
-    )
-    assert 'hx-nonce="' in poller.group(0) and 'data-max-lines="1000"' in page
-    for form in ("host-picker",):  # else hx-csp strips its hx-* attributes
+    assert pollers(page) == [f"/logs/lines?host={host_id}&tail=1000&c={a}"]
+    assert 'data-max-lines="1000"' in page and 'id="log-mode"' not in page
+    assert f'href="/logs/download?host={host_id}&amp;c={a}&amp;tail=1000"' in page
+    for form in ("host-picker", "log-select"):  # else hx-csp strips its hx-* attributes
         assert re.search(rf'id="{form}"[^>]*hx-nonce="', page), form
-    # An unknown tail falls back; an ID the cache lacks still shows, by its short form.
-    page = (await admin.get(f"/logs?host={host_id}&container={'f' * 64}&tail=7")).text
+    assert f'name="c" value="{a}" class="checkbox checkbox-xs" checked' in page
+
+    # Several: merged into one log (one poller), or side by side (one each).
+    page = (await admin.get(f"/logs?host={host_id}&c={a}&c={b}&c={a}")).text
+    assert pollers(page) == [f"/logs/lines?host={host_id}&tail=500&c={a}&c={b}"]
+    assert 'data-max-lines="1000"' in page and 'id="log-mode"' in page and ">web, db</h2>" in page
+    page = (await admin.get(f"/logs?host={host_id}&c={a}&c={b}&mode=grouped")).text
+    assert pollers(page) == [
+        f"/logs/lines?host={host_id}&tail=500&c={a}",
+        f"/logs/lines?host={host_id}&tail=500&c={b}",
+    ]
+    many = "&".join(f"c={i:064x}" for i in range(12))
+    page = (await admin.get(f"/logs?host={host_id}&{many}")).text
+    assert "At most 10 containers are shown together" in page
+    ten = "&".join(f"c={i:064x}" for i in range(10))
+    page = (await admin.get(f"/logs?host={host_id}&{ten}&c=junk")).text
+    assert "At most 10" not in page, "an invalid value is no container left out"
+    assert pollers(page)[0].count("&c=") == 10
+
+    # An unknown tail or mode falls back; an ID the cache lacks shows by its short form.
+    page = (await admin.get(f"/logs?host={host_id}&c={'f' * 64}&tail=7&mode=x")).text
     assert 'data-max-lines="500"' in page and f">{'f' * 12}</h2>" in page
-    assert "Choose a container" in (await admin.get("/logs?container=../x")).text
+    assert "Choose a container" in (await admin.get("/logs?c=../x")).text
 
 
-def fake_docker(monkeypatch, lines: list[Line], cut: bool = False, tty: bool = False) -> list:
-    """The route's Docker side: open_host gives a client whose inspect tells the TTY, and
-    logs.read answers lines after the cursor. Returns the reads' arguments."""
+def fake_docker(
+    monkeypatch, lines: dict[str, list[Line]], cut: bool = False, tty: bool = False
+) -> list:
+    """The routes' Docker side: open_host gives a client whose inspect tells the TTY, and
+    logs.read answers each container's lines after its cursor. Returns the reads."""
     reads: list = []
 
     class Api:
         def inspect_container(self, container: str) -> dict[str, Any]:
+            if container not in lines:
+                raise docker.errors.NotFound("no such container: /secret/path")
             return {"Config": {"Tty": tty}}
 
     class Handle:
@@ -217,9 +250,9 @@ def fake_docker(monkeypatch, lines: list[Line], cut: bool = False, tty: bool = F
         def close(self) -> None:
             pass
 
-    def read(api, container, has_tty, tail, cursor):
-        reads.append((container, has_tty, tail, cursor))
-        shown, moved = logs.after(lines, cursor)
+    def read(api, container, has_tty, tail, cursor, limit):
+        reads.append((container, has_tty, tail, cursor, limit))
+        shown, moved = logs.after(lines[container], cursor)
         return logs.Batch(shown, moved, cut)
 
     monkeypatch.setattr(log_routes, "open_host", lambda request, host, timeout: Handle())
@@ -227,67 +260,123 @@ def fake_docker(monkeypatch, lines: list[Line], cut: bool = False, tty: bool = F
     return reads
 
 
+async def lines_of(browser: Browser, url: str):
+    response = await browser.get(url, headers={"HX-Request": "true"})
+    found = pollers(response.text)
+    return response, found[0] if found else None
+
+
 async def test_lines_are_escaped_and_bring_the_next_poller(admin: Browser, monkeypatch) -> None:
     _, host_id = await a_host_with_containers(admin, monkeypatch)
+    a = "a" * 64
     lines = [Line(T0_NS, "stdout", "<script>alert(1)</script>"), Line(T1_NS, "stderr", "oops")]
-    reads = fake_docker(monkeypatch, lines, tty=True)
-    first = await admin.get(
-        f"/logs/lines?host={host_id}&container={'a' * 64}&tail=100",
-        headers={"HX-Request": "true"},
-    )
+    reads = fake_docker(monkeypatch, {a: lines}, tty=True)
+    first, next_url = await lines_of(admin, f"/logs/lines?host={host_id}&c={a}&tail=100")
     assert first.status_code == 200
     text = first.text
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in text and "<script>alert" not in text
     assert '<div data-line class="text-error">' in text and "2026-11-04 18:00:01.500" in text
-    assert reads == [("a" * 64, True, 100, Cursor())], "inspected once for the TTY"
-    poller = re.search(r'<span id="log-poller" hx-get="([^"]*)"[^>]*>', text)
-    assert poller is not None and 'hx-trigger="every 2s"' in poller.group(0)
-    next_url = poller.group(1).replace("&amp;", "&")
-    assert next_url == (
-        f"/logs/lines?host={host_id}&container={'a' * 64}&tail=100&after={T1_NS}&seen=1&tty=1"
-    )
+    assert ">web</span>" not in text, "one container: no names"
+    assert reads == [(a, True, 100, Cursor(), logs.MAX_BYTES)], "inspected once for the TTY"
+    assert 'hx-trigger="every 2s"' in text
+    assert next_url == f"/logs/lines?host={host_id}&tail=100&c={a}~{T1_NS}~1~1"
     # Nothing new: 204, the poller keeps its cursor.
     again = await admin.get(next_url, headers={"HX-Request": "true"})
     assert again.status_code == 204
-    assert reads[-1] == ("a" * 64, True, 100, Cursor(T1_NS, 1))
+    assert reads[-1] == (a, True, 100, Cursor(T1_NS, 1), logs.MAX_BYTES)
+
+
+async def test_merged_lines_by_time_with_a_cursor_each(admin: Browser, monkeypatch) -> None:
+    _, host_id = await a_host_with_containers(admin, monkeypatch)
+    a, b = "a" * 64, "b" * 64
+    reads = fake_docker(
+        monkeypatch,
+        {
+            a: [Line(10, "stdout", "a1"), Line(30, "stdout", "a2")],
+            b: [Line(10, "stdout", "b1"), Line(20, "stderr", "b2")],
+        },
+    )
+    first, next_url = await lines_of(admin, f"/logs/lines?host={host_id}&c={a}&c={b}")
+    shown = re.findall(
+        r'<span class="font-semibold ([\w-]+)">(\w+)</span> <span data-text>(\w+)<', first.text
+    )
+    assert shown == [
+        ("text-info", "web", "a1"),
+        ("text-success", "db", "b1"),  # the same time: in the order chosen
+        ("text-success", "db", "b2"),
+        ("text-info", "web", "a2"),
+    ]
+    assert {r[4] for r in reads} == {logs.MAX_BYTES // 2}, "the poll's bytes are shared"
+    assert next_url == f"/logs/lines?host={host_id}&tail=500&c={a}~30~1~0&c={b}~20~1~0"
+    assert (await admin.get(next_url, headers={"HX-Request": "true"})).status_code == 204
 
 
 async def test_the_first_request_answers_even_without_lines(admin: Browser, monkeypatch) -> None:
     _, host_id = await a_host_with_containers(admin, monkeypatch)
-    fake_docker(monkeypatch, [])
-    url = f"/logs/lines?host={host_id}&container={'a' * 64}"
-    first = await admin.get(url, headers={"HX-Request": "true"})
-    assert first.status_code == 200 and "after=0&amp;seen=0&amp;tty=0" in first.text
+    fake_docker(monkeypatch, {"a" * 64: []})
+    first, next_url = await lines_of(admin, f"/logs/lines?host={host_id}&c={'a' * 64}")
+    assert first.status_code == 200 and next_url is not None and next_url.endswith("~0~0~0")
 
 
 async def test_lines_refuse_bad_input_and_say_why_reads_fail(admin: Browser, monkeypatch) -> None:
     _, host_id = await a_host_with_containers(admin, monkeypatch)
     off = add_host(admin, name="off", enabled=False)
-    good = f"container={'a' * 64}"
-    for query, code in [
-        (f"host={host_id}&container=../../etc", 404),
-        (f"host=999999&{good}", 404),
-        (f"host={host_id}&{good}&after=-1", 422),
-        (f"host={host_id}&{good}&tty=2", 422),
-        (f"host={host_id}&{good}&seen=x", 422),
+    a = "a" * 64
+    eleven = "&".join(f"c={i:064x}" for i in range(11))
+    for query in [
+        f"host={host_id}",
+        f"host={host_id}&c=../../etc",
+        f"host=999999&c={a}",
+        f"host={host_id}&c={a}~-1~0~0",
+        f"host={host_id}&c={a}~1~0~2",
+        f"host={host_id}&c={a}~1~x~0",
+        f"host={host_id}&c={a}~9999999999999999999~0~0",
+        f"host={host_id}&{eleven}",
     ]:
-        assert (await admin.get(f"/logs/lines?{query}")).status_code == code, query
+        assert (await admin.get(f"/logs/lines?{query}")).status_code == 404, query
 
-    disabled = await admin.get(f"/logs/lines?host={off}&{good}")
+    disabled = await admin.get(f"/logs/lines?host={off}&c={a}")
     assert disabled.status_code == 502
     assert disabled.headers["X-Drydock-Reason"] == "The host is disabled."
 
-    class Gone:
-        class client:
-            class api:
-                @staticmethod
-                def inspect_container(container: str) -> dict[str, Any]:
-                    raise docker.errors.NotFound("no such container: /secret/path")
-
-        def close(self) -> None:
-            pass
-
-    monkeypatch.setattr(log_routes, "open_host", lambda request, host, timeout: Gone())
-    gone = await admin.get(f"/logs/lines?host={host_id}&{good}")
+    fake_docker(monkeypatch, {a: [Line(10, "stdout", "fine")]})
+    gone = await admin.get(f"/logs/lines?host={host_id}&c={'f' * 64}")
     assert gone.status_code == 502 and gone.text == "No such container any more."
     assert "/secret/path" not in gone.headers["X-Drydock-Reason"]
+    # One of several gone: the log names it and stops following it; the rest go on.
+    both, next_url = await lines_of(admin, f"/logs/lines?host={host_id}&c={a}&c={'f' * 64}")
+    assert both.status_code == 200 and "fine" in both.text
+    assert f"{'f' * 12}: No such container any more. Reload to follow it again." in both.text
+    assert next_url == f"/logs/lines?host={host_id}&tail=500&c={a}~10~1~0"
+    download = await admin.get(f"/logs/download?host={host_id}&c={'f' * 64}")
+    assert download.status_code == 502
+    assert download.text == "Drydock could not read the logs. No such container any more."
+
+
+async def test_download_is_a_text_file_of_the_merged_lines(admin: Browser, monkeypatch) -> None:
+    _, host_id = await a_host_with_containers(admin, monkeypatch)
+    a, d = "a" * 64, "d" * 64
+    reads = fake_docker(
+        monkeypatch,
+        {a: [Line(T0_NS, "stdout", "<b>one</b>")], d: [Line(T1_NS, "stderr", "two")]},
+    )
+    one = await admin.get(f"/logs/download?host={host_id}&c={a}&tail=1000")
+    assert one.status_code == 200 and one.headers["content-type"].startswith("text/plain")
+    assert one.headers["content-disposition"] == 'attachment; filename="web-logs.txt"'
+    assert one.text == "2026-11-04T18:00:00.000000+00:00 stdout <b>one</b>\n"
+    assert reads[-1][2:] == (1000, Cursor(), log_routes.DOWNLOAD_BYTES)
+
+    # Several: each line named; the file after the host. A name never shapes the header.
+    both = await admin.get(f"/logs/download?host={host_id}&c={a}&c={d}")
+    assert both.headers["content-disposition"] == 'attachment; filename="rigel-logs.txt"'
+    assert both.text.splitlines() == [
+        "2026-11-04T18:00:00.000000+00:00 web stdout <b>one</b>",
+        "2026-11-04T18:00:01.500000+00:00 <img src=x onerror=alert(1)> stderr two",
+    ]
+    fake_docker(monkeypatch, {d: [Line(T1_NS, "stdout", "x")]}, cut=True)
+    alone = await admin.get(f"/logs/download?host={host_id}&c={d}")
+    assert alone.headers["content-disposition"] == (
+        'attachment; filename="img-src-x-onerror-alert-1-logs.txt"'
+    )
+    assert alone.text.endswith("[cut: the download reached its size limit; choose fewer lines]\n")
+    assert (await admin.get(f"/logs/download?host={host_id}")).status_code == 404

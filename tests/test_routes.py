@@ -115,6 +115,7 @@ INVENTORY = {
     ("GET", "/containers/{host_id}/{container_id}/inspect"),
     ("GET", "/logs"),
     ("GET", "/logs/lines"),
+    ("GET", "/logs/download"),
     ("POST", "/feed/read"),
     ("GET", "/about"),
     ("GET", "/hosts"),

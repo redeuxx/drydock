@@ -443,7 +443,7 @@ const logList = page.locator("nav[aria-label=Containers]");
 const appLink = logList.locator("a", { hasText: "drydock-test-app-1" });
 await appLink.waitFor({ timeout: 15000 });
 await appLink.click();
-const logLines = page.locator("#container-log [data-line]");
+const logLines = page.locator("#log-view [data-line]");
 const logLoaded = await logLines
   .first()
   .waitFor({ timeout: 15000 })
@@ -455,7 +455,7 @@ const logPoll = await page
   .waitForRequest(
     (request) =>
       request.url().includes("/logs/lines?") &&
-      request.url().includes("after=") &&
+      request.url().includes("~") &&
       request.headers()["x-drydock-poll"] === "1",
     { timeout: 15000 },
   )
@@ -463,7 +463,7 @@ const logPoll = await page
   .catch(() => false);
 check(logPoll, "the log polls with its cursor, marked as a poll");
 const grew = await page
-  .waitForFunction((count) => document.querySelectorAll("#container-log [data-line]").length > count, firstCount, {
+  .waitForFunction((count) => document.querySelectorAll("#log-view [data-line]").length > count, firstCount, {
     timeout: 15000,
   })
   .then(() => true)
@@ -471,7 +471,7 @@ const grew = await page
 check(grew, "new lines arrive at the end of the log");
 check(
   await page.evaluate(() => {
-    const log = document.getElementById("container-log");
+    const log = document.querySelector<HTMLElement>("#log-view [role=log]");
     return !!log && log.scrollHeight - log.scrollTop - log.clientHeight < 32;
   }),
   "the log follows its end",
@@ -487,6 +487,36 @@ check(
 );
 await page.fill("[data-log-filter]", "smoke-target");
 check((await logList.locator("li[data-name]:visible").count()) === 1, "the filter narrows the list");
+await page.fill("[data-log-filter]", "");
+// Two containers merged: each line names its container. Then the toolbar.
+await logList.locator("li[data-name='drydock-test-app-1'] input[name=c]").check();
+await logList.locator("li[data-name='drydock-test-smoke-target-1'] input[name=c]").check();
+await page.getByRole("button", { name: "Show checked" }).click();
+const named = await page
+  .locator("#log-view [data-line] span.font-semibold", { hasText: "drydock-test-app-1" })
+  .first()
+  .waitFor({ timeout: 15000 })
+  .then(() => true)
+  .catch(() => false);
+check(named, "merged logs name each line's container");
+await page.getByLabel("Timestamps").uncheck();
+check(
+  await page.evaluate(() => getComputedStyle(document.querySelector("#log-view [data-stamp]")!).display === "none"),
+  "timestamps can be hidden",
+);
+await page.fill("[data-log-search]", "GET");
+const marked = await page
+  .locator("#log-view mark")
+  .first()
+  .waitFor({ timeout: 15000 })
+  .then(() => true)
+  .catch(() => false);
+check(marked, "search marks matches in the lines shown");
+const [download] = await Promise.all([
+  page.waitForEvent("download", { timeout: 15000 }),
+  page.getByRole("link", { name: "Download" }).click(),
+]);
+check(download.suggestedFilename().endsWith("-logs.txt"), "the logs download as a text file");
 
 // STORAGE, A JOB AND A RUN WITH ITS LIVE LOG
 

@@ -260,8 +260,11 @@ COUNTING = [
     'i=0; while :; do echo "line $i"; echo "err $i" >&2; i=$((i+1)); sleep 0.2; done',
 ]
 MARKED = ["sh", "-c", 'echo "<script>x</script>"; printf "\033[31mred\033[0m\n"; exec sleep 3600']
-LINE_RE = re.compile(r'<div data-line( class="text-error")?><span[^>]*>[^<]*</span> ([^<]*)</div>')
-NEXT_RE = re.compile(r'<span id="log-poller" hx-get="([^"]*)"')
+LINE_RE = re.compile(
+    r'<div data-line( class="text-error")?><span data-stamp[^>]*>[^<]*</span>'
+    r"(?:<span[^>]*>[^<]*</span> )?<span data-text>([^<]*)</span></div>"
+)
+NEXT_RE = re.compile(r'<span data-log-poller hx-get="([^"]*)"')
 
 
 async def read_log(browser: Browser, url: str) -> tuple[list[tuple[bool, str]], str | None]:
@@ -298,13 +301,13 @@ async def test_logs_through_the_proxy_without_gaps_or_repeats(admin: Browser) ->
 
             # The tail first, then each poll brings only lines it has not had.
             lines, url = await read_log(
-                admin, f"/logs/lines?host={host_id}&container={counting.id}&tail=100"
+                admin, f"/logs/lines?host={host_id}&c={counting.id}&tail=100"
             )
             assert lines[:2] in (
                 [(False, "line 0"), (True, "err 0")],
                 [(True, "err 0"), (False, "line 0")],
             )
-            assert url is not None and "tty=0" in url
+            assert url is not None and url.endswith("~0")
             out: list[int] = []
             err: list[int] = []
             for _ in range(8):
@@ -319,12 +322,19 @@ async def test_logs_through_the_proxy_without_gaps_or_repeats(admin: Browser) ->
             assert len(out) > 10
 
             # A TTY container: one stream, escape sequences gone, markup escaped.
-            lines, url = await read_log(admin, f"/logs/lines?host={host_id}&container={tty.id}")
+            lines, url = await read_log(admin, f"/logs/lines?host={host_id}&c={tty.id}")
             assert lines == [(False, "<script>x</script>"), (False, "red")]
-            assert url is not None and "tty=1" in url
+            assert url is not None and url.endswith("~1")
+
+            # Both at once: merged, a cursor each.
+            lines, url = await read_log(
+                admin, f"/logs/lines?host={host_id}&c={tty.id}&c={counting.id}"
+            )
+            assert (False, "<script>x</script>") in lines and len(lines) > 2
+            assert url is not None and url.count("&c=") == 2
         finally:
             await docker_client.run_blocking(remove, handle.client, counting, tty)
-        gone = await admin.get(f"/logs/lines?host={host_id}&container={counting.id}")
+        gone = await admin.get(f"/logs/lines?host={host_id}&c={counting.id}")
         assert gone.status_code == 502 and gone.text == "No such container any more."
     finally:
         handle.close()

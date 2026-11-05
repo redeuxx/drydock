@@ -3,8 +3,17 @@
 {% from "_icons.html" import icon %}
 {% block title %}Logs{% endblock %}
 {% block width %}max-w-screen-2xl{% endblock %}
+{% macro poller(ids) -%}
+{# The first request reads the last lines; each answer brings the next poller. #}
+<span data-log-poller hx-get="/logs/lines?{{ {'host': chosen.id, 'tail': tail, 'c': ids}|query }}" hx-trigger="load, every 2s" hx-target="this" hx-select="#log-chunk" hx-swap="outerHTML strip:true ignoreTitle:true" hx-sync="this:drop" hx-nonce="{{ csp_nonce }}">Loading&hellip;</span>
+<noscript>The log needs JavaScript.</noscript>
+{%- endmacro %}
+{% macro log_box(label_id, ids, lines, height) -%}
+<div role="log" aria-labelledby="{{ label_id }}" tabindex="0" data-max-lines="{{ lines }}" class="{{ height }} overflow-auto rounded-box border border-base-300 bg-base-100 p-2 font-mono text-xs whitespace-pre-wrap break-all group-data-[nowrap]:whitespace-pre group-data-[nowrap]:break-normal group-data-[size=m]:text-sm group-data-[size=l]:text-base">{{ poller(ids) }}</div>
+{%- endmacro %}
 {% block content %}
 {% set dots = {"running": "bg-success", "paused": "bg-warning", "restarting": "bg-warning", "dead": "bg-error", "created": "bg-info"} %}
+{% set ids = selected|map(attribute=0)|list %}
 <h1 class="mb-4 text-3xl font-bold">Logs</h1>
 {% if not hosts %}
 <p class="text-sm opacity-70">No host is set up yet. <a class="link" href="/hosts/new?kind=local">Add the local host</a> or <a class="link" href="/hosts/new?kind=ssh">an SSH host</a>.</p>
@@ -21,16 +30,27 @@
 </form>
 {{ host_bar(chosen, state, snap, where) }}
 <div class="grid gap-4 md:grid-cols-[16rem_minmax(0,1fr)]">
-  {# The list is what the status collector last read. The filter and the favourites
-     (starred names, kept per host in this browser) are frontend/app.ts's. #}
+  {# The list is what the status collector last read. A name opens that container's log;
+     the checkboxes choose several (#log-select). The filter and the favourites (starred
+     names, kept per host in this browser) are frontend/app.ts's. #}
   <nav aria-label="Containers" class="min-w-0">
-    <input type="search" class="input input-sm mb-2 w-full" placeholder="Filter" aria-label="Filter containers" data-log-filter>
+    {# The filter box is outside the form: Enter in it must not reload the page. #}
+    <div class="mb-2 flex items-center gap-2">
+      <input type="search" class="input input-sm min-w-0 flex-1" placeholder="Filter" aria-label="Filter containers" data-log-filter>
+      <form id="log-select" method="get" action="/logs" hx-get="/logs" hx-push-url="true" hx-nonce="{{ csp_nonce }}">
+        <input type="hidden" name="host" value="{{ chosen.id }}">
+        <input type="hidden" name="tail" value="{{ tail }}">
+        <input type="hidden" name="mode" value="{{ mode }}">
+        <button type="submit" class="btn btn-sm" title="Show the checked containers together (at most {{ max_selected }})">Show checked</button>
+      </form>
+    </div>
     <ul class="flex flex-col gap-0.5 text-sm" data-favourites="{{ chosen.id }}">
       {% for c in containers %}
-      {% set current = selected and selected[0] == c.id %}
+      {% set current = c.id in ids %}
       <li class="flex items-center gap-1" data-name="{{ c.name }}" data-order="{{ loop.index }}">
+        <input type="checkbox" form="log-select" name="c" value="{{ c.id }}" class="checkbox checkbox-xs"{% if current %} checked{% endif %} aria-label="Check {{ c.name }}">
         <button type="button" class="btn btn-ghost btn-xs btn-square aria-pressed:text-warning aria-pressed:[&_svg]:fill-current" aria-pressed="false" data-star>{{ icon("star", "size-3.5") }}<span class="sr-only">Favourite {{ c.name }}</span></button>
-        <a href="/logs?{{ {'host': chosen.id, 'container': c.id, 'tail': tail}|urlencode }}" class="flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1 hover:bg-base-300{% if current %} bg-base-300 font-semibold{% endif %}"{% if current %} aria-current="page"{% endif %}>
+        <a href="/logs?{{ {'host': chosen.id, 'c': c.id, 'tail': tail}|query }}" class="flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1 hover:bg-base-300{% if current %} bg-base-300 font-semibold{% endif %}"{% if current %} aria-current="page"{% endif %}>
           <span aria-hidden="true" class="size-2 shrink-0 rounded-full {{ dots.get(c.state, 'bg-base-content/40') }}"></span>
           <span class="truncate" title="{{ c.name }} ({{ c.state }})">{{ c.name }}</span><span class="sr-only">, {{ c.state }}</span>
         </a>
@@ -39,30 +59,71 @@
       <li class="opacity-70">{% if not chosen.enabled %}Disabled: drydock does not connect to this host.{% elif snap is none or snap.taken_at is none %}Reading the containers&hellip; reload in a moment.{% else %}No containers on this host.{% endif %}</li>
       {% endfor %}
     </ul>
+    {% if stacks %}
+    <h2 class="mt-4 mb-1 text-xs font-semibold tracking-wide uppercase opacity-70">Whole stacks</h2>
+    <ul class="flex flex-col gap-0.5 text-sm">
+      {% for name, members, size in stacks %}
+      <li><a class="block truncate rounded px-2 py-1 hover:bg-base-300" href="/logs?{{ {'host': chosen.id, 'c': members, 'mode': 'grouped', 'tail': tail}|query }}" title="{{ name }}">{{ name }} <span class="opacity-60">({% if size > members|length %}first {{ members|length }} of {{ size }}{% else %}{{ size }}{% endif %})</span></a></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
   </nav>
   <section class="min-w-0" aria-labelledby="log-title">
     {% if selected %}
-    <div class="mb-2 flex flex-wrap items-center gap-2">
-      <h2 id="log-title" class="mr-auto truncate text-lg font-semibold" title="{{ selected[1] }}">{{ selected[1] }}</h2>
+    <h2 id="log-title" class="mb-2 truncate text-lg font-semibold" title="{{ selected|map(attribute=1)|join(', ') }}">{{ selected|map(attribute=1)|join(", ") }}</h2>
+    {% if dropped %}<div role="status" class="alert alert-warning alert-soft mb-2 px-3 py-2 text-sm">At most {{ max_selected }} containers are shown together; the others were left out.</div>{% endif %}
+    {# The toolbar: what to read (a GET, as the address keeps it), then how to show what
+       was read (frontend/app.ts, nothing is read again). #}
+    <div class="mb-2 flex flex-wrap items-center gap-2 text-sm">
       <form method="get" action="/logs" hx-get="/logs" hx-trigger="change" hx-push-url="true" hx-nonce="{{ csp_nonce }}" class="flex items-center gap-2">
         <input type="hidden" name="host" value="{{ chosen.id }}">
-        <input type="hidden" name="container" value="{{ selected[0] }}">
-        <label for="log-tail" class="text-sm">Lines</label>
+        {% for cid in ids %}<input type="hidden" name="c" value="{{ cid }}">{% endfor %}
+        <label for="log-tail">Lines</label>
         <select id="log-tail" name="tail" class="select select-sm w-auto" data-focus-result>
           {% for t in tails %}<option value="{{ t }}"{% if t == tail %} selected{% endif %}>{{ t }}</option>{% endfor %}
         </select>
+        {% if ids|length > 1 %}
+        <label for="log-mode">View</label>
+        <select id="log-mode" name="mode" class="select select-sm w-auto">
+          <option value="merged"{% if mode == "merged" %} selected{% endif %}>Merged</option>
+          <option value="grouped"{% if mode == "grouped" %} selected{% endif %}>Side by side</option>
+        </select>
+        {% endif %}
         <noscript><button type="submit" class="btn btn-sm">Show</button></noscript>
       </form>
       <button type="button" class="btn btn-sm" aria-pressed="false" data-log-pause>Pause</button>
       <button type="button" class="btn btn-sm" data-log-clear>Clear</button>
+      <a class="btn btn-sm" href="/logs/download?{{ {'host': chosen.id, 'c': ids, 'tail': tail}|query }}" download>Download</a>
+      <button type="button" class="btn btn-sm" data-log-copy>Copy</button>
     </div>
-    {# The first request reads the last lines; each answer brings the next poller. #}
-    <div id="container-log" role="log" aria-labelledby="log-title" tabindex="0" data-max-lines="{{ tail }}" class="h-[70vh] overflow-auto rounded-box border border-base-300 bg-base-100 p-2 font-mono text-xs whitespace-pre-wrap break-all">
-      <span id="log-poller" hx-get="/logs/lines?{{ {'host': chosen.id, 'container': selected[0], 'tail': tail}|urlencode }}" hx-trigger="load, every 2s" hx-target="this" hx-select="#log-chunk" hx-swap="outerHTML strip:true ignoreTitle:true" hx-sync="this:drop" hx-nonce="{{ csp_nonce }}">Loading&hellip;</span>
-      <noscript>The log needs JavaScript.</noscript>
+    <div class="mb-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm" data-log-options>
+      <label class="flex items-center gap-1"><input type="checkbox" class="checkbox checkbox-xs" checked data-log-option="nostamps"> Timestamps</label>
+      <label class="flex items-center gap-1"><input type="checkbox" class="checkbox checkbox-xs" checked data-log-option="nowrap"> Wrap lines</label>
+      <label class="flex items-center gap-1">Text
+        <select class="select select-xs w-auto" data-log-size>
+          <option value="s">small</option><option value="m">medium</option><option value="l">large</option>
+        </select>
+      </label>
+      <input type="search" class="input input-sm w-56" placeholder="Search the lines shown" aria-label="Search the lines shown" data-log-search>
+      <span class="opacity-70" role="status" data-log-matches></span>
+    </div>
+    {# The options above set data attributes here; each log restyles through group-data. #}
+    <div id="log-view" class="group">
+      {% if ids|length > 1 and mode == "grouped" %}
+      <div class="grid gap-3 xl:grid-cols-2">
+        {% for cid, name in selected %}
+        <div class="min-w-0">
+          <h3 id="log-name-{{ loop.index }}" class="mb-1 truncate text-sm font-semibold" title="{{ name }}">{{ name }}</h3>
+          {{ log_box("log-name-" ~ loop.index, [cid], tail, "h-[40vh]") }}
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      {{ log_box("log-title", ids, tail * ids|length, "h-[70vh]") }}
+      {% endif %}
     </div>
     {% else %}
-    <p class="text-sm opacity-70">Choose a container to see its log.</p>
+    <p class="text-sm opacity-70">Choose a container to see its log, or check several and show them together.</p>
     {% endif %}
   </section>
 </div>

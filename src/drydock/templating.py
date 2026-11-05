@@ -4,6 +4,7 @@ import logging
 import re
 from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 from fastapi import Request
@@ -116,6 +117,9 @@ env.filters["stamp"] = stamp
 env.filters["logtimes"] = logtimes
 env.filters["duration"] = duration
 env.filters["clock"] = clock
+# A query string from a dict whose values may be lists (repeated keys); Jinja's urlencode
+# writes a list as one value.
+env.filters["query"] = lambda values: urlencode(values, doseq=True)
 templates = Jinja2Templates(env=env)
 
 

@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 KIB = 1024
-MAX_BYTES = 2 * KIB * KIB  # of Docker's answer, per container and request
+MAX_BYTES = 2 * KIB * KIB  # of Docker's answers, per poll (shared by its containers)
 MAX_LINE = 16 * KIB
 TAILS = (100, 500, 1000, 5000)
 DEFAULT_TAIL = 500
@@ -160,8 +160,11 @@ def parse(data: bytes, tty: bool, complete: bool, cursor: Cursor) -> Batch:
     return Batch(kept, moved, cut=not complete)
 
 
-def read(api: Any, container_id: str, tty: bool, tail: int, cursor: Cursor) -> Batch:
-    """Blocking. The lines after the cursor, or the last tail lines when it is empty.
+def read(
+    api: Any, container_id: str, tty: bool, tail: int, cursor: Cursor, limit: int = MAX_BYTES
+) -> Batch:
+    """Blocking. The lines after the cursor, or the last tail lines when it is empty, from
+    at most limit bytes of Docker's answer.
 
     Uses docker-py's private _get, _url and _raise_for_status (docker==7.2.0), since its
     logs() drops which stream a line came from.
@@ -183,9 +186,9 @@ def read(api: Any, container_id: str, tty: bool, tail: int, cursor: Cursor) -> B
         complete = True
         for chunk in response.iter_content(chunk_size=64 * KIB):
             data += chunk
-            if len(data) >= MAX_BYTES:
+            if len(data) >= limit:
                 complete = False
                 break
     finally:
         response.close()
-    return parse(bytes(data[:MAX_BYTES]), tty, complete, cursor)
+    return parse(bytes(data[:limit]), tty, complete, cursor)
