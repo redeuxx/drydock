@@ -225,6 +225,10 @@ async def populate(browser: Browser) -> None:
                     expires_at=now + timedelta(days=36500),
                 )
             )
+        if hasattr(Host, "alerts_enabled"):  # added in revision 0019
+            alerting = db.get(Host, local)
+            alerting.alerts_enabled = True
+            alerting.alert_target_id = ops
         if hasattr(models, "UpdatePolicy"):  # added in revision 0018
             db.add(
                 models.UpdatePolicy(

@@ -22,7 +22,7 @@ import anyio.from_thread
 import asyncssh
 import docker.errors
 import requests
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -32,7 +32,7 @@ from drydock.db import get_db
 from drydock.hosts import client as docker_client
 from drydock.hosts import inventory, ssh
 from drydock.hosts.manager import HostManager, HostUnavailable
-from drydock.models import Hook, Host, Job, UpdatePolicy, utcnow
+from drydock.models import Hook, Host, Job, NotificationTarget, UpdatePolicy, utcnow
 from drydock.routes.auth import FormStr, client_ip
 from drydock.security.rbac import Role, require_recent_auth, require_role
 from drydock.security.sessions import Auth
@@ -307,8 +307,19 @@ def edit_page(
         host=host,
         status=manager(request).status(host),
         authorized_key_options=ssh.AUTHORIZED_KEY_OPTIONS,
+        alert_targets=alert_targets(request),
         **context,
     )
+
+
+def alert_targets(request: Request) -> list[tuple[int, str]]:
+    """(ID, name) of every notification target, for the host's alerts. Through the
+    request's own session: a second one would wait for its write lock."""
+    db: Session = request.state.db
+    return [
+        (t.id, t.name)
+        for t in db.scalars(select(NotificationTarget).order_by(NotificationTarget.name))
+    ]
 
 
 def scan_now(address: str, port: int) -> tuple[str, str]:
@@ -546,6 +557,46 @@ def delete_host(
     db.commit()
     reload(request, host_id)
     return see_other(request, "/hosts")
+
+
+# ALERTS
+
+
+@router.post("/{host_id}/alerts")
+def set_alerts(
+    request: Request,
+    host_id: int,
+    auth: Admin,
+    db: Session = Depends(get_db),
+    enabled: Annotated[str, Form()] = "",
+    alert_target_id: Annotated[str, Form()] = "",
+) -> Response:
+    """Turns the host's alerts (hosts/alerts.py) on or off and picks their target. The
+    event collector picks the change up within seconds."""
+    host = get_host(db, host_id)
+    target = None
+    if alert_target_id:
+        target = (
+            db.get(NotificationTarget, int(alert_target_id))
+            if re.fullmatch(r"[0-9]{1,9}", alert_target_id)
+            else None
+        )
+        if target is None:
+            db.rollback()
+            error = "Choose an existing notification target."
+            return edit_page(request, auth, get_host(db, host_id), 422, error=error)
+    host.alerts_enabled = enabled == "1"
+    host.alert_target_id = target.id if target is not None else None
+    audit.record(
+        db,
+        actor=auth.user.username,
+        action="host.alerts",
+        target=f"host:{host.id}",
+        ip=client_ip(request),
+        details={"enabled": host.alerts_enabled, "target": target.name if target else None},
+    )
+    db.commit()
+    return see_other(request, f"/hosts/{host_id}")
 
 
 # HOST KEYS

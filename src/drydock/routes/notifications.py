@@ -17,12 +17,12 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from drydock import audit, notify
 from drydock.db import get_db
-from drydock.models import Job, JobNotification, NotificationTarget
+from drydock.models import Host, Job, JobNotification, NotificationTarget
 from drydock.routes.auth import client_ip
 from drydock.security.rbac import Role, require_recent_auth, require_role
 from drydock.security.sessions import Auth
@@ -326,6 +326,7 @@ def delete_target(
         details=summary(target) | {"detached_from": users(db, target)},
     )
     db.delete(target)  # its job attachments go with it (ON DELETE CASCADE)
+    db.execute(update(Host).where(Host.alert_target_id == target_id).values(alert_target_id=None))
     db.commit()
     return see_other(request, "/notifications")
 

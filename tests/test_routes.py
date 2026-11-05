@@ -147,6 +147,7 @@ INVENTORY = {
     ("POST", "/hosts/{host_id}"),
     ("GET", "/hosts/{host_id}/containers"),
     ("POST", "/hosts/{host_id}/delete"),
+    ("POST", "/hosts/{host_id}/alerts"),
     ("POST", "/hosts/{host_id}/key"),
     ("POST", "/hosts/{host_id}/scan-hostkey"),
     ("POST", "/hosts/{host_id}/test"),
@@ -679,6 +680,7 @@ AUDITED_SUCCESS = [
         303,
     ),
     ("/hosts/{host_id}/test", {}, "host.test", 200),
+    ("/hosts/{host_id}/alerts", {"enabled": "1"}, "host.alerts", 303),
     # Docker's side faked (run_actions): one container started.
     (
         "/containers/actions",

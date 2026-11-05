@@ -331,6 +331,29 @@ class Notifier:
         except Exception:
             log.exception("Run %d: notifications failed", run_id)
 
+    def alert(self, target_id: int, title: str, body: str, failure: bool) -> None:
+        """Tells one notification target about a host alert (hosts/alerts.py), if it is
+        enabled. Thread-safe."""
+        self._submit(self._send_alert, target_id, title, body, failure)
+
+    def _send_alert(self, target_id: int, title: str, body: str, failure: bool) -> None:
+        try:
+            with self._sessions() as db:
+                target = db.get(NotificationTarget, target_id)
+                if target is None or not target.enabled:
+                    return
+                name, url_enc = target.name, target.url_enc
+            url = self._crypto.decrypt(url_enc)
+        except CryptoError:
+            log.warning("Alert: notification %s cannot be decrypted", target_id)
+            return
+        except Exception:
+            log.exception("Alert: notification %s could not be loaded", target_id)
+            return
+        outcome = send(name, url, title, body + f"\n{self._settings.base_url}/", failure=failure)
+        level = logging.INFO if outcome.ok else logging.WARNING
+        log.log(level, "Alert: notification %s: %s", name, outcome.detail)
+
     def storage_reconnect(self, storage_id: int) -> None:
         """Tells the failure targets of the jobs using a Google Drive target that Google
         refused drydock's access (storage.gdrive_oauth.mark_reconnect). Thread-safe."""

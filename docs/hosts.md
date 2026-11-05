@@ -89,6 +89,17 @@ Only the time, the action, the container's ID, name and image, a die's exit code
 
 The local host's socket proxy allows `GET /events` for this (`EVENTS=1` in `compose.yaml`); an install from before this version needs the new `compose.yaml`. SSH hosts need nothing new.
 
+## Alerts
+
+Each host page has an **Alerts** card (admins): turn alerts on, and pick a notification target to tell besides the bell. With alerts on, drydock tells, once per change and again when it recovers:
+
+- a container becomes unhealthy (and healthy again);
+- a container exits with a nonzero code nobody asked for: an exit right after `docker stop`, `docker kill` or `docker compose down` (a kill within 30 seconds) does not count;
+- a container restarts 5 times within 10 minutes (and when it has been quiet for 10 minutes);
+- the host's event stream has failed for 5 minutes (and when it is back).
+
+Alerts come from the same container events as [Activity](#activity), so they need nothing more from the host. Containers a backup, restore or update is working on are left out: stopping and starting them is the run's job. Admins see alerts in the bell, which links to the host's containers; each is also in the audit log. What drydock last told is kept in memory, so after a restart an ongoing problem is told again when it next changes. Deleting a notification target removes it from the hosts that told it.
+
 ## Helper containers
 
 To read and write volumes drydock runs short-lived helper containers (`busybox`, pinned by multi-arch digest) with no network, a read-only root filesystem, no capabilities (except two restore helpers, each running a fixed command: the wipe helper gets exactly `DAC_OVERRIDE` and `FOWNER`, and the data helper, which gives a restored directory its archived owner and mode after the data is written, exactly `CHOWN`, `FOWNER` and `FSETID`), `no-new-privileges`, a PID limit and the labels `drydock.helper=1` and `drydock.instance=<installation ID>` (a random ID made when the database is created). Volume data moves through the daemon's archive API, so a transfer helper is never even started. Helpers are removed when the transfer ends, and a reaper removes leftovers when drydock starts and hourly after that on every host reachable at that moment, skipping any helper a run is still using. The reaper and the container inventory act only on helpers carrying this installation's ID, so two drydock instances (or the test suite) can share a daemon.

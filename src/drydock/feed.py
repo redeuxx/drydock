@@ -7,12 +7,14 @@ are one item (a JobRun) that tells how each ended. An item is unread when it cha
 the user's feed_read_at, or after the account was made before the first "Mark all read".
 """
 
+import json
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
+from urllib.parse import quote
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from drydock.jobs.targets import MAX_TARGETS
@@ -151,13 +153,40 @@ def run_filters(user: User) -> list[Any]:
     return filters
 
 
+# Container and host alerts (hosts/alerts.py): their own text, with a recovery in green.
+ALERT_PREFIX = "alert."
+
+
 def alert_query(user: User):
     if user.role < Role.admin:
         return None
-    return select(AuditEvent).where(AuditEvent.action.in_(ALERTS))
+    return select(AuditEvent).where(
+        or_(AuditEvent.action.in_(ALERTS), AuditEvent.action.startswith(ALERT_PREFIX))
+    )
+
+
+def state_item(event: AuditEvent, since: datetime) -> Item:
+    try:
+        details = json.loads(event.details)
+    except ValueError:
+        details = {}
+    details = details if isinstance(details, dict) else {}
+    _, _, ident = (event.target or "").partition(":")
+    link = f"/containers?host={ident}" if ident.isdigit() else "/"
+    if ident.isdigit() and details.get("container"):
+        link += "&q=" + quote(str(details["container"]))
+    return Item(
+        event.ts,
+        "success" if event.outcome == "success" else "error",
+        str(details.get("text") or event.action),
+        link,
+        event.ts > since,
+    )
 
 
 def alert_item(event: AuditEvent, since: datetime) -> Item:
+    if event.action.startswith(ALERT_PREFIX):
+        return state_item(event, since)
     title, link = ALERTS[event.action]
     _, _, ident = (event.target or "").partition(":")
     ident = ident if ident.isdigit() else "?"

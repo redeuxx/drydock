@@ -404,3 +404,44 @@ async def test_container_events_through_the_proxy_are_stored(admin: Browser) -> 
             await docker_client.run_blocking(remove, handle.client, quitter, sleeper)
     finally:
         handle.close()
+
+
+@needs_docker
+async def test_a_container_that_dies_alerts_through_the_event_stream(admin: Browser) -> None:
+    handle = await docker_client.run_blocking(host_docker)
+    try:
+        await docker_client.run_blocking(helper.ensure_image, handle.client, IMAGE)
+        host = Host(
+            name="local", kind="local", docker_url=DOCKER_URL, enabled=True, alerts_enabled=True
+        )
+        host_id = await docker_client.run_blocking(insert_host, admin, host)
+        collector = admin.app.state.events
+        await collector.supervise()
+        await wait_until(
+            lambda: collector._follows[host_id].stream is not None, 30, "the event stream"
+        )
+        quitter = await docker_client.run_blocking(
+            functools.partial(
+                handle.client.containers.run,
+                IMAGE,
+                ["sh", "-c", "exit 3"],
+                detach=True,
+                labels={TEST_LABEL: "1"},
+                network_mode="none",
+            )
+        )
+        try:
+
+            def alerted() -> list[tuple]:
+                return admin.sql(
+                    "SELECT outcome, details FROM audit_events WHERE action = 'alert.died'"
+                )
+
+            await wait_until(lambda: bool(alerted()), 30, "the alert")
+            ((outcome, details),) = alerted()
+            assert outcome == "failure"
+            assert f"local: {quitter.name} exited with code 3." in details
+        finally:
+            await docker_client.run_blocking(remove, handle.client, quitter)
+    finally:
+        handle.close()

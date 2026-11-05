@@ -27,6 +27,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from drydock import db
 from drydock.config import DEFAULT_PROXIES, ConfigError, Settings, load_settings
 from drydock.crypto import Crypto
+from drydock.hosts import alerts as host_alerts
 from drydock.hosts import logs as container_logs
 from drydock.hosts.client import run_blocking
 from drydock.hosts.events import EventCollector
@@ -159,6 +160,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             rclone=rclone,
             on_reconnect=app.state.mark_reconnect,
         )
+        # Alerts leave out containers a run holds, and are told to the bell and targets.
+        events.use(
+            dispatcher.holds,
+            functools.partial(host_alerts.deliver, app.state.sessionmaker, notifier),
+        )
         scheduler = app.state.scheduler = Scheduler(
             settings, app.state.sessionmaker, dispatcher, host_manager
         )
@@ -208,6 +214,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Runs first: restarting containers on SSH hosts needs their tunnels.
         if dispatcher is not None:
             await dispatcher.shutdown()
+        if events is not None:  # before the notifier: alerts it judged are still told
+            await events.close()
+            events = None
         if notifier is not None:  # after the dispatcher: the runs it ended still notify
             await run_blocking(notifier.close)
         await rclone.close()  # after the dispatcher: its runs upload through rclone

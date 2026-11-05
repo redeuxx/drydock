@@ -155,6 +155,23 @@
     </div>
   </section>
 
+  <section class="card bg-base-100 shadow-sm md:col-span-2" aria-labelledby="alerts-heading">
+    <div class="card-body">
+      <h2 id="alerts-heading" class="card-title">Alerts</h2>
+      <p class="text-sm">When a container becomes unhealthy, dies with an error, keeps restarting, or this host has been unreachable for 5 minutes, drydock says so in the bell (for admins) and to the target below, once, and again when it recovers. Containers a backup, restore or update is working on are left out.</p>
+      <form method="post" action="/hosts/{{ host.id }}/alerts" hx-post="/hosts/{{ host.id }}/alerts" hx-nonce="{{ csp_nonce }}" class="flex flex-wrap items-end gap-3">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        <label class="label text-sm"><input type="checkbox" class="checkbox checkbox-sm" name="enabled" value="1"{% if host.alerts_enabled %} checked{% endif %}> Alerts on</label>
+        <label class="flex flex-col text-sm">Tell
+          <select name="alert_target_id" class="select select-sm w-auto">
+            <option value="">Only the bell</option>
+            {% for target_id, name in alert_targets %}<option value="{{ target_id }}"{% if host.alert_target_id == target_id %} selected{% endif %}>{{ name }}</option>{% endfor %}
+          </select>
+        </label>
+        <button type="submit" class="btn btn-sm">Save alerts</button>
+      </form>
+    </div>
+  </section>
   <section class="card border border-error/40 bg-base-100 shadow-sm md:col-span-2" aria-labelledby="danger-heading">
     <div class="card-body">
       <h2 id="danger-heading" class="card-title">Remove host</h2>

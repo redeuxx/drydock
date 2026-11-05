@@ -149,6 +149,12 @@ class Host(Base):
     api_version: Mapped[str | None] = mapped_column(String(16))
     last_seen: Mapped[datetime | None] = mapped_column(UTCDateTime)
     enabled: Mapped[bool] = mapped_column(default=True)
+    # Alerts on its containers' and its connection's changes (hosts/alerts.py), told to
+    # the bell and to this notification target.
+    alerts_enabled: Mapped[bool] = mapped_column(default=False, server_default=false())
+    # A notification target's ID; no foreign key (migration 0019): deleting the target
+    # clears it.
+    alert_target_id: Mapped[int | None] = mapped_column(Integer, default=None)
 
 
 class Installation(Base):

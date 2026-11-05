@@ -25,6 +25,7 @@ import functools
 import logging
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -34,7 +35,7 @@ import anyio.to_thread
 from sqlalchemy import case, delete, func, insert, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from drydock.hosts import client
+from drydock.hosts import alerts, client
 from drydock.hosts.helper import is_helper
 from drydock.hosts.manager import HostManager, HostUnavailable
 from drydock.hosts.status import HEALTH, connection_key
@@ -200,6 +201,57 @@ class EventCollector:
         self._task: asyncio.Task[None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._counts = Counts()
+        # Alerts (hosts/alerts.py): the hosts that have them on, their state, and how they
+        # are told (blocking: the audit log and a notification target). See use().
+        self._alerting: dict[int, Host] = {}
+        self.watch = alerts.Watch(busy=lambda container_id, name: False)
+        self._deliver: Callable[[alerts.Alert, Host], None] | None = None
+        self._sending: set[asyncio.Task[None]] = set()
+        self._last_send: asyncio.Task[None] | None = None
+
+    def use(
+        self, busy: Callable[[str, str], bool], deliver: Callable[[alerts.Alert, Host], None]
+    ) -> None:
+        """Turns alerts on: busy tells whether a run holds a container (left out),
+        deliver tells an alert (blocking, on a worker thread)."""
+        self.watch = alerts.Watch(busy)
+        self._deliver = deliver
+
+    def _send(self, found: list[alerts.Alert]) -> None:
+        """Tells each alert in the background, in order. Never raises."""
+        if not found or self._deliver is None:
+            return
+        deliver = self._deliver
+        before = self._last_send
+
+        async def tell() -> None:
+            if before is not None:  # in the order they were judged
+                await asyncio.gather(before, return_exceptions=True)
+            for alert in found:
+                host = self._alerting.get(alert.host_id)
+                if host is None:
+                    continue  # turned off meanwhile
+                try:
+                    await client.run_blocking(deliver, alert, host)
+                except Exception:
+                    log.exception("Host %s: could not tell the alert %s", alert.host_id, alert.kind)
+
+        task = asyncio.create_task(tell())
+        self._last_send = task
+        self._sending.add(task)
+        task.add_done_callback(self._sending.discard)
+
+    def _take(self, event: Event) -> None:
+        """On the loop: an event from a stream, to store, and to judge once for alerts."""
+        self._pending.append(event)
+        if event.host_id in self._alerting:
+            self._send(self.watch.event(event))
+
+    def _stream(self, host_id: int, ok: bool) -> None:
+        """On the loop: a host's event stream opened (ok) or failed."""
+        host = self._alerting.get(host_id)
+        if host is not None:
+            self._send(self.watch.stream(host_id, ok, host.name))
 
     @property
     def running(self) -> bool:
@@ -218,6 +270,8 @@ class EventCollector:
             await self._unfollow(host_id)
         with contextlib.suppress(Exception):  # logged by flush; shutting down regardless
             await self.flush()
+        if self._sending:  # alerts already judged are still told
+            await asyncio.wait(set(self._sending), timeout=10)
 
     def counts(self, db: Session, today: datetime) -> dict[int, tuple[int, int]]:
         """Blocking (a sync route's thread, through its session: a second one would wait
@@ -256,6 +310,9 @@ class EventCollector:
                 if now - supervised >= SUPERVISE_EVERY:
                     supervised = now
                     await self.supervise()
+                    # Restart loops settle over minutes: checked as often as hosts.
+                    settled = self.watch.quiet(time.time_ns())
+                    self._send([a for a in settled if a.host_id in self._alerting])
                 if len(self._pending) >= FLUSH_AT or now - flushed >= FLUSH_EVERY:
                     flushed = now
                     await self.flush()
@@ -273,6 +330,10 @@ class EventCollector:
         now; a follow that ended (it never should) starts again."""
         hosts = await client.run_blocking(self._load_hosts)
         wanted = {h.id: h for h in hosts}
+        alerting = {h.id: h for h in hosts if h.alerts_enabled}
+        for host_id in self._alerting.keys() - alerting.keys():
+            self.watch.forget(host_id)  # turned off, disabled or deleted: start afresh
+        self._alerting = alerting
         moved: set[int] = set()
         for host_id, follow in list(self._follows.items()):
             host = wanted.get(host_id)
@@ -318,12 +379,14 @@ class EventCollector:
                     follow.stream.close()  # ends the thread's read
                 raise
             except HostUnavailable:
+                self._stream(host.id, ok=False)
                 await asyncio.sleep(SUPERVISE_EVERY)  # the tunnel is not up (yet)
                 continue
             except Exception as exc:
                 if follow.failures == 0:
                     log.warning("Host %s: the Docker event stream failed: %s", host.id, exc)
                 follow.failures += 1
+                self._stream(host.id, ok=False)
             await asyncio.sleep(BACKOFF[min(follow.failures, len(BACKOFF) - 1)])
 
     def _read(self, url: str, host_id: int, follow: Follow) -> None:
@@ -341,6 +404,8 @@ class EventCollector:
             try:
                 if follow.closed:
                     return  # cancelled while connecting
+                with contextlib.suppress(RuntimeError):  # the loop has closed
+                    loop.call_soon_threadsafe(self._stream, host_id, True)
                 for raw in stream:
                     if follow.closed:
                         break
@@ -349,7 +414,7 @@ class EventCollector:
                         continue
                     follow.newest = max(follow.newest, found.time_ns)
                     try:
-                        loop.call_soon_threadsafe(self._pending.append, found)
+                        loop.call_soon_threadsafe(self._take, found)
                     except RuntimeError:
                         break  # the loop has closed: shutting down
             finally:

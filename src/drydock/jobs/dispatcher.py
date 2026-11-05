@@ -772,6 +772,14 @@ class Dispatcher:
                 each.task.cancel()  # still waiting for a container lock or resolving targets
         return True
 
+    def holds(self, container_id: str, name: str) -> bool:
+        """Whether a run (or startup recovery) holds a container, by its ID or its name
+        (on any daemon: name keys carry the daemon's scope). Call on the event loop."""
+        if container_id in self._owners:
+            return True
+        suffix = f":container:{name}"
+        return any(k.startswith("name:") and k.endswith(suffix) for k in self._owners)
+
     async def wait(self, run_id: int) -> None:
         """Waits until the run has finished (used by tests)."""
         active = self._active.get(run_id)
