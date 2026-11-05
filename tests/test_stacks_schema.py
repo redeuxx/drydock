@@ -12,6 +12,7 @@ from drydock.db import make_engine, make_sessionmaker
 from drydock.models import Backup, Hook, Host, Job, Run, StorageTarget
 from tests.conftest import running
 from tests.test_restore_schema import alembic_to
+from tests.test_upgrade import head
 
 pytestmark = pytest.mark.anyio
 
@@ -235,7 +236,7 @@ def test_upgrade_keeps_job_links_and_ids(tmp_path: Path) -> None:
             assert sequence(conn, "runs") == runs_sequence
             assert conn.execute(INSERT_RUN, (1,)).lastrowid == 3
             conn.commit()
-            assert version(conn) == [("0015",)]
+            assert version(conn) == [(head(),)]
         assert foreign_keys(engine) == 1
     finally:
         engine.dispose()
@@ -459,7 +460,7 @@ def test_downgrade_refuses_while_a_run_lists_paused_containers(tmp_path: Path) -
             alembic_to(engine, "0004", down=True)
 
         with closing(sqlite3.connect(path)) as conn:
-            assert version(conn) == [("0015",)]
+            assert version(conn) == [(head(),)]
             runs = table_sql(conn, "runs")
             assert runs is not None
             assert "paused_containers_json" in runs

@@ -18,6 +18,7 @@ from tests.test_jobs import add_host, add_storage
 from tests.test_restore_schema import alembic_to
 from tests.test_stacks_schema import add_job as add_job_row
 from tests.test_stacks_schema import add_parents, table_sql, version
+from tests.test_upgrade import head
 
 pytestmark = pytest.mark.anyio
 
@@ -553,7 +554,7 @@ def test_migration_0009_widens_the_storage_kinds(tmp_path: Path) -> None:
             conn.commit()
         alembic_to(engine, "head")
         with closing(sqlite3.connect(path)) as conn:
-            assert version(conn) == [("0015",)]
+            assert version(conn) == [(head(),)]
             assert "AUTOINCREMENT" in (table_sql(conn, "storage_targets") or "")
             for kind in ("sftp", "smb", "webdav", "drive"):
                 conn.execute(insert, (kind, kind))

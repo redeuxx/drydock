@@ -33,6 +33,7 @@ from tests.test_restore_schema import alembic_to
 from tests.test_routes import FakeDocker
 from tests.test_stacks_schema import add_job as add_job_row
 from tests.test_stacks_schema import add_parents, table_sql, version
+from tests.test_upgrade import head
 
 pytestmark = pytest.mark.anyio
 
@@ -587,7 +588,7 @@ def test_migration_0008_creates_and_drops_the_tables(tmp_path: Path) -> None:
             conn.commit()
         alembic_to(engine, "head")
         with closing(sqlite3.connect(path)) as conn:
-            assert version(conn) == [("0015",)]
+            assert version(conn) == [(head(),)]
             assert "kind IN ('webhook', 'email', 'ntfy', 'gotify', 'url')" in (
                 table_sql(conn, "notification_targets") or ""
             )

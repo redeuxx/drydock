@@ -18,6 +18,7 @@ from drydock.archive.writer import Cancelled
 from drydock.config import Settings
 from drydock.hosts import client as docker_client
 from drydock.hosts import helper
+from drydock.hosts.events import EventCollector
 from drydock.hosts.manager import HostManager
 from drydock.jobs import dispatcher as dispatcher_module
 from drydock.jobs import runlog
@@ -527,6 +528,8 @@ async def test_a_run_waits_for_the_startup_reap_of_its_host(
     monkeypatch.setattr(docker_client, "connect", fake_connect)
     monkeypatch.setattr(helper, "reap", slow_reap)
     monkeypatch.setattr(docker_client, "open_client", open_client)
+    # The event collector opens a client too, which creates no helper: not this test's.
+    monkeypatch.setattr(EventCollector, "start", lambda self: None)
     async with running(settings) as browser:
         await browser.login("admin")
         run_id = await start_run(browser, job_id)
