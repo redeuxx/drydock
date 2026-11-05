@@ -24,7 +24,7 @@ Compose labels stay, so a later `docker compose up` on the host sees its own con
 
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -137,16 +137,93 @@ def identity(info: dict[str, Any]) -> NameMap:
     return NameMap(containers={name: name}, ids={}, volumes=volumes, networks=networks)
 
 
+def stack_order(api: Any, project: str, instance_id: str) -> list[stacks.Member]:
+    """Blocking. The Compose project's containers on this daemon, dependencies first.
+    Raises UpdateError when it has none, or its dependencies form a cycle."""
+    try:
+        ids = stacks.discover(api, project, instance_id)
+    except docker.errors.DockerException, requests.RequestException:
+        raise UpdateError(f"Cannot read stack {project} from the Docker daemon.") from None
+    if not ids:
+        raise UpdateError(f"Stack {project} has no containers on this host.")
+    try:
+        return stacks.order([api.inspect_container(i) for i in ids])
+    except stacks.StackError as exc:
+        raise UpdateError(str(exc)) from None
+    except docker.errors.NotFound:
+        raise UpdateError(f"A container of stack {project} went away; try again.") from None
+    except docker.errors.DockerException, requests.RequestException:
+        raise UpdateError(f"Cannot read stack {project} from the Docker daemon.") from None
+
+
+def newest_digest(api: Any, info: dict[str, Any], ref: str) -> tuple[str | None, str]:
+    """Blocking. The digest to pull, or None and why not. Raises UpdateError when the
+    registry cannot be asked."""
+    old_image = image_info(api, str(info.get("Image") or ""))
+    current = {digest for _, digest in repo_digests(old_image)}
+    if not current:
+        # Built on the host, or (containerd's image store) its tag was pulled anew, which
+        # leaves this image nameless: only then does the tag name a pulled image.
+        newer = image_info(api, ref)
+        if not newer or newer.get("Id") == info.get("Image") or not repo_digests(newer):
+            return None, "built on the host (no registry digest), so not updated."
+    try:
+        latest = distribution_digest(api, ref)
+    except (docker.errors.DockerException, requests.RequestException) as exc:
+        raise UpdateError(lookup_error(exc)) from None
+    except ValueError, KeyError, TypeError:
+        raise UpdateError("The registry answer was not understood.") from None
+    if latest in current:
+        return None, f"already runs the newest {ref}."
+    return latest, ""
+
+
+def namespace_users(api: Any, planned: Mapping[str, str]) -> list[tuple[str, str]]:
+    """Blocking. (container, the planned one whose network it joins) for every container
+    on the host outside the plan that joins a planned one's network namespace
+    (network_mode: container:<id or name>, Compose's service:<name>)."""
+    users = []
+    names = {
+        **planned,
+        **{cid[:12]: n for cid, n in planned.items()},
+        **{n: n for n in planned.values()},
+    }
+    for raw in api.containers(all=True):
+        if raw.get("Id") in planned:
+            continue
+        mode = str((raw.get("HostConfig") or {}).get("NetworkMode") or "")
+        target = mode.removeprefix("container:") if mode.startswith("container:") else None
+        if target in names:
+            users.append((stacks.primary_name(raw) or str(raw.get("Id", ""))[:12], names[target]))
+    return users
+
+
 def plan_update(
     api: Any,
     host_id: int,
     container_ids: Iterable[str],
     own: frozenset[str],
     api_version: str,
+    healthy_first: Mapping[str, Iterable[str]] | None = None,
+    *,
+    stack: bool = False,
 ) -> Planned:
     """Blocking. The plan that updates the containers that have a newer image, in the
-    order given (a stack's: dependencies first). Raises UpdateError when a container
-    cannot be updated at all (gone, drydock's own, a registry that cannot be asked)."""
+    order given (a stack's: dependencies first). healthy_first maps a container ID to the
+    IDs of the dependencies that must be healthy before it starts (service_healthy); a
+    dependency updated in the same plan is waited for.
+
+    A container that joins the network of, links to or takes volumes from one the plan
+    makes again is made again too (with its own image, unless that is newer as well), so it
+    names the new one; references by ID are rewritten to the name, which the new container
+    keeps. Outside a stack, a container elsewhere on the host that joins a planned one's
+    network refuses the update (its stack should be updated instead).
+
+    One container (stack False) that cannot be updated raises UpdateError. In a stack,
+    drydock's own containers, helpers and members whose registry cannot be asked are left
+    alone with a note; the rest of the stack is still updated."""
+    waits = healthy_first or {}
+    planned: dict[str, str] = {}  # container ID: name, of those this plan makes again
     images: list[ImageStep] = []
     originals: list[Original] = []
     steps: list[ContainerStep] = []
@@ -156,6 +233,12 @@ def plan_update(
     warnings: list[str] = []
     changes: list[tuple[str, str, str]] = []
     pulls: dict[str, ImageStep] = {}  # one pull per reference
+
+    def skip(name: str, why: str) -> None:
+        if not stack:
+            raise UpdateError(f"{name}: {why}")
+        notes.append(f"{name}: {why} Left alone.")
+
     for container_id in container_ids:
         try:
             info = api.inspect_container(container_id)
@@ -164,49 +247,57 @@ def plan_update(
         name = str(info.get("Name", "")).lstrip("/")
         labels = (info.get("Config") or {}).get("Labels") or {}
         if info["Id"] in own:
-            raise UpdateError(f"{name}: drydock does not update itself or its own project.")
+            skip(name, "drydock does not update itself or its own project.")
+            continue
         if labels.get(HELPER_LABEL):
-            raise UpdateError(f"{name}: drydock's helper containers are left to drydock.")
-        image = str((info.get("Config") or {}).get("Image") or "")
-        ref = reference(image)
+            skip(name, "drydock's helper containers are left to drydock.")
+            continue
+        refs = set(stacks.container_refs(info))
+        follows = sorted(
+            n for cid, n in planned.items() if cid in refs or cid[:12] in refs or n in refs
+        )
+        ref = reference(str((info.get("Config") or {}).get("Image") or ""))
+        latest = None
         if ref is None:
-            notes.append(f"{name}: pinned by digest or image ID, so not updated.")
+            why = "pinned by digest or image ID, so not updated."
+        else:
+            try:
+                latest, why = newest_digest(api, info, ref)
+            except UpdateError as exc:
+                skip(name, str(exc))
+                why = ""
+        if latest is None and not follows:
+            if why:
+                notes.append(f"{name}: {why}")
             continue
         old_image = image_info(api, str(info.get("Image") or ""))
-        current = {digest for _, digest in repo_digests(old_image)}
-        if not current:
-            # Built on the host, or (containerd's image store) its tag was pulled anew,
-            # which leaves this image nameless: only then does the tag name a pulled image.
-            newer = image_info(api, ref)
-            if not newer or newer.get("Id") == info.get("Image") or not repo_digests(newer):
-                notes.append(f"{name}: built on the host (no registry digest), so not updated.")
-                continue
-        try:
-            latest = distribution_digest(api, ref)
-        except (docker.errors.DockerException, requests.RequestException) as exc:
-            raise UpdateError(f"{name}: {lookup_error(exc)}") from None
-        except ValueError, KeyError, TypeError:
-            raise UpdateError(f"{name}: the registry answer was not understood.") from None
-        if latest in current:
-            notes.append(f"{name}: already runs the newest {ref}.")
-            continue
-        repository, _ = docker.utils.parse_repository_tag(ref)
-        step = pulls.get(ref)
-        if step is None:
-            step = pulls[ref] = ImageStep(
-                id=f"update-{len(pulls)}",
-                label=ref,
-                action="pull",
-                member=None,
-                pull=f"{repository}@{latest}",
-                refs=(ref,),
-                os="",
-                architecture="",
-                variant=None,
-                accepted_ids=(),
-                moves=(ref,),
+        if latest is not None and ref is not None:
+            repository, _ = docker.utils.parse_repository_tag(ref)
+            step = pulls.get(ref)
+            if step is None:
+                step = pulls[ref] = ImageStep(
+                    id=f"update-{len(pulls)}",
+                    label=ref,
+                    action="pull",
+                    member=None,
+                    pull=f"{repository}@{latest}",
+                    refs=(ref,),
+                    os="",
+                    architecture="",
+                    variant=None,
+                    accepted_ids=(),
+                    moves=(ref,),
+                )
+                images.append(step)
+            # The tag too: two updates of one image never move it at once.
+            keys.add(f"name:{host_id}:image:{ref}")
+            own_repo = [d for r, d in repo_digests(old_image) if r == repository]
+            current = sorted(d for _, d in repo_digests(old_image))
+            changes.append((name, (own_repo or current or [""])[0], latest))
+        else:
+            notes.append(
+                f"{name}: made again with its own image, since it uses {', '.join(follows)}."
             )
-            images.append(step)
         state = info.get("State") or {}
         grace = (info.get("Config") or {}).get("StopTimeout")
         grace = grace if isinstance(grace, int) and 0 <= grace <= MAX_GRACE else 10
@@ -219,10 +310,14 @@ def plan_update(
                 stop_timeout=grace,
             )
         )
+        names = identity(info)
+        names.ids.update({cid: n for cid, n in planned.items()})
+        names.ids.update({cid[:12]: n for cid, n in planned.items()})
+        names.containers.update({n: n for n in planned.values()})
         try:
             body = container_body(
                 info,
-                names=identity(info),
+                names=names,
                 mode="overwrite",
                 api_version=api_version,
                 bind_map={},
@@ -230,10 +325,13 @@ def plan_update(
             )
         except PlanError as exc:
             raise UpdateError(f"{name}: {exc}") from None
-        body = without_image_defaults(body, old_image)
+        if latest is not None:
+            body = without_image_defaults(body, old_image)
+        planned[info["Id"]] = name
         steps.append(
             ContainerStep(
                 name=name,
+                wait_healthy=tuple(planned[d] for d in waits.get(info["Id"], ()) if d in planned),
                 body=body,
                 start=bool(state.get("Running")) or state.get("Status") == "restarting",
                 # Created from the reference as it was given (the pull has moved its tag),
@@ -242,17 +340,17 @@ def plan_update(
                 image_entry=None,
             )
         )
-        # The tag too: two updates of one image never move it at once.
-        keys |= {info["Id"], f"name:{host_id}:container:{name}", f"name:{host_id}:image:{ref}"}
+        keys |= {info["Id"], f"name:{host_id}:container:{name}"}
         if labels.get(PROJECT_LABEL):
             project = str(labels[PROJECT_LABEL])
             projects.add(project)
             keys.add(f"name:{host_id}:project:{project}")
-        own_repo = [d for r, d in repo_digests(old_image) if r == repository]
-        old = (own_repo or sorted(current) or [""])[0]
-        changes.append((name, old, latest))
-    if not steps:
+    if not changes:
         return Planned(None, tuple(notes), ())
+    users = namespace_users(api, planned) if not stack else []
+    if users:
+        user, joined = users[0]
+        raise UpdateError(f"{user} uses the network of {joined}: update their stack instead.")
     plan = RestorePlan(
         mode="overwrite",
         host_id=host_id,
@@ -274,6 +372,25 @@ def plan_update(
         recreate=True,
     )
     return Planned(plan, tuple(notes), tuple(changes))
+
+
+def plan_stack(
+    api: Any, host_id: int, project: str, instance_id: str, own: frozenset[str], api_version: str
+) -> Planned:
+    """Blocking. plan_update for the Compose project's containers on this daemon, found
+    now and put in dependency order."""
+    members = stack_order(api, project, instance_id)
+    planned = plan_update(
+        api,
+        host_id,
+        [m.id for m in members],
+        own,
+        api_version,
+        {m.id: m.healthy for m in members},
+        stack=True,
+    )
+    order = f"Stack {project}: {', '.join(m.name for m in members)}."
+    return Planned(planned.plan, (order, *planned.notes), planned.changes)
 
 
 def settled(

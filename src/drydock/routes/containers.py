@@ -9,6 +9,7 @@ tokens) that a viewer's searches could otherwise probe for.
 """
 
 import copy
+import functools
 import ipaddress
 import json
 import re
@@ -217,6 +218,7 @@ def page(
         "checks": None,
         "verdicts": {},
         "notice": notice,  # (text, whether it went well) after a check for updates
+        "stack_newer": 0,  # members of the filtered stack with a newer image
     }
     if chosen is not None:
         snap = collector.snapshot(chosen.id)
@@ -232,6 +234,12 @@ def page(
         }
         if snap is not None:
             context["stacks"] = sorted({c.project for c in snap.containers if c.project})
+            if stack:
+                context["stack_newer"] = sum(
+                    1
+                    for c in snap.containers
+                    if c.project == stack and c.id in verdicts and verdicts[c.id].state == "update"
+                )
             rows = list(snap.containers)
             if status:
                 rows = [c for c in rows if STATUSES[status][1](c, verdicts)]
@@ -578,6 +586,63 @@ def update_container(
         if not is_htmx(request):
             return see_other(request, view.url)
         response = page(request, auth, db, view, notice=(f"{label}: {error}", False))
+        response.headers["HX-Replace-Url"] = view.url
+        return response
+    return see_other(request, f"/runs/{run_id}")
+
+
+@router.post("/containers/update-stack")
+def update_stack(
+    request: Request,
+    auth: Operator,
+    host: Annotated[int, Form()],
+    stack: Annotated[str, Form()],
+    db: Session = Depends(get_db),
+) -> Response:
+    """Starts an update run of a Compose project's containers that have a newer image, in
+    dependency order and all or nothing (updates/apply.py), and opens its run page.
+    Audited."""
+    target_host = db.get(Host, host)
+    snap = request.app.state.status.snapshot(host)
+    known = {c.project for c in snap.containers if c.project} if snap is not None else set()
+    if target_host is None or stack not in known:
+        raise HTTPException(status_code=404)
+    release(db, target_host)
+    error = None
+    run_id = None
+    if not target_host.enabled:
+        error = "The host is disabled."
+    else:
+        try:
+            run_id = anyio.from_thread.run(
+                functools.partial(
+                    request.app.state.dispatcher.submit_update,
+                    target_host.id,
+                    [],
+                    auth.user.username,
+                    f"stack {stack}",
+                    project=stack,
+                )
+            )
+        except DispatchError as exc:
+            error = str(exc)
+    audit.record(
+        db,
+        actor=auth.user.username,
+        action="stack.update",
+        target=f"stack:{stack}",
+        outcome="success" if error is None else "failure",
+        ip=client_ip(request),
+        details={"host": target_host.name}
+        | ({"run_id": run_id} if run_id else {})
+        | ({"error": error} if error else {}),
+    )
+    db.commit()
+    if run_id is None:
+        view = View(target_host.id, stack=stack)
+        if not is_htmx(request):
+            return see_other(request, view.url)
+        response = page(request, auth, db, view, notice=(f"Stack {stack}: {error}", False))
         response.headers["HX-Replace-Url"] = view.url
         return response
     return see_other(request, f"/runs/{run_id}")

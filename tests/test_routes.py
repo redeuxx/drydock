@@ -17,6 +17,7 @@ from drydock.crypto import Crypto
 from drydock.hosts import client as docker_client
 from drydock.hosts import ssh
 from drydock.hosts.manager import HostManager
+from drydock.hosts.status import ContainerStatus, HostSnapshot
 from drydock.jobs.dispatcher import Dispatcher, Target
 from drydock.jobs.runlog import RunLog, log_path
 from drydock.models import Backup, Run, utcnow
@@ -98,6 +99,7 @@ EXPECTED_MIN_ROLE = [
     ({"POST"}, re.compile(r"^/containers/actions$"), Role.operator),
     ({"POST"}, re.compile(r"^/containers/check-updates$"), Role.operator),
     ({"POST"}, re.compile(r"^/containers/update$"), Role.operator),
+    ({"POST"}, re.compile(r"^/containers/update-stack$"), Role.operator),
     ({"GET"}, re.compile(r"^/containers/[^/]+/[^/]+/inspect$"), Role.admin),
     ({"GET"}, re.compile(r"^/logs"), Role.admin),
     ({"POST"}, re.compile(r"^/activity/clear$"), Role.admin),
@@ -118,6 +120,7 @@ INVENTORY = {
     ("POST", "/containers/actions"),
     ("POST", "/containers/check-updates"),
     ("POST", "/containers/update"),
+    ("POST", "/containers/update-stack"),
     ("GET", "/containers/{host_id}/{container_id}/inspect"),
     ("GET", "/logs"),
     ("GET", "/logs/lines"),
@@ -670,6 +673,8 @@ AUDITED_SUCCESS = [
     ("/containers/check-updates", {"host": "{host_id}"}, "container.check_updates", 303),
     # Docker's side faked (Dispatcher.submit_update): a run starts.
     ("/containers/update", {"host": "{host_id}", "container": "c" * 64}, "container.update", 303),
+    # The stack faked in the status cache, the run in Dispatcher.submit_update.
+    ("/containers/update-stack", {"host": "{host_id}", "stack": "app"}, "stack.update", 303),
     (
         "/storage",
         {"name": "backups", "path": "{storage_root}", "enabled": "1"},
@@ -871,10 +876,38 @@ async def test_every_unsafe_route_audits_its_success(fresh: Browser, monkeypatch
 
     monkeypatch.setattr(fresh.app.state.updates, "check_now", nothing_newer)
 
-    async def queued(host_id, ids, by, label) -> int:
+    async def queued(host_id, ids, by, label, *, project=None) -> int:
         return 1
 
     monkeypatch.setattr(fresh.app.state.dispatcher, "submit_update", queued)
+    app_stack = HostSnapshot(
+        host_id=0,
+        taken_at=utcnow(),
+        containers=(
+            ContainerStatus(
+                "c" * 64,
+                "web",
+                "nginx",
+                "running",
+                "Up",
+                None,
+                "app",
+                "web",
+                0,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                (),
+                (),
+            ),
+        ),
+    )
+    monkeypatch.setattr(fresh.app.state.status, "snapshot", lambda host_id: app_stack)
     # The storage root doubles as the allowed restore path.
     root_path = fresh.settings.local_storage_roots[0]
     allowed = dataclasses.replace(fresh.settings, restore_paths=(root_path,))

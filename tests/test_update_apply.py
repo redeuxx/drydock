@@ -39,14 +39,20 @@ def inspect(cid: str, image: str = "nginx:1.27", **extra: Any) -> dict[str, Any]
 
 
 class Api:
-    def __init__(self, containers: dict[str, dict[str, Any]], latest: str = NEW) -> None:
-        self.containers = containers
+    def __init__(self, boxes: dict[str, dict[str, Any]], latest: str = NEW) -> None:
+        self.boxes = boxes
         self.latest = latest
 
+    def containers(self, all: bool) -> list[dict[str, Any]]:
+        return [
+            {"Id": cid, "Names": [info["Name"]], "HostConfig": info.get("HostConfig") or {}}
+            for cid, info in self.boxes.items()
+        ]
+
     def inspect_container(self, cid: str) -> dict[str, Any]:
-        if cid not in self.containers:
+        if cid not in self.boxes:
             raise docker.errors.NotFound("gone")
-        return self.containers[cid]
+        return self.boxes[cid]
 
     def inspect_image(self, image_id: str) -> dict[str, Any]:
         return {"RepoDigests": [f"nginx@{OLD}"]}
@@ -229,3 +235,78 @@ def test_an_image_built_on_the_host_is_never_updated_from_a_registry() -> None:
     planned = plan_update(Local({WEB: inspect(WEB)}), 1, [WEB], frozenset(), "1.47")
     assert planned.plan is None
     assert planned.notes == ("caaaa: built on the host (no registry digest), so not updated.",)
+
+
+def test_a_stack_member_waits_for_its_updated_healthy_dependencies() -> None:
+    db, app, side = "d" * 64, "e" * 64, "f" * 64
+    api = Api({db: inspect(db), app: inspect(app), side: inspect(side, image=f"x@{OLD}")})
+    planned = plan_update(
+        api, 1, [db, side, app], frozenset(), "1.47", {app: (db, side), side: (db,)}
+    )
+    plan = planned.plan
+    assert plan is not None
+    assert [s.name for s in plan.containers] == ["cdddd", "ceeee"], "the pinned one stays"
+    assert plan.containers[1].wait_healthy == ("cdddd",), "only what is made again is waited for"
+    assert [o.name for o in plan.originals] == ["ceeee", "cdddd"], "dependents stop first"
+    assert len(plan.images) == 1, "one pull for one reference"
+
+
+async def test_stack_update_is_for_operators_audited_and_opens_its_run(
+    admin: Browser, monkeypatch
+) -> None:
+    _, host_id = await a_host_with_containers(admin, monkeypatch)
+    admin.app.state.updates._results[host_id] = HostChecks(
+        datetime.now(UTC), {"b" * 64: Verdict("update", "newer", "postgres:17", NEW)}
+    )
+    submitted: list[tuple] = []
+
+    async def submit_update(host, ids, by, label, *, project=None) -> int:
+        submitted.append((host, ids, by, label, project))
+        return 78
+
+    monkeypatch.setattr(admin.app.state.dispatcher, "submit_update", submit_update)
+    page = (await admin.get(f"/containers?host={host_id}&stack=app")).text
+    assert "Update stack app" in page and "1 of its containers has a newer image." in page
+    assert "Update stack" not in (await admin.get(f"/containers?host={host_id}")).text
+    form = {"host": str(host_id), "stack": "app"}
+    assert (await admin.post("/containers/update-stack", form, csrf=False)).status_code == 403
+    assert (
+        await admin.post("/containers/update-stack", form | {"stack": "nope"})
+    ).status_code == 404
+    done = await admin.post("/containers/update-stack", form)
+    assert done.status_code == 303 and done.headers["location"] == "/runs/78"
+    assert submitted == [(host_id, [], "admin", "stack app", "app")]
+    assert admin.sql("SELECT target, outcome FROM audit_events WHERE action = 'stack.update'") == [
+        ("stack:app", "success")
+    ]
+
+
+def test_containers_that_share_a_network_are_made_again_together() -> None:
+    vpn, client, other = "1" * 64, "2" * 64, "3" * 64
+    joined = {"NetworkMode": f"container:{vpn}", "Binds": []}
+    api = Api(
+        {
+            vpn: inspect(vpn),
+            client: inspect(client, image=f"x@{OLD}", HostConfig=joined),
+            other: inspect(other, HostConfig={"NetworkMode": f"container:{vpn}", "Binds": []}),
+        }
+    )
+    # In a stack: the pinned client follows its VPN, by name (the new one keeps it).
+    planned = plan_update(api, 1, [vpn, client], frozenset(), "1.47", stack=True)
+    assert planned.plan is not None
+    assert [s.name for s in planned.plan.containers] == ["c1111", "c2222"]
+    assert planned.plan.containers[1].body["HostConfig"]["NetworkMode"] == "container:c1111"
+    assert "c2222: made again with its own image, since it uses c1111." in planned.notes
+    # Alone: another container on the host joins the VPN's network, so it is refused.
+    with pytest.raises(UpdateError, match="uses the network of c1111: update their stack instead"):
+        plan_update(api, 1, [vpn], frozenset(), "1.47")
+
+
+def test_a_stack_leaves_alone_what_cannot_be_updated() -> None:
+    mine, web = "4" * 64, "5" * 64
+    api = Api({mine: inspect(mine), web: inspect(web)})
+    planned = plan_update(api, 1, [mine, web], frozenset({mine}), "1.47", stack=True)
+    assert [s.name for s in planned.plan.containers] == ["c5555"]
+    assert (
+        planned.notes[0] == "c4444: drydock does not update itself or its own project. Left alone."
+    )

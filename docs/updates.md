@@ -20,6 +20,18 @@ If anything fails, or the check does not pass, everything is put back: the new c
 
 An update holds the same locks as a backup or restore of the container, so they never overlap: an update waits for a backup of that container to end, and the other way round. Drydock does not back the container up first on its own.
 
+## Updating a stack
+
+With a Compose stack chosen in the containers page's stack filter, operators can **Update stack** when any of its containers has a newer image. Drydock finds the stack's containers when the run starts and orders them by their `depends_on` (dependencies first), then:
+
+1. Pulls every newer image first, so a failed pull changes nothing.
+2. Stops the members it updates (dependents first) and makes them again in dependency order. A member whose `depends_on` says `service_healthy` waits for an updated dependency to be healthy before it starts.
+3. Checks every new container as for a single update.
+
+It is all or nothing: if any member fails, every member already made again is put back, the others in reverse order. Members without a newer image (or pinned, or built on the host) are left running as they are, except one that joins the network of, links to or takes volumes from a member made again: it is made again too, with its own image, so it uses the new one. Drydock's own containers and members whose registry cannot be asked are left alone, with a note in the log.
+
+A single container that another container joins the network of (`network_mode: service:vpn`, as with a VPN gateway) is not updated alone, since the other would lose its network: update their stack instead.
+
 ## What is not updated
 
 - Containers pinned by digest (`image@sha256:...`) or created from an image ID.

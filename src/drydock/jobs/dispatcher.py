@@ -682,14 +682,21 @@ class Dispatcher:
         return run_id
 
     async def submit_update(
-        self, host_id: int, container_ids: list[str], triggered_by: str | None, label: str
+        self,
+        host_id: int,
+        container_ids: list[str],
+        triggered_by: str | None,
+        label: str,
+        *,
+        project: str | None = None,
     ) -> int:
-        """Queues an update of the containers (a stack's in dependency order) to what
-        their tags name on the registry now, and returns the run's ID. label names them on
-        the run pages. Raises DispatchError."""
+        """Queues an update of the containers, or of every container of the Compose
+        project (found and put in dependency order when the run starts), to what their
+        tags name on the registry now, and returns the run's ID. label names them on the
+        run pages. Raises DispatchError."""
         self._check_open()
         run_id = await run_blocking(
-            self._create_update_run, host_id, container_ids, triggered_by, label
+            self._create_update_run, host_id, container_ids, triggered_by, label, project
         )
         active = ActiveRun(run_id, None)
         self._active[run_id] = active
@@ -1805,7 +1812,7 @@ class Dispatcher:
         held: list[str] = []
         try:
             run_log(f"Update started by {triggered_by}.")
-            host_id, container_ids = await run_blocking(self._load_update, run_id)
+            host_id, container_ids, project = await run_blocking(self._load_update, run_id)
             host = await run_blocking(self._load_host, host_id)
             if host is None:
                 raise DispatchError("The host no longer exists.")
@@ -1819,9 +1826,26 @@ class Dispatcher:
                 api = handle.client.api
                 scope = await run_blocking(self._lock_scope, handle, host.id)
                 own = await run_blocking(inventory.own_ids, api)
-                plan_now = functools.partial(
-                    update_apply.plan_update, api, host.id, container_ids, own, handle.api_version
-                )
+                # A stack's members are found again after the locks, like everything else.
+                if project is not None:
+                    plan_now = functools.partial(
+                        update_apply.plan_stack,
+                        api,
+                        host.id,
+                        project,
+                        self._hosts.instance_id,
+                        own,
+                        handle.api_version,
+                    )
+                else:
+                    plan_now = functools.partial(
+                        update_apply.plan_update,
+                        api,
+                        host.id,
+                        container_ids,
+                        own,
+                        handle.api_version,
+                    )
                 planned = await run_blocking(plan_now)
                 if planned.plan is not None:
                     keys = scoped(planned.plan.lock_keys, host.id, scope)
@@ -2724,7 +2748,12 @@ class Dispatcher:
             return True
 
     def _create_update_run(
-        self, host_id: int, container_ids: list[str], triggered_by: str | None, label: str
+        self,
+        host_id: int,
+        container_ids: list[str],
+        triggered_by: str | None,
+        label: str,
+        project: str | None,
     ) -> int:
         with self._sessions() as db, db.begin():
             if db.get(Host, host_id) is None:
@@ -2735,22 +2764,30 @@ class Dispatcher:
                 status="queued",
                 triggered_by=triggered_by,
                 target_label=label[:300],
-                plan=json.dumps({"update": {"host_id": host_id, "containers": container_ids}}),
+                plan=json.dumps(
+                    {
+                        "update": {"host_id": host_id, "containers": container_ids}
+                        | ({"project": project} if project is not None else {})
+                    }
+                ),
             )
             db.add(run)
             db.flush()
             return run.id
 
-    def _load_update(self, run_id: int) -> tuple[int, list[str]]:
+    def _load_update(self, run_id: int) -> tuple[int, list[str], str | None]:
         with self._sessions() as db:
             run = db.get(Run, run_id)
             doc = json_object(run.plan if run is not None else None).get("update")
         if not isinstance(doc, dict) or not isinstance(doc.get("host_id"), int):
             raise DispatchError("The update has no plan.")
         ids = doc.get("containers")
+        project = doc.get("project")
         if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
             raise DispatchError("The update has no plan.")
-        return doc["host_id"], ids
+        if project is not None and not isinstance(project, str):
+            raise DispatchError("The update has no plan.")
+        return doc["host_id"], ids, project
 
     def _journal(self, run_id: int) -> dict[str, Any]:
         with self._sessions() as db:

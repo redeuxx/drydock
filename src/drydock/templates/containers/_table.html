@@ -98,6 +98,28 @@
   <span class="opacity-70">{% if checks %}{{ checks.count("update", snap.containers|map(attribute="id")) }} with a newer image, checked {{ checks.checked_at|ago }}{% if checks.error %} ({{ checks.error }}){% endif %}{% else %}Not checked yet{% endif %}</span>
 </form>
 {{ confirm("confirm-stop", "stop", "Stop", "Stop the selected containers? Each gets its own stop timeout to shut down.") }}
+{% if stack_newer %}
+<div class="mb-2 flex flex-wrap items-center gap-2 text-sm">
+  <button type="button" class="btn btn-xs btn-info" commandfor="update-stack" command="show-modal" aria-haspopup="dialog">Update stack {{ stack }}</button>
+  <span class="opacity-70">{{ stack_newer }} of its containers {{ "has" if stack_newer == 1 else "have" }} a newer image.</span>
+</div>
+<dialog id="update-stack" class="modal" aria-labelledby="update-stack-title">
+  <div class="modal-box">
+    <h2 id="update-stack-title" class="mb-2 text-lg font-bold">Update stack {{ stack }}</h2>
+    <p class="text-sm break-words">Pull the newer images of {{ stack }} first, then make its containers that have one again in dependency order, waiting for each one's healthy dependencies. If any of them does not start or become healthy, all of them are put back. Containers without a newer image are left alone.</p>
+    <div class="modal-action">
+      <form method="dialog"><button class="btn btn-sm">Cancel</button></form>
+      <form method="post" action="/containers/update-stack" hx-post="/containers/update-stack" hx-nonce="{{ csp_nonce }}">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        <input type="hidden" name="host" value="{{ chosen.id }}">
+        <input type="hidden" name="stack" value="{{ stack }}">
+        <button type="submit" class="btn btn-sm btn-warning">Update stack</button>
+      </form>
+    </div>
+  </div>
+  <form method="dialog" class="modal-backdrop"><button>Close</button></form>
+</dialog>
+{% endif %}
 {{ confirm("confirm-restart", "restart", "Restart", "Restart the selected containers?") }}
 {% endif %}
 <div class="overflow-hidden rounded-box border border-base-300 bg-base-100">

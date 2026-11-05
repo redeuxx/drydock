@@ -649,6 +649,7 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 - `tests/test_update_apply.py::test_a_container_without_a_healthcheck_must_keep_running`
 - `tests/test_updates_docker.py::test_an_update_replaces_a_container_or_puts_it_back`
 - `tests/test_restore_dispatch.py::test_startup_recovery_rolls_back_an_interrupted_update`
+- `tests/test_updates_docker.py::test_a_stack_update_is_all_or_nothing`
 
 ## Accepted risks
 

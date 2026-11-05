@@ -213,3 +213,110 @@ async def test_an_update_replaces_a_container_or_puts_it_back(admin: Browser) ->
             with contextlib.suppress(docker.errors.APIError):
                 await docker_client.run_blocking(api.remove_image, f"{repository}:latest")
         handle.close()
+
+
+@needs_docker
+async def test_a_stack_update_is_all_or_nothing(admin: Browser) -> None:
+    """db (healthcheck) and app (needs db healthy, exits on the new image) share a newer
+    image; side is pinned by digest. app fails, so db is put back too; side is untouched."""
+    handle = await docker_client.run_blocking(host_docker)
+    client = handle.client
+    api = client.api
+    project = f"drydock-test-stack-{uuid.uuid4().hex[:8]}"
+    made: list = []
+    repository = ""
+    port = 20000 + secrets.randbelow(40000)
+    try:
+        for image in (REGISTRY_IMAGE, IMAGE):
+            await docker_client.run_blocking(helper.ensure_image, client, image)
+        registry = await docker_client.run_blocking(
+            functools.partial(
+                client.containers.run,
+                REGISTRY_IMAGE,
+                detach=True,
+                labels={TEST_LABEL: "1"},
+                network_mode="host",
+                environment={
+                    "REGISTRY_HTTP_ADDR": f"127.0.0.1:{port}",
+                    "OTEL_TRACES_EXPORTER": "none",
+                },
+            )
+        )
+        made.append(registry)
+        repository = f"127.0.0.1:{port}/drydock-test-{uuid.uuid4().hex[:8]}"
+        await docker_client.run_blocking(push, api, repository, IMAGE)
+
+        def member(service: str, image: str, command: list[str], **extra):
+            labels = {
+                TEST_LABEL: "1",
+                "com.docker.compose.project": project,
+                "com.docker.compose.service": service,
+            } | extra.pop("labels", {})
+            return client.containers.run(
+                image,
+                command,
+                name=f"{project}-{service}-1",
+                detach=True,
+                init=True,
+                labels=labels,
+                network_mode="none",
+                restart_policy={"Name": "unless-stopped"},
+                **extra,
+            )
+
+        tagged = f"{repository}:latest"
+        db = await docker_client.run_blocking(
+            functools.partial(
+                member,
+                "db",
+                tagged,
+                ["sleep", "3600"],
+                healthcheck={"test": ["CMD", "true"], "interval": 500_000_000},
+            )
+        )
+        app = await docker_client.run_blocking(
+            functools.partial(
+                member,
+                "app",
+                tagged,
+                ["sh", "-c", "test -e /bin/registry && exit 3; sleep 3600"],
+                labels={"com.docker.compose.depends_on": "db:service_healthy:false"},
+            )
+        )
+        side = await docker_client.run_blocking(
+            functools.partial(member, "side", IMAGE, ["sleep", "3600"])
+        )
+        made += [db, app, side]
+        host = Host(name="local", kind="local", docker_url=DOCKER_URL, enabled=True)
+        host_id = await docker_client.run_blocking(insert_host, admin, host)
+        await docker_client.run_blocking(push, api, repository, REGISTRY_IMAGE)
+        dispatcher = admin.app.state.dispatcher
+
+        run_id = await dispatcher.submit_update(host_id, [], "tester", project, project=project)
+        await dispatcher.wait(run_id)
+        ((status, error),) = admin.sql("SELECT status, error FROM runs WHERE id = ?", (run_id,))
+        assert status == "failed" and "app" in error, error
+        log = (admin.app.state.settings.data_dir / "logs" / f"{run_id}.log").read_text()
+        assert f"Updating {project}-db-1:" in log and f"Updating {project}-app-1:" in log
+        assert f"{project}-side-1: pinned by digest or image ID, so not updated." in log
+        assert log.index(f"Creating container {project}-db-1.") < log.index(
+            f"Creating container {project}-app-1."
+        ), "dependencies first"
+        for original in (db, app, side):
+            now = await docker_client.run_blocking(by_name, api, original.name)
+            assert now["Id"] == original.id, f"{original.name} is the original again"
+            assert now["State"]["Running"], original.name
+        listed = await docker_client.run_blocking(
+            functools.partial(
+                api.containers, all=True, filters={"label": f"com.docker.compose.project={project}"}
+            )
+        )
+        assert len(listed) == 3, "no new or -drydock-old containers left"
+    finally:
+        for container in made:
+            with contextlib.suppress(docker.errors.NotFound):
+                await docker_client.run_blocking(functools.partial(container.remove, force=True))
+        if repository:
+            with contextlib.suppress(docker.errors.APIError):
+                await docker_client.run_blocking(api.remove_image, f"{repository}:latest")
+        handle.close()
