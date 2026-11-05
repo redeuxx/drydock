@@ -41,6 +41,12 @@
   }
 }
 
+/* daisyUI's dark neutral is near black, so a soft neutral badge drew dark text on a dark
+   background. Base content reads in both themes. */
+.badge-soft.badge-neutral {
+  --badge-color: var(--color-base-content);
+}
+
 /* The job form's cron field only for a custom schedule (the list sets the rest). */
 [data-schedule]:has([data-cron-preset] option[value="custom"]:not(:checked)) [data-cron-custom] {
   display: none;
