@@ -391,7 +391,8 @@ async def test_container_events_through_the_proxy_are_stored(admin: Browser) -> 
             await wait_until(
                 lambda: {"create", "start", "die"} <= actions(quitter.id), 30, "its events"
             )
-            await wait_until(lambda: "exec_start" in actions(sleeper.id), 30, "the exec")
+            await wait_until(lambda: "start" in actions(sleeper.id), 30, "its start")
+            assert not {a for a in actions(sleeper.id) if a.startswith("exec_")}, "no execs"
             (row,) = admin.sql(
                 "SELECT host_id, name, image, exit_code FROM docker_events "
                 "WHERE container_id = ? AND action = 'die'",

@@ -136,7 +136,10 @@ class States:
         test = ["CMD", "true"] if self.health else []
         return {
             "Name": "/web",
-            "Config": {"Healthcheck": {"Test": test}},
+            # A quick healthcheck: its own timing allows a few milliseconds.
+            "Config": {
+                "Healthcheck": {"Test": test, "Interval": 10**6, "Timeout": 10**6, "Retries": 1}
+            },
             "State": state,
             "RestartCount": state.get("restarts", 0),
         }
@@ -292,12 +295,12 @@ def test_containers_that_share_a_network_are_made_again_together() -> None:
         }
     )
     # In a stack: the pinned client follows its VPN, by name (the new one keeps it).
-    planned = plan_update(api, 1, [vpn, client], frozenset(), "1.47", stack=True)
+    planned = plan_update(api, 1, [vpn, client, other], frozenset(), "1.47", stack=True)
     assert planned.plan is not None
-    assert [s.name for s in planned.plan.containers] == ["c1111", "c2222"]
+    assert [s.name for s in planned.plan.containers] == ["c1111", "c2222", "c3333"]
     assert planned.plan.containers[1].body["HostConfig"]["NetworkMode"] == "container:c1111"
     assert "c2222: made again with its own image, since it uses c1111." in planned.notes
-    # Alone: another container on the host joins the VPN's network, so it is refused.
+    # Alone: the others join the VPN's network, so it is refused.
     with pytest.raises(UpdateError, match="uses the network of c1111: update their stack instead"):
         plan_update(api, 1, [vpn], frozenset(), "1.47")
 
@@ -310,3 +313,47 @@ def test_a_stack_leaves_alone_what_cannot_be_updated() -> None:
     assert (
         planned.notes[0] == "c4444: drydock does not update itself or its own project. Left alone."
     )
+
+
+def test_containers_that_remove_themselves_are_never_updated() -> None:
+    gone = "9" * 64
+    api = Api({gone: inspect(gone, HostConfig={"AutoRemove": True, "Binds": []})})
+    with pytest.raises(UpdateError, match=r"removes itself when stopped \(--rm\)"):
+        plan_update(api, 1, [gone], frozenset(), "1.47")
+    planned = plan_update(api, 1, [gone], frozenset(), "1.47", stack=True)
+    assert planned.plan is None and "Left alone" in planned.notes[0]
+
+
+def test_a_long_stop_grace_and_a_slow_healthcheck_are_honoured() -> None:
+    slow = "8" * 64
+    api = Api({slow: inspect(slow, Config={"Image": "nginx:1.27", "StopTimeout": 900})})
+    # inventory.stop_timeout: what backups and restores give it, at most 600 s.
+    (original,) = plan_update(api, 1, [slow], frozenset(), "1.47").plan.originals
+    assert original.stop_timeout == 600, "capped like backups, never 10"
+    check = {
+        "Config": {
+            "Healthcheck": {
+                "Test": ["CMD", "true"],
+                "StartPeriod": 300 * 10**9,
+                "Interval": 10 * 10**9,
+                "Timeout": 5 * 10**9,
+                "Retries": 3,
+            }
+        }
+    }
+    assert update_apply.own_health_wait(check) == 300 + 4 * 15
+    assert update_apply.own_health_wait({"Config": {"Healthcheck": {"Test": ["CMD"]}}}) == 240
+    huge = {"Config": {"Healthcheck": {"StartPeriod": 10**13}}}
+    assert update_apply.own_health_wait(huge) == update_apply.MAX_HEALTH_WAIT
+
+
+def test_a_stack_update_refuses_to_strand_another_stacks_container() -> None:
+    vpn, client = "1" * 64, "2" * 64
+    api = Api(
+        {
+            vpn: inspect(vpn),
+            client: inspect(client, HostConfig={"NetworkMode": f"container:{vpn}", "Binds": []}),
+        }
+    )
+    with pytest.raises(UpdateError, match="c2222 uses the network of c1111: update it with them"):
+        plan_update(api, 1, [vpn], frozenset(), "1.47", stack=True)

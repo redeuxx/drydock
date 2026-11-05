@@ -2,11 +2,15 @@
 and the dashboard's counts (the daemon side: test_status_docker.py)."""
 
 import asyncio
+import json
 import time
 from datetime import UTC, datetime
 from typing import Any
 
+import docker.errors
 import pytest
+import requests
+import urllib3.exceptions
 from sqlalchemy import func, select
 
 from drydock.hosts import events, status
@@ -46,10 +50,29 @@ def test_an_event_keeps_only_its_few_fields() -> None:
     assert found == Event(7, T, "start", CID, "web", "nginx:1.27")
 
 
-def test_exec_commands_and_labels_are_never_kept() -> None:
-    found = event_of(message("exec_start: sh -c 'echo hunter2'", secret="hunter2"), 1, INSTANCE)
-    assert found is not None and found.action == "exec_start"
-    assert "hunter2" not in repr(found)
+def test_execs_are_not_kept_and_labels_never() -> None:
+    """Healthcheck probes are execs: three events each, every few seconds."""
+    for action in ("exec_create: sh -c 'echo hunter2'", "exec_start: x", "exec_die"):
+        assert event_of(message(action, secret="hunter2"), 1, INSTANCE) is None
+    found = event_of(message("start", secret="hunter2"), 1, INSTANCE)
+    assert found is not None and "hunter2" not in repr(found)
+
+
+def test_values_outside_sqlites_range_are_dropped() -> None:
+    assert event_of(message("start") | {"timeNano": 2**63}, 1, INSTANCE) is None
+    assert event_of(message("start") | {"timeNano": -5, "time": -1}, 1, INSTANCE) is None
+    huge = event_of(message("die", exitCode=str(2**40)), 1, INSTANCE)
+    assert huge is not None and huge.exit_code is None
+
+
+def test_a_quiet_stream_times_out_and_is_opened_again() -> None:
+    assert events.idle(urllib3.exceptions.ReadTimeoutError(None, "/events", "timed out"))
+    assert events.idle(TimeoutError())
+    wrapped = requests.exceptions.ConnectionError(
+        urllib3.exceptions.ReadTimeoutError(None, "/events", "timed out")
+    )
+    assert events.idle(wrapped)
+    assert not events.idle(requests.exceptions.ConnectionError("refused"))
 
 
 def test_exit_codes_and_health_results() -> None:
@@ -165,16 +188,73 @@ async def test_the_cards_count_events_today_and_in_all(admin: Browser, monkeypat
 # THE COLLECTOR, WITH A FAKE DAEMON
 
 
-class FakeStream:
-    def __init__(self, messages: list[dict[str, Any]]) -> None:
+class FakeResponse:
+    def __init__(self, messages: list[dict[str, Any]], status: int = 200) -> None:
         self.messages = messages
+        self.status = status
         self.closed = False
-
-    def __iter__(self):
-        yield from self.messages
 
     def close(self) -> None:
         self.closed = True
+
+
+class FakeApi:
+    """The raw /events request _read makes; batches(n) gives the nth stream's messages."""
+
+    def __init__(self, batches, status: int = 200) -> None:
+        self.batches = batches
+        self.status = status
+        self.asked: list[dict[str, Any]] = []
+        self.responses: list[FakeResponse] = []
+
+    def _url(self, path: str) -> str:
+        return path
+
+    def _get(self, url: str, params: dict, stream: bool, timeout: float) -> FakeResponse:
+        assert url == "/events" and stream and timeout == events.STREAM_IDLE
+        assert json.loads(params["filters"]) == {"type": ["container"]}
+        self.asked.append(params)
+        self.responses.append(FakeResponse(self.batches(len(self.asked)), self.status))
+        return self.responses[-1]
+
+    def _raise_for_status(self, response: FakeResponse) -> None:
+        if response.status != 200:
+            refused = requests.Response()
+            refused.status_code, refused.reason = 403, "Forbidden"
+            raise docker.errors.APIError("refused", response=refused)
+
+    def _stream_helper(self, response: FakeResponse, decode: bool):
+        assert decode
+        return iter(response.messages)
+
+
+class Stream:
+    """docker.types.CancellableStream without a real socket."""
+
+    def __init__(self, stream, response: FakeResponse) -> None:
+        self._stream, self._response = stream, response
+
+    def __iter__(self):
+        return self._stream
+
+    def close(self) -> None:
+        self._response.close()
+
+
+def fake_daemon(monkeypatch, api: FakeApi) -> None:
+    class Handle:
+        class client:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            pass
+
+    Handle.client.api = api
+    monkeypatch.setattr(events.client, "open_client", lambda url, timeout: Handle())
+    monkeypatch.setattr(events.docker.types, "CancellableStream", Stream)
 
 
 async def test_the_collector_follows_hosts_from_their_newest_stored_event(
@@ -183,38 +263,21 @@ async def test_the_collector_follows_hosts_from_their_newest_stored_event(
     host_id = await quiet_host(admin, docker_url="tcp://fake:2375")
     sessions = admin.app.state.sessionmaker
     events.store(sessions, [Event(host_id, T, "start", CID, "web", "x")])
-    asked: list[str] = []
-    streams: list[FakeStream] = []
-
-    class Api:
-        def events(self, since: str, filters: dict, decode: bool) -> FakeStream:
-            assert filters == {"type": ["container"]} and decode
-            asked.append(since)
-            streams.append(FakeStream([message("stop") | {"timeNano": T + 5}, message("start")]))
-            return streams[-1]
-
-    class Handle:
-        class client:
-            api = Api()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc: object) -> None:
-            pass
-
-    monkeypatch.setattr(events.client, "open_client", lambda url, timeout: Handle())
+    api = FakeApi(lambda n: [message("stop") | {"timeNano": T + 5}, message("start")])
+    fake_daemon(monkeypatch, api)
     monkeypatch.setattr(events, "BACKOFF", (0.05,))
     collector = EventCollector(sessions, admin.app.state.hosts)
     collector._loop = asyncio.get_running_loop()
     await collector.supervise()
     deadline = time.monotonic() + 10
-    while len(asked) < 2 and time.monotonic() < deadline:
+    while len(api.asked) < 2 and time.monotonic() < deadline:
         await asyncio.sleep(0.05)
     await collector.close()
-    assert asked[0] == events.since_of(T), "from the newest stored"
-    assert asked[1] == events.since_of(T + 5), "a stream that ended reopens from its newest"
-    assert all(s.closed for s in streams)
+    assert api.asked[0]["since"] == events.since_of(T), "from the newest stored"
+    assert api.asked[1]["since"] == events.since_of(T + 5), (
+        "an ended stream reopens from its newest"
+    )
+    assert all(r.closed for r in api.responses)
     rows = admin.sql("SELECT action, time_ns FROM docker_events ORDER BY time_ns, action")
     assert rows == [("start", T), ("stop", T + 5)], "the repeats were stored once"
 
@@ -259,29 +322,31 @@ async def test_a_host_with_nothing_stored_streams_from_the_daemons_now(
     admin: Browser, monkeypatch
 ) -> None:
     await quiet_host(admin, docker_url="tcp://fake:2375")
-    asked: list[Any] = []
-
-    class Api:
-        def events(self, since: Any, filters: dict, decode: bool) -> FakeStream:
-            asked.append(since)
-            return FakeStream([])
-
-    class Handle:
-        class client:
-            api = Api()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc: object) -> None:
-            pass
-
-    monkeypatch.setattr(events.client, "open_client", lambda url, timeout: Handle())
+    api = FakeApi(lambda n: [])
+    fake_daemon(monkeypatch, api)
     collector = EventCollector(admin.app.state.sessionmaker, admin.app.state.hosts)
     collector._loop = asyncio.get_running_loop()
     await collector.supervise()
     deadline = time.monotonic() + 10
-    while not asked and time.monotonic() < deadline:
+    while not api.asked and time.monotonic() < deadline:
         await asyncio.sleep(0.05)
     await collector.close()
-    assert asked[0] is None, "no since: nothing before the daemon's present"
+    assert "since" not in api.asked[0], "no since: nothing before the daemon's present"
+
+
+async def test_a_refused_stream_is_no_working_stream(admin: Browser, monkeypatch) -> None:
+    host_id = await quiet_host(admin, docker_url="tcp://fake:2375", alerts_enabled=True)
+    api = FakeApi(lambda n: [message("start")], status=403)
+    fake_daemon(monkeypatch, api)
+    monkeypatch.setattr(events, "BACKOFF", (0.05,))
+    collector = EventCollector(admin.app.state.sessionmaker, admin.app.state.hosts)
+    collector._loop = asyncio.get_running_loop()
+    seen: list[bool] = []
+    monkeypatch.setattr(collector, "_stream", lambda hid, ok: seen.append(ok))
+    await collector.supervise()
+    deadline = time.monotonic() + 10
+    while len(api.asked) < 2 and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+    await collector.close()
+    assert seen and not any(seen), "never reported working"
+    assert collector._follows == {} and host_id

@@ -8,6 +8,7 @@ shift them) stay still. Admins can clear the record, for one host or all, after 
 their password again; that is audited.
 """
 
+import re
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Annotated, Any
@@ -49,9 +50,6 @@ ACTIONS = {
     "rename": "Rename",
     "update": "Update",
     "health_status": "Health",
-    "exec_create": "Exec create",
-    "exec_start": "Exec start",
-    "exec_die": "Exec end",
     "attach": "Attach",
     "detach": "Detach",
     "commit": "Commit",
@@ -86,7 +84,7 @@ class View:
 def view_of(host: str, container: str, action: str, span: str) -> View:
     """host is text: "All hosts" sends it empty."""
     return View(
-        host=int(host) if host.isdigit() and len(host) < 10 else None,
+        host=int(host) if re.fullmatch(r"[0-9]{1,9}", host) else None,
         container=container.strip()[:MAX_QUERY],
         action=action if action in ACTIONS else "",
         range=span if span in RANGES else "24h",
@@ -118,7 +116,7 @@ def filtered(view: View, now_ns: int) -> list[Any]:
 def parse_before(value: str) -> tuple[int, int] | None:
     """The keyset cursor "<time_ns>-<id>" of the last row of the page before."""
     stamp, _, row = value.partition("-")
-    if not (stamp.isdigit() and row.isdigit()) or len(stamp) > 19 or len(row) > 19:
+    if not (re.fullmatch(r"[0-9]{1,19}", stamp) and re.fullmatch(r"[0-9]{1,19}", row)):
         return None
     if max(int(stamp), int(row)) > MAX_INT:
         return None  # SQLite's integers end there

@@ -13,7 +13,7 @@ Operators click **Update** on that container's row (it asks first). This starts 
 1. Drydock asks the registry again which digest the tag names, and pulls exactly that digest. Nothing changes if the pull fails.
 2. The tag moves to the new image. The container is stopped with its own stop timeout, its restart policy is turned off for the moment, and it is renamed `<name>-drydock-old`.
 3. A new container with the original's name and full configuration (command, environment, mounts, networks and addresses, ports, labels, restart policy) is created from the tag and started, if the original was running.
-4. Drydock checks the new container. One with a healthcheck must become healthy within 2 minutes; one without must keep running, without restarting, for 15 seconds.
+4. Drydock checks the new container. One with a healthcheck must become healthy within the time its own healthcheck allows (its start period, then its retries; at least 2 minutes, at most 15); one without must keep running, without restarting, for 15 seconds.
 5. If it passes, the old container is removed. Its image stays on the host until you prune it.
 
 If anything fails, or the check does not pass, everything is put back: the new container is removed, the old one gets its name, restart policy and state back, and the tag names the old image again. The run fails and its log says why. If drydock itself stops during an update, it puts things back the same way when it starts again.
@@ -30,7 +30,7 @@ With a Compose stack chosen in the containers page's stack filter, operators can
 
 It is all or nothing: if any member fails, every member already made again is put back, the others in reverse order. Members without a newer image (or pinned, or built on the host) are left running as they are, except one that joins the network of, links to or takes volumes from a member made again: it is made again too, with its own image, so it uses the new one. Drydock's own containers and members whose registry cannot be asked are left alone, with a note in the log.
 
-A single container that another container joins the network of (`network_mode: service:vpn`, as with a VPN gateway) is not updated alone, since the other would lose its network: update their stack instead.
+A container that another container joins the network of (`network_mode: service:vpn`, as with a VPN gateway) is not updated without that other one, since it would lose its network: update their stack instead, or both stacks together.
 
 ## Scheduled updates
 
@@ -47,6 +47,7 @@ The dashboard's "Next scheduled runs" includes the policies, and the containers 
 - Containers pinned by digest (`image@sha256:...`) or created from an image ID.
 - Images built on the host, with no registry digest.
 - Drydock's own containers (itself and its Compose project, the socket proxy among them) and its helper containers.
+- Containers that remove themselves when stopped (`docker run --rm`): there would be nothing to put back.
 - Containers already running the newest image.
 
 Compose files are never edited, and the new container keeps the Compose labels, so `docker compose up` on the host still sees it as its own. If the compose file pins another image, the next `docker compose up` goes back to that one.

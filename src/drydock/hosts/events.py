@@ -22,6 +22,7 @@ KEEP_DAYS days and at most KEEP_ROWS rows, pruned hourly.
 import asyncio
 import contextlib
 import functools
+import json
 import logging
 import re
 import time
@@ -32,6 +33,9 @@ from typing import Any
 
 import anyio
 import anyio.to_thread
+import docker.types
+import requests
+import urllib3.exceptions
 from sqlalchemy import case, delete, func, insert, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -52,11 +56,13 @@ KEEP_ROWS = 200_000
 COUNTS_TTL = 5.0  # seconds the cards' counts are reused
 BACKOFF = (1, 2, 5, 10, 30, 60)  # seconds before reopening a failed stream, growing
 MAX_HOSTS = 64  # stream threads, one per followed host
+STREAM_IDLE = 300  # seconds without a byte before the stream is opened again
 MAX_PENDING = 50_000  # events kept while the database refuses them
 TIMEOUT = 15  # opening the stream; reading it waits as long as the host is quiet
 ACTION_RE = re.compile(r"[a-z_]{1,32}")
 CONTAINER_ID_RE = re.compile(r"[0-9a-f]{12,64}")
 NS = 1_000_000_000
+MAX_INT = 2**63  # SQLite's INTEGER
 
 
 @dataclass(frozen=True)
@@ -84,6 +90,10 @@ def event_of(raw: Any, host_id: int, instance_id: str) -> Event | None:
     # is the command (never kept) or the health result.
     action, _, rest = str(raw.get("Action") or "").partition(":")
     action = action.strip()
+    if action.startswith("exec_"):
+        # Every healthcheck probe is an exec (three events, every interval of every
+        # container): they would push the lifecycle events out. Not stored.
+        return None
     container_id = str(actor.get("ID") or "")
     if not ACTION_RE.fullmatch(action) or not CONTAINER_ID_RE.fullmatch(container_id):
         return None
@@ -93,11 +103,15 @@ def event_of(raw: Any, host_id: int, instance_id: str) -> Event | None:
         if not isinstance(seconds, int) or isinstance(seconds, bool):
             return None
         stamp = seconds * NS
+    if not 0 < stamp < MAX_INT:
+        return None
     health = rest.strip() if action == "health_status" else None
     exit_code = None
     if action == "die":
         with contextlib.suppress(TypeError, ValueError):
-            exit_code = int(str(attributes.get("exitCode")))
+            exit_code = int(str(attributes.get("exitCode"))[:12])
+        if exit_code is not None and not -(2**31) <= exit_code < 2**31:
+            exit_code = None
     return Event(
         host_id=host_id,
         time_ns=stamp,
@@ -108,6 +122,14 @@ def event_of(raw: Any, host_id: int, instance_id: str) -> Event | None:
         exit_code=exit_code,
         health=health if health in HEALTH else None,
     )
+
+
+def idle(exc: BaseException) -> bool:
+    """Whether a stream error is its read timeout (STREAM_IDLE), raised by urllib3 or the
+    socket, or wrapped by requests."""
+    if isinstance(exc, urllib3.exceptions.ReadTimeoutError | TimeoutError):
+        return True  # read straight from urllib3 or the socket
+    return any(isinstance(arg, urllib3.exceptions.ReadTimeoutError) for arg in exc.args)
 
 
 def since_of(time_ns: int) -> str:
@@ -390,20 +412,33 @@ class EventCollector:
             await asyncio.sleep(BACKOFF[min(follow.failures, len(BACKOFF) - 1)])
 
     def _read(self, url: str, host_id: int, follow: Follow) -> None:
-        """Blocking, on the host's own thread, until the stream ends or is closed."""
+        """Blocking, on the host's own thread, until the stream ends, is closed, or has
+        been quiet for STREAM_IDLE (then the caller opens it again at once)."""
         loop = self._loop
         if loop is None:
             return  # not started
         instance = self._hosts.instance_id
         with client.open_client(url, TIMEOUT) as handle:
-            since = since_of(follow.newest) if follow.newest else None
-            stream = handle.client.api.events(
-                since=since, filters={"type": ["container"]}, decode=True
+            api = handle.client.api
+            params: dict[str, Any] = {"filters": json.dumps({"type": ["container"]})}
+            if follow.newest:
+                params["since"] = since_of(follow.newest)
+            # docker-py's events() reads without a timeout: a TCP host that vanishes
+            # without closing the connection would hold this thread for good. Uses
+            # docker-py's private _get, _url, _raise_for_status and _stream_helper
+            # (docker==7.2.0), as capture.image_stream does.
+            response = api._get(
+                api._url("/events"), params=params, stream=True, timeout=STREAM_IDLE
+            )
+            stream = docker.types.CancellableStream(
+                api._stream_helper(response, decode=True), response
             )
             follow.stream = stream
             try:
                 if follow.closed:
                     return  # cancelled while connecting
+                api._raise_for_status(response)  # a refusal is no working stream
+                follow.failures = 0
                 with contextlib.suppress(RuntimeError):  # the loop has closed
                     loop.call_soon_threadsafe(self._stream, host_id, True)
                 for raw in stream:
@@ -417,6 +452,13 @@ class EventCollector:
                         loop.call_soon_threadsafe(self._take, found)
                     except RuntimeError:
                         break  # the loop has closed: shutting down
+            except (
+                requests.exceptions.ConnectionError,
+                urllib3.exceptions.ReadTimeoutError,
+                TimeoutError,
+            ) as exc:
+                if not idle(exc):
+                    raise
             finally:
                 follow.stream = None
                 stream.close()

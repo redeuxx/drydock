@@ -34,6 +34,7 @@ import requests
 
 from drydock.engine import stacks
 from drydock.engine.capture import distribution_digest
+from drydock.hosts import inventory
 from drydock.hosts.helper import HELPER_LABEL
 from drydock.hosts.inventory import PROJECT_LABEL
 from drydock.restore.apply import ApplyError
@@ -49,10 +50,10 @@ from drydock.restore.plan import (
 )
 from drydock.updates.check import lookup_error, reference
 
-HEALTH_WAIT = stacks.HEALTH_WAIT  # seconds a container with a healthcheck may take
+HEALTH_WAIT = stacks.HEALTH_WAIT  # seconds a container with a healthcheck may take, at least
+MAX_HEALTH_WAIT = 900  # its own healthcheck timing may ask for more, up to this
 SETTLE = 15  # seconds one without must keep running
 POLL = 1.0
-MAX_GRACE = 300
 
 
 class UpdateError(Exception):
@@ -252,6 +253,10 @@ def plan_update(
         if labels.get(HELPER_LABEL):
             skip(name, "drydock's helper containers are left to drydock.")
             continue
+        if (info.get("HostConfig") or {}).get("AutoRemove"):
+            # Stopping it removes it: there would be nothing to put back.
+            skip(name, "it removes itself when stopped (--rm), so it is not updated.")
+            continue
         refs = set(stacks.container_refs(info))
         follows = sorted(
             n for cid, n in planned.items() if cid in refs or cid[:12] in refs or n in refs
@@ -299,8 +304,7 @@ def plan_update(
                 f"{name}: made again with its own image, since it uses {', '.join(follows)}."
             )
         state = info.get("State") or {}
-        grace = (info.get("Config") or {}).get("StopTimeout")
-        grace = grace if isinstance(grace, int) and 0 <= grace <= MAX_GRACE else 10
+        grace = inventory.stop_timeout(info)
         originals.append(
             Original(
                 id=info["Id"],
@@ -347,10 +351,13 @@ def plan_update(
             keys.add(f"name:{host_id}:project:{project}")
     if not changes:
         return Planned(None, tuple(notes), ())
-    users = namespace_users(api, planned) if not stack else []
+    # Outside the plan (another stack, or none): it would lose its network. ponytail:
+    # only network_mode is in the container list; ipc and pid modes need an inspect each.
+    users = namespace_users(api, planned)
     if users:
         user, joined = users[0]
-        raise UpdateError(f"{user} uses the network of {joined}: update their stack instead.")
+        where = "update it with them" if stack else "update their stack instead"
+        raise UpdateError(f"{user} uses the network of {joined}: {where}.")
     plan = RestorePlan(
         mode="overwrite",
         host_id=host_id,
@@ -393,6 +400,24 @@ def plan_stack(
     return Planned(planned.plan, (order, *planned.notes), planned.changes)
 
 
+def own_health_wait(info: dict[str, Any]) -> float:
+    """How long the container's own healthcheck may take to call it healthy: its start
+    period, then its retries, each an interval plus a timeout (Docker's defaults where
+    unset), at most MAX_HEALTH_WAIT."""
+    check = (info.get("Config") or {}).get("Healthcheck") or {}
+
+    def seconds(key: str, default: float) -> float:
+        value = check.get(key)
+        return value / 1e9 if isinstance(value, int) and value > 0 else default
+
+    retries = check.get("Retries")
+    retries = retries if isinstance(retries, int) and retries > 0 else 3
+    wait = seconds("StartPeriod", 0) + (retries + 1) * (
+        seconds("Interval", 30) + seconds("Timeout", 30)
+    )
+    return min(wait, MAX_HEALTH_WAIT)
+
+
 def settled(
     api: Any,
     ids: list[str],
@@ -412,8 +437,9 @@ def settled(
             raise ApplyError(f"Container {name} restarted after the update.")
         test = ((info.get("Config") or {}).get("Healthcheck") or {}).get("Test") or []
         if test and test[0] != "NONE":
-            log(f"Waiting for container {name} to be healthy.")
-            deadline = time.monotonic() + health_wait
+            wait = max(health_wait, own_health_wait(info))
+            log(f"Waiting up to {int(wait)} seconds for container {name} to be healthy.")
+            deadline = time.monotonic() + wait
             while True:
                 state = api.inspect_container(container_id).get("State") or {}
                 health = (state.get("Health") or {}).get("Status")
