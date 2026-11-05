@@ -50,6 +50,15 @@ vulnerabilities:
   - id: CVE-2026-119373
     statement: sqlite FTS5 detail=none prefix MATCH; drydock has no FTS5 tables and runs no MATCH
     expired_at: 2027-01-31
+  # zlib: a heap overflow in the gzFile write API (gzwrite/gzprintf after a failed write()),
+  # fixed upstream in zlib 1.4 and in Debian sid only (bug 1153063). Trivy's title calls it
+  # webpack-dev-middleware: that is Red Hat's record of the ID, the bug is real zlib. Python's
+  # zlib module calls only deflate and inflate (gzip is pure Python on top of them); only apt
+  # and dpkg-deb use gz* calls, and drydock never runs them. Short date: drop it when trixie
+  # ships a fixed zlib1g.
+  - id: CVE-2026-76844
+    statement: zlib gzFile write API; Python zlib uses only deflate/inflate, apt and dpkg never run
+    expired_at: 2026-12-05
 
   # GO STANDARD LIBRARY IN UPSTREAM RELEASE BINARIES, NO FIXED RELEASE YET
 
