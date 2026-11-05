@@ -37,9 +37,10 @@ jobs:
   python:
     name: Ruff and pytest (Python ${{ matrix.python }})
     runs-on: docker
-    # A green run took ~26 min at first and 58 min on 2026-11-05 (rigel's disk latency and
-    # load, plus the logs, events and update tests); a run past this is cancelled.
-    timeout-minutes: 90
+    # A green run took ~26 min at first, 58 to 90 min on 2026-11-05 (rigel's disk latency
+    # and load with both legs at once, plus the logs, events and update tests); a run past
+    # this is cancelled. Locally the suite takes ~27 min.
+    timeout-minutes: 120
     # Every Python that requires-python allows. Forgejo ignores max-parallel, so both run
     # at once on one daemon: tests label their helpers with an installation ID of their
     # own run (tests/docker_support.py TEST_INSTANCE) and touch nothing else they did not make.

@@ -295,6 +295,8 @@ async def test_postgres_backup_in_every_scope(settings: Settings, targets: Targe
 # CANCEL
 
 
+# A latency ceiling: CI's shared runner cannot hold it (run it locally).
+@pytest.mark.slow
 async def test_cancel_takes_effect_within_five_seconds(
     settings: Settings, targets: Targets
 ) -> None:
@@ -327,6 +329,8 @@ async def test_cancel_takes_effect_within_five_seconds(
         assert helpers_left(targets.client, app.instance_id) == []
 
 
+# A latency ceiling: CI's shared runner cannot hold it (run it locally).
+@pytest.mark.slow
 async def test_cancel_while_a_container_stops(settings: Settings, targets: Targets) -> None:
     """A stop cannot be interrupted without killing the container early, so a cancel that
     arrives while it stops starts the container again as soon as the stop returns."""
