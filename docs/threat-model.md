@@ -607,6 +607,18 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 - `tests/test_status.py::test_try_hold_never_jumps_a_waiting_run`
 - `tests/test_status_docker.py::test_container_actions_and_inspect_on_a_real_container`
 
+### T42. Reading secrets in container logs
+
+**Threat:** a viewer or an operator reads application logs, which routinely hold tokens and stack traces with secrets; a log line injects markup or terminal escapes into the page; a chatty log exhausts drydock's memory; or a slow host's log reads starve the threads every page runs on.
+**Defence:** the logs page and its lines are for admins only and are never stored or audited. Lines are autoescaped, and escape sequences and control characters are removed. One read takes at most 2 MiB of the log and 16 KiB of a line, and log reads run on four threads of their own. The socket proxy allows only `GET /containers/<id>/logs` beyond what drydock already had.
+**Tests:**
+- `tests/test_logs.py::test_logs_are_for_admins_only`
+- `tests/test_logs.py::test_lines_are_escaped_and_bring_the_next_poller`
+- `tests/test_logs.py::test_escape_sequences_and_control_characters_are_removed`
+- `tests/test_logs.py::test_read_stops_at_the_byte_cap`
+- `tests/test_logs.py::test_long_lines_are_cut_with_a_marker`
+- `tests/test_status_docker.py::test_logs_through_the_proxy_without_gaps_or_repeats`
+
 ## Accepted risks
 
 These are known limits of v1. The README and docs/ explain each one to operators; no test can remove them.

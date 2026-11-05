@@ -434,6 +434,60 @@ const inspected = await page
 check(inspected, "inspect loads into the row's dialog");
 await page.keyboard.press("Escape");
 
+// THE LOGS PAGE
+//
+// drydock's own container logs every request, so its log grows while the page polls.
+
+await page.goto("/logs");
+const logList = page.locator("nav[aria-label=Containers]");
+const appLink = logList.locator("a", { hasText: "drydock-test-app-1" });
+await appLink.waitFor({ timeout: 15000 });
+await appLink.click();
+const logLines = page.locator("#container-log [data-line]");
+const logLoaded = await logLines
+  .first()
+  .waitFor({ timeout: 15000 })
+  .then(() => true)
+  .catch(() => false);
+check(logLoaded, "the logs page loads the container's last lines");
+const firstCount = await logLines.count();
+const logPoll = await page
+  .waitForRequest(
+    (request) =>
+      request.url().includes("/logs/lines?") &&
+      request.url().includes("after=") &&
+      request.headers()["x-drydock-poll"] === "1",
+    { timeout: 15000 },
+  )
+  .then(() => true)
+  .catch(() => false);
+check(logPoll, "the log polls with its cursor, marked as a poll");
+const grew = await page
+  .waitForFunction((count) => document.querySelectorAll("#container-log [data-line]").length > count, firstCount, {
+    timeout: 15000,
+  })
+  .then(() => true)
+  .catch(() => false);
+check(grew, "new lines arrive at the end of the log");
+check(
+  await page.evaluate(() => {
+    const log = document.getElementById("container-log");
+    return !!log && log.scrollHeight - log.scrollTop - log.clientHeight < 32;
+  }),
+  "the log follows its end",
+);
+await page.getByRole("button", { name: "Pause" }).click();
+check((await page.locator("[data-log-pause][aria-pressed=true]").count()) === 1, "Pause stops the log");
+await page.getByRole("button", { name: "Clear" }).click();
+check((await logLines.count()) === 0, "Clear empties the view");
+await logList.locator("li[data-name='drydock-test-smoke-target-1'] [data-star]").click();
+check(
+  (await logList.locator("li[data-name]").first().getAttribute("data-name")) === "drydock-test-smoke-target-1",
+  "a starred container is listed first",
+);
+await page.fill("[data-log-filter]", "smoke-target");
+check((await logList.locator("li[data-name]:visible").count()) === 1, "the filter narrows the list");
+
 // STORAGE, A JOB AND A RUN WITH ITS LIVE LOG
 
 await page.goto("/storage/new");

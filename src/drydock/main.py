@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import anyio
 import anyio.to_thread
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -26,6 +27,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from drydock import db
 from drydock.config import DEFAULT_PROXIES, ConfigError, Settings, load_settings
 from drydock.crypto import Crypto
+from drydock.hosts import logs as container_logs
 from drydock.hosts.client import run_blocking
 from drydock.hosts.manager import HostManager, load_instance_id
 from drydock.hosts.status import StatusCollector
@@ -42,6 +44,7 @@ from drydock.routes import (
     hooks,
     hosts,
     jobs,
+    logs,
     notifications,
     restore,
     runs,
@@ -127,6 +130,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             load_instance_id(app.state.sessionmaker),
         )
         status = app.state.status = StatusCollector(app.state.sessionmaker, host_manager)
+        # Log reads wait on slow hosts on threads of their own, never the routes' pool.
+        app.state.log_limiter = anyio.CapacityLimiter(container_logs.THREADS)
         notifier = app.state.notifier = Notifier(settings, app.state.sessionmaker, app.state.crypto)
         app.state.oauth_flows = gdrive_oauth.Flows()  # Google Drive connections under way
         # A drive target Google refused: marked, and its jobs' failure targets told once.
@@ -322,6 +327,7 @@ def create_app(settings: Settings) -> FastAPI:
         restore,
         system,
         containers,
+        logs,
     )
     for module in routers:
         app.include_router(module.router)

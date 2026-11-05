@@ -216,6 +216,7 @@ PROXY_ENABLED = {
     "ALLOW_PAUSE",
     "ALLOW_UNPAUSE",
     "ALLOW_ARCHIVE",
+    "ALLOW_LOGS",
     "INFO",
     "VERSION",
     "PING",
@@ -225,7 +226,6 @@ PROXY_ENABLED = {
 PROXY_DISABLED = {
     "ALLOW_CHANGES",
     "ALLOW_EXPORT",
-    "ALLOW_LOGS",
     "ALLOW_TOP",
     "AUTH",
     "BUILD",

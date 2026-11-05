@@ -114,7 +114,8 @@ async def test_a_populated_database_upgrades(tmp_path: Path, fixture: Path) -> N
         for method, path, _route in api_routes(browser.app):
             if method != "GET" or path in GET_WRITE_EXEMPTIONS:
                 continue
-            expected = 404 if path == "/setup" else 200  # gone once a superadmin exists
+            # /setup is gone once a superadmin exists; the log routes need a container.
+            expected = 404 if path in ("/setup", "/logs/lines", "/logs/download") else 200
             for host_id in hosts if "{host_id}" in path else hosts[:1]:
                 url = fill(path, viewer, host_id=host_id, container_id="a" * 64, **ids)
                 response = await browser.get(url)

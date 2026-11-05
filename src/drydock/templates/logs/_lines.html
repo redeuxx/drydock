@@ -1,0 +1,9 @@
+{# The next lines of a container's log (routes/logs.py), and the poller for the ones after
+   them. #log-chunk replaces the poller that asked, so its lines land at the end of the log
+   and a new poller follows them. frontend/app.ts keeps the log scrolled to the bottom only
+   if the reader was there, and drops the oldest lines past the chosen count.
+   Lines are the container's own text: autoescaped only. #}
+<div id="log-chunk">
+{%- for line in lines %}<div data-line{% if line.stream == "stderr" %} class="text-error"{% endif %}><span class="select-none opacity-60">{{ line.when|clock }}</span> {{ line.text }}</div>{% endfor -%}
+<span id="log-poller" hx-get="{{ next_url }}" hx-trigger="every 2s" hx-target="this" hx-select="#log-chunk" hx-swap="outerHTML strip:true ignoreTitle:true" hx-sync="this:drop" hx-nonce="{{ csp_nonce }}"></span>
+</div>

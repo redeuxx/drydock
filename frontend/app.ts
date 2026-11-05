@@ -60,19 +60,23 @@ function isFieldRegion(target: unknown): target is HTMLElement {
 
 // POLLERS
 //
-// Elements that refresh themselves with hx-trigger "every Ns": the run page's log poller
-// (new log lines every 2 seconds, routes/runs.py) and every [data-poller] region, such as
+// Elements that refresh themselves with hx-trigger "every Ns": a log poller (#log-poller,
+// new lines every 2 seconds for a run's log, routes/runs.py, or a container's,
+// routes/logs.py) and every [data-poller] region, such as
 // the dashboard's environment cards, whose attribute names them in error messages. Polls
 // are background traffic: they never hide an error left by a user action, a failing poll
 // shows its error once instead of re-announcing it on every poll, and an error answer
 // never replaces the poller, which keeps retrying. They carry X-Drydock-Poll, so they
 // never keep an idle session alive (security/sessions.py), and they skip their turn
-// while the tab is hidden. New log lines scroll the log to the bottom only if the reader
-// was already there.
+// while the tab is hidden. New log lines scroll the log (the poller's [role=log]) to the
+// bottom only if the reader was already there, and a log with data-max-lines drops its
+// oldest lines past that count. A failing container log names its reason
+// (X-Drydock-Reason).
 
 const POLLER_ID = "log-poller";
 const POLL_HEADER = "X-Drydock-Poll";
 let followLog = true;
+let followed: HTMLElement | null = null; // the log a poller's swap appends to
 let pollErrorShown = false;
 
 function isLogPoller(element: unknown): boolean {
@@ -91,12 +95,17 @@ function runLog(): HTMLElement | null {
   return document.getElementById("run-log");
 }
 
+function logOf(element: unknown): HTMLElement | null {
+  return element instanceof Element ? element.closest<HTMLElement>("[role=log]") : null;
+}
+
 document.addEventListener("htmx:config:request", (event) => {
   const ctx = event.detail.ctx;
   if (!isPoller(ctx.sourceElement)) return;
-  // Nobody is looking, or a dialog in the region is open, which the swap would close:
-  // skip this turn, the next tick polls.
-  if (document.hidden || ctx.sourceElement.querySelector("dialog[open]")) {
+  // Nobody is looking, a dialog in the region is open (the swap would close it), or the
+  // reader paused the log: skip this turn, the next tick polls.
+  const paused = logOf(ctx.sourceElement)?.hasAttribute("data-paused");
+  if (document.hidden || paused || ctx.sourceElement.querySelector("dialog[open]")) {
     event.preventDefault();
     return;
   }
@@ -127,9 +136,9 @@ document.addEventListener("htmx:before:swap", (event) => {
       (box) => box.value,
     );
   }
-  if (isLogPoller(event.detail.ctx.target)) {
-    const log = runLog();
-    followLog = !log || log.scrollHeight - log.scrollTop - log.clientHeight < 32;
+  if (isLogPoller(target)) {
+    followed = logOf(target);
+    followLog = !followed || followed.scrollHeight - followed.scrollTop - followed.clientHeight < 32;
   }
 });
 
@@ -146,8 +155,11 @@ document.addEventListener("htmx:response:error", (event) => {
   }
   if (isPoller(ctx.sourceElement)) {
     ctx.swap = "none";
+    const reason = ctx.response?.headers.get("X-Drydock-Reason");
     pollFailed(
-      `${pollerName(ctx.sourceElement)} updates failed (HTTP ${status}). Drydock keeps trying; reload the page if this persists.`,
+      reason
+        ? `${pollerName(ctx.sourceElement)}: ${reason} Drydock keeps trying.`
+        : `${pollerName(ctx.sourceElement)} updates failed (HTTP ${status}). Drydock keeps trying; reload the page if this persists.`,
     );
     return;
   }
@@ -234,8 +246,8 @@ document.addEventListener("change", (event) => {
 
 // THE CONTAINERS PAGE'S HOST
 //
-// The host picker (data-remember-host) remembers the last host chosen, and the menu's
-// Containers link opens that host. A convenience only: storage may be unavailable, and
+// The host picker (data-remember-host, on the containers and logs pages) remembers the
+// last host chosen, and the menu's Containers and Logs links open that host. A convenience only: storage may be unavailable, and
 // the server falls back to its own choice for a host that no longer exists.
 
 const HOST_KEY = "drydock.containers.host";
@@ -252,11 +264,98 @@ document.addEventListener("change", (event) => {
 
 try {
   const saved = localStorage.getItem(HOST_KEY);
-  const link = document.querySelector<HTMLAnchorElement>('nav a[href="/containers"]');
-  if (saved && link) link.href = `/containers?host=${encodeURIComponent(saved)}`;
+  for (const path of ["/containers", "/logs"]) {
+    const link = document.querySelector<HTMLAnchorElement>(`nav a[href="${path}"]`);
+    if (saved && link) link.href = `${path}?host=${encodeURIComponent(saved)}`;
+  }
 } catch {
   // storage blocked
 }
+
+// THE LOGS PAGE
+//
+// Pause stops the log's polls (the poller keeps its place, so nothing is missed), Clear
+// empties the view only. The filter box hides containers whose name lacks its text. A
+// star marks a favourite, kept per host in this browser and listed first; like the host,
+// a convenience only.
+
+const FAVOURITES_KEY = "drydock.logs.favourites";
+
+function favourites(): Record<string, string[]> {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(FAVOURITES_KEY) ?? "{}");
+    return saved && typeof saved === "object" && !Array.isArray(saved) ? (saved as Record<string, string[]>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function starredOn(host: string): string[] {
+  const names = favourites()[host];
+  return Array.isArray(names) ? names.filter((n) => typeof n === "string") : [];
+}
+
+function showFavourites(): void {
+  const list = document.querySelector<HTMLElement>("[data-favourites]");
+  if (!list) return;
+  const names = starredOn(list.dataset.favourites ?? "");
+  const items = [...list.querySelectorAll<HTMLElement>("li[data-name]")];
+  for (const item of items) {
+    item.querySelector("[data-star]")?.setAttribute("aria-pressed", String(names.includes(item.dataset.name ?? "")));
+  }
+  // Starred first, each group in the server's order (by name).
+  const rank = (item: HTMLElement) =>
+    (names.includes(item.dataset.name ?? "") ? 0 : 1e6) + Number(item.dataset.order ?? 0);
+  list.append(...items.sort((a, b) => rank(a) - rank(b)));
+}
+
+document.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element)) return;
+  const log = document.getElementById("container-log");
+  const pause = event.target.closest<HTMLButtonElement>("[data-log-pause]");
+  if (pause && log) {
+    const paused = !log.hasAttribute("data-paused");
+    log.toggleAttribute("data-paused", paused);
+    pause.setAttribute("aria-pressed", String(paused));
+    pause.textContent = paused ? "Resume" : "Pause";
+    return;
+  }
+  if (event.target.closest("[data-log-clear]") && log) {
+    for (const line of log.querySelectorAll("[data-line]")) line.remove();
+    return;
+  }
+  const star = event.target.closest<HTMLButtonElement>("[data-star]");
+  const host = star?.closest<HTMLElement>("[data-favourites]")?.dataset.favourites;
+  const name = star?.closest<HTMLElement>("li[data-name]")?.dataset.name;
+  if (!star || !host || name === undefined) return;
+  const names = starredOn(host).filter((n) => n !== name);
+  if (star.getAttribute("aria-pressed") !== "true") names.push(name);
+  const saved = favourites();
+  saved[host] = names;
+  try {
+    localStorage.setItem(FAVOURITES_KEY, JSON.stringify(saved));
+  } catch {
+    // storage blocked: the star shows until the page changes
+  }
+  star.setAttribute("aria-pressed", String(names.includes(name)));
+  showFavourites();
+});
+
+document.addEventListener("input", (event) => {
+  const box = event.target;
+  if (!(box instanceof HTMLInputElement) || !box.hasAttribute("data-log-filter")) return;
+  const text = box.value.trim().toLowerCase();
+  for (const item of document.querySelectorAll<HTMLElement>("[data-favourites] li[data-name]")) {
+    item.hidden = !(item.dataset.name ?? "").toLowerCase().includes(text);
+  }
+});
+
+showFavourites();
+document.addEventListener("htmx:after:swap", (event) => {
+  const target = event.detail.ctx?.target;
+  if (target instanceof HTMLElement && target.id === "main") showFavourites();
+});
+
 
 // FOCUS AFTER A SWAP OF #MAIN
 //
@@ -269,9 +368,12 @@ try {
 document.addEventListener("htmx:after:swap", (event) => {
   const target = event.detail.ctx.target;
   if (isPoller(target)) {
-    const log = runLog();
-    if (isLogPoller(target) && log && followLog) {
-      log.scrollTop = log.scrollHeight;
+    if (isLogPoller(target) && followed) {
+      const max = Number(followed.dataset.maxLines);
+      const lines = followed.querySelectorAll("[data-line]");
+      for (let i = 0; max > 0 && i < lines.length - max; i++) lines[i]?.remove();
+      if (followLog) followed.scrollTop = followed.scrollHeight;
+      followed = null;
     }
     for (const box of document.querySelectorAll<HTMLInputElement>("input[data-select]")) {
       if (selectedRows.includes(box.value)) box.checked = true;

@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import functools
 import html
+import re
 
 import docker.errors
 import pytest
@@ -247,5 +248,83 @@ async def test_container_actions_and_inspect_on_a_real_container(admin: Browser)
             assert "No such container any more." in gone.text
         finally:
             await docker_client.run_blocking(remove, client, web, other)
+    finally:
+        handle.close()
+
+
+# THE LOGS PAGE ON A REAL DAEMON
+
+COUNTING = [
+    "sh",
+    "-c",
+    'i=0; while :; do echo "line $i"; echo "err $i" >&2; i=$((i+1)); sleep 0.2; done',
+]
+MARKED = ["sh", "-c", 'echo "<script>x</script>"; printf "\033[31mred\033[0m\n"; exec sleep 3600']
+LINE_RE = re.compile(r'<div data-line( class="text-error")?><span[^>]*>[^<]*</span> ([^<]*)</div>')
+NEXT_RE = re.compile(r'<span id="log-poller" hx-get="([^"]*)"')
+
+
+async def read_log(browser: Browser, url: str) -> tuple[list[tuple[bool, str]], str | None]:
+    """(stderr?, text) per line, and the next poll's URL (None: nothing new)."""
+    response = await browser.get(url, headers={"HX-Request": "true"})
+    if response.status_code == 204:
+        return [], None
+    assert response.status_code == 200, (response.status_code, response.text)
+    lines = [(bool(err), html.unescape(text)) for err, text in LINE_RE.findall(response.text)]
+    found = NEXT_RE.search(response.text)
+    assert found is not None
+    return lines, html.unescape(found.group(1))
+
+
+@needs_docker
+async def test_logs_through_the_proxy_without_gaps_or_repeats(admin: Browser) -> None:
+    handle = await docker_client.run_blocking(host_docker)
+    run = functools.partial(
+        handle.client.containers.run,
+        IMAGE,
+        detach=True,
+        init=True,
+        labels={TEST_LABEL: "1"},
+        network_mode="none",
+    )
+    try:
+        await docker_client.run_blocking(helper.ensure_image, handle.client, IMAGE)
+        counting = await docker_client.run_blocking(functools.partial(run, COUNTING))
+        tty = await docker_client.run_blocking(functools.partial(run, MARKED, tty=True))
+        try:
+            host = Host(name="local", kind="local", docker_url=DOCKER_URL, enabled=True)
+            host_id = await docker_client.run_blocking(insert_host, admin, host)
+            await asyncio.sleep(1.5)
+
+            # The tail first, then each poll brings only lines it has not had.
+            lines, url = await read_log(
+                admin, f"/logs/lines?host={host_id}&container={counting.id}&tail=100"
+            )
+            assert lines[:2] in (
+                [(False, "line 0"), (True, "err 0")],
+                [(True, "err 0"), (False, "line 0")],
+            )
+            assert url is not None and "tty=0" in url
+            out: list[int] = []
+            err: list[int] = []
+            for _ in range(8):
+                for stderr, text in lines:
+                    (err if stderr else out).append(int(text.split()[1]))
+                    assert text.startswith("err" if stderr else "line"), text
+                await asyncio.sleep(0.5)
+                lines, next_url = await read_log(admin, url)
+                url = next_url or url
+            assert out == list(range(out[0], out[0] + len(out))), out
+            assert err == list(range(err[0], err[0] + len(err))), err
+            assert len(out) > 10
+
+            # A TTY container: one stream, escape sequences gone, markup escaped.
+            lines, url = await read_log(admin, f"/logs/lines?host={host_id}&container={tty.id}")
+            assert lines == [(False, "<script>x</script>"), (False, "red")]
+            assert url is not None and "tty=1" in url
+        finally:
+            await docker_client.run_blocking(remove, handle.client, counting, tty)
+        gone = await admin.get(f"/logs/lines?host={host_id}&container={counting.id}")
+        assert gone.status_code == 502 and gone.text == "No such container any more."
     finally:
         handle.close()

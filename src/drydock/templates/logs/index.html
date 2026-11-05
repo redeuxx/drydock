@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% from "status/_host_bar.html" import host_bar %}
+{% from "_icons.html" import icon %}
+{% block title %}Logs{% endblock %}
+{% block width %}max-w-screen-2xl{% endblock %}
+{% block content %}
+{% set dots = {"running": "bg-success", "paused": "bg-warning", "restarting": "bg-warning", "dead": "bg-error", "created": "bg-info"} %}
+<h1 class="mb-4 text-3xl font-bold">Logs</h1>
+{% if not hosts %}
+<p class="text-sm opacity-70">No host is set up yet. <a class="link" href="/hosts/new?kind=local">Add the local host</a> or <a class="link" href="/hosts/new?kind=ssh">an SSH host</a>.</p>
+{% else %}
+{# Swaps #main (inherited from <body>), like the containers page's picker, whose last
+   choice it shares (frontend/app.ts). #}
+<form id="host-picker" method="get" action="/logs" hx-get="/logs" hx-trigger="change" hx-push-url="true" hx-nonce="{{ csp_nonce }}" class="mb-3 flex items-center gap-2">
+  <label for="host-select" class="text-sm font-semibold">Host</label>
+  <select id="host-select" name="host" class="select select-sm w-auto" data-remember-host data-focus-result>
+    {% for h in hosts %}<option value="{{ h.id }}"{% if h.id == chosen.id %} selected{% endif %}>{{ h.name }}{% if not h.enabled %} (disabled){% endif %}</option>{% endfor %}
+  </select>
+  <input type="hidden" name="tail" value="{{ tail }}">
+  <noscript><button type="submit" class="btn btn-sm">Show</button></noscript>
+</form>
+{{ host_bar(chosen, state, snap, where) }}
+<div class="grid gap-4 md:grid-cols-[16rem_minmax(0,1fr)]">
+  {# The list is what the status collector last read. The filter and the favourites
+     (starred names, kept per host in this browser) are frontend/app.ts's. #}
+  <nav aria-label="Containers" class="min-w-0">
+    <input type="search" class="input input-sm mb-2 w-full" placeholder="Filter" aria-label="Filter containers" data-log-filter>
+    <ul class="flex flex-col gap-0.5 text-sm" data-favourites="{{ chosen.id }}">
+      {% for c in containers %}
+      {% set current = selected and selected[0] == c.id %}
+      <li class="flex items-center gap-1" data-name="{{ c.name }}" data-order="{{ loop.index }}">
+        <button type="button" class="btn btn-ghost btn-xs btn-square aria-pressed:text-warning aria-pressed:[&_svg]:fill-current" aria-pressed="false" data-star>{{ icon("star", "size-3.5") }}<span class="sr-only">Favourite {{ c.name }}</span></button>
+        <a href="/logs?{{ {'host': chosen.id, 'container': c.id, 'tail': tail}|urlencode }}" class="flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1 hover:bg-base-300{% if current %} bg-base-300 font-semibold{% endif %}"{% if current %} aria-current="page"{% endif %}>
+          <span aria-hidden="true" class="size-2 shrink-0 rounded-full {{ dots.get(c.state, 'bg-base-content/40') }}"></span>
+          <span class="truncate" title="{{ c.name }} ({{ c.state }})">{{ c.name }}</span><span class="sr-only">, {{ c.state }}</span>
+        </a>
+      </li>
+      {% else %}
+      <li class="opacity-70">{% if not chosen.enabled %}Disabled: drydock does not connect to this host.{% elif snap is none or snap.taken_at is none %}Reading the containers&hellip; reload in a moment.{% else %}No containers on this host.{% endif %}</li>
+      {% endfor %}
+    </ul>
+  </nav>
+  <section class="min-w-0" aria-labelledby="log-title">
+    {% if selected %}
+    <div class="mb-2 flex flex-wrap items-center gap-2">
+      <h2 id="log-title" class="mr-auto truncate text-lg font-semibold" title="{{ selected[1] }}">{{ selected[1] }}</h2>
+      <form method="get" action="/logs" hx-get="/logs" hx-trigger="change" hx-push-url="true" hx-nonce="{{ csp_nonce }}" class="flex items-center gap-2">
+        <input type="hidden" name="host" value="{{ chosen.id }}">
+        <input type="hidden" name="container" value="{{ selected[0] }}">
+        <label for="log-tail" class="text-sm">Lines</label>
+        <select id="log-tail" name="tail" class="select select-sm w-auto" data-focus-result>
+          {% for t in tails %}<option value="{{ t }}"{% if t == tail %} selected{% endif %}>{{ t }}</option>{% endfor %}
+        </select>
+        <noscript><button type="submit" class="btn btn-sm">Show</button></noscript>
+      </form>
+      <button type="button" class="btn btn-sm" aria-pressed="false" data-log-pause>Pause</button>
+      <button type="button" class="btn btn-sm" data-log-clear>Clear</button>
+    </div>
+    {# The first request reads the last lines; each answer brings the next poller. #}
+    <div id="container-log" role="log" aria-labelledby="log-title" tabindex="0" data-max-lines="{{ tail }}" class="h-[70vh] overflow-auto rounded-box border border-base-300 bg-base-100 p-2 font-mono text-xs whitespace-pre-wrap break-all">
+      <span id="log-poller" hx-get="/logs/lines?{{ {'host': chosen.id, 'container': selected[0], 'tail': tail}|urlencode }}" hx-trigger="load, every 2s" hx-target="this" hx-select="#log-chunk" hx-swap="outerHTML strip:true ignoreTitle:true" hx-sync="this:drop" hx-nonce="{{ csp_nonce }}">Loading&hellip;</span>
+      <noscript>The log needs JavaScript.</noscript>
+    </div>
+    {% else %}
+    <p class="text-sm opacity-70">Choose a container to see its log.</p>
+    {% endif %}
+  </section>
+</div>
+{% endif %}
+{% endblock %}

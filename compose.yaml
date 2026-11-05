@@ -71,6 +71,9 @@ services:
     restart: unless-stopped
     environment:
       ALLOW_ARCHIVE: "1"
+      # Container logs (GET /containers/<id>/logs) for the admins' logs page. Logs can hold
+      # secrets; drydock shows them to admins only (docs/hosts.md, Container logs).
+      ALLOW_LOGS: "1"
       ALLOW_PAUSE: "1"
       ALLOW_RESTARTS: "1"
       ALLOW_START: "1"
@@ -90,7 +93,6 @@ services:
       VOLUMES: "1"
       ALLOW_CHANGES: "0"
       ALLOW_EXPORT: "0"
-      ALLOW_LOGS: "0"
       ALLOW_TOP: "0"
       AUTH: "0"
       BUILD: "0"

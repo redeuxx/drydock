@@ -96,6 +96,7 @@ EXPECTED_MIN_ROLE = [
     ({"POST"}, re.compile(r"^/jobs"), Role.admin),
     ({"POST"}, re.compile(r"^/containers/actions$"), Role.operator),
     ({"GET"}, re.compile(r"^/containers/[^/]+/[^/]+/inspect$"), Role.admin),
+    ({"GET"}, re.compile(r"^/logs"), Role.admin),
     ({"GET", "POST"}, re.compile(r".*"), Role.viewer),
 ]
 # Every route the app serves. A new route fails this test until it is added here,
@@ -112,6 +113,8 @@ INVENTORY = {
     ("GET", "/containers"),
     ("POST", "/containers/actions"),
     ("GET", "/containers/{host_id}/{container_id}/inspect"),
+    ("GET", "/logs"),
+    ("GET", "/logs/lines"),
     ("POST", "/feed/read"),
     ("GET", "/about"),
     ("GET", "/hosts"),

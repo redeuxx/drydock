@@ -75,7 +75,6 @@ def test_proxy_negotiates_a_supported_api_version() -> None:
         ("GET", "/secrets"),
         ("GET", "/plugins"),
         ("POST", "/session"),
-        ("GET", "/containers/x/logs"),
         ("GET", "/containers/x/export"),
         ("GET", "/containers/x/top"),
         ("GET", "/containers/x/changes"),

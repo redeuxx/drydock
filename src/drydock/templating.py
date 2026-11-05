@@ -77,6 +77,13 @@ def logtimes(text: str) -> str:
     return LOG_STAMP_RE.sub(local, text)
 
 
+def clock(value: datetime | None) -> str:
+    """A log line's time in drydock's zone, to the millisecond: "2026-11-01 10:30:18.042"."""
+    if value is None:
+        return ""
+    return value.astimezone(DISPLAY_ZONE).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+
 def ago(value: datetime | None) -> str:
     """A past time in words: "just now", "5 minutes ago", "3 days ago"."""
     if value is None:
@@ -108,6 +115,7 @@ env.filters["ago"] = ago
 env.filters["stamp"] = stamp
 env.filters["logtimes"] = logtimes
 env.filters["duration"] = duration
+env.filters["clock"] = clock
 templates = Jinja2Templates(env=env)
 
 

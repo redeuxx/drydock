@@ -6,7 +6,7 @@ Drydock talks to every host through the Docker Engine API, versions 1.44 to 1.56
 
 ## The local host
 
-`compose.yaml` runs [linuxserver/socket-proxy](https://github.com/linuxserver/docker-socket-proxy) next to drydock. Only the proxy mounts `/var/run/docker.sock` (read-only, on an `internal` network with no route out); drydock reaches it at `tcp://socket-proxy:2375` and never mounts the socket. The proxy allows containers, images, volumes, networks, exec, archive, start, stop, restart, pause and unpause, plus the read-only registry lookup `GET /distribution/<image>/json` (see [Images stored by reference](backups.md#images-stored-by-reference)). It denies everything else, including events, logs, build, commit, swarm, secrets, plugins and system.
+`compose.yaml` runs [linuxserver/socket-proxy](https://github.com/linuxserver/docker-socket-proxy) next to drydock. Only the proxy mounts `/var/run/docker.sock` (read-only, on an `internal` network with no route out); drydock reaches it at `tcp://socket-proxy:2375` and never mounts the socket. The proxy allows containers, images, volumes, networks, exec, archive, start, stop, restart, pause, unpause and container logs (for the [logs page](#container-logs)), plus the read-only registry lookup `GET /distribution/<image>/json` (see [Images stored by reference](backups.md#images-stored-by-reference)). It denies everything else, including events, build, commit, swarm, secrets, plugins and system.
 
 **The socket proxy is not a security boundary.** It narrows the API to what drydock uses, which limits accidents and makes misuse noisier, but the endpoints drydock needs (container create, exec, archive) are already enough to take over the host. Treat anything that can reach `socket-proxy:2375` as root on the host; that is why it sits on an internal network shared only with drydock.
 
@@ -60,6 +60,14 @@ The dashboard shows a card per host: containers by state, unhealthy containers b
 Operators can start, stop, restart, pause and unpause containers, one row at a time or the selected rows together; stop and restart ask first, and give each container its own stop timeout. Drydock refuses to act on itself, its own Compose project (the socket proxy among them) and its helper containers, and on a container a backup or restore is using; a backup that starts meanwhile waits for the action. Every container acted on is in the audit log, and the page shows the host as read right after. Admins can also inspect a container (its row's dialog): the full `docker inspect` output, with environment values, secret-looking labels and log driver options shown as `***`. Command lines are shown as they are, so keep secrets out of them.
 
 For them drydock reads each host's containers (list and inspect), their one-shot stats, `/info`, and the volume and network lists, over the same connection as everything else: the socket proxy, or the host's SSH tunnel. It needs nothing beyond what the proxy already allows. One background task reads a host every 10 seconds, and only while a page has shown it in the last minute, so an idle drydock makes no extra Docker calls; pages show what it last read and never call Docker themselves. CPU is the containers' share of the whole host and shows from a host's second reading on, since one reading has nothing to compare with. Memory leaves out page cache, as `docker stats` does. A host that cannot be read keeps its last reading, marked stale, and the error goes to the server log.
+
+## Container logs
+
+**Logs** in the top menu (admins only) shows one container's log, live. Pick a host and a container from the list on the left; the filter box narrows the list, and a star keeps a container at the top (per host, in this browser). The log opens with its last 500 lines (100, 500, 1,000 or 5,000) and adds new lines every 2 seconds, in drydock's time zone, with stderr in red. It follows the end while you are there; scroll up to read and it stays put. Pause stops the updates without losing lines, and Clear empties the view only.
+
+Application logs routinely hold tokens, email addresses and stack traces with secrets, so only admins read them, and drydock never stores them. Escape sequences and control characters are removed, a line longer than 16 KiB is cut, and one update reads at most 2 MiB of the log (a busy log catches up over the next updates). Reading a log is not audited: drydock audits changes, not reads.
+
+The local host's socket proxy allows `GET /containers/<id>/logs` for this (`ALLOW_LOGS=1` in `compose.yaml`); an install from before this version needs the new `compose.yaml` and `docker compose up -d`, which recreates the proxy. SSH hosts need nothing new.
 
 ## Helper containers
 
