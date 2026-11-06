@@ -581,7 +581,7 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 ### T40. A weakly configured deployment or a vulnerable image
 
 **Threat:** the container runs as root, with a writable root filesystem or extra capabilities, from an image or binary that can change under it or carries known vulnerabilities, or two drydocks share one `/data`.
-**Defence:** the image runs as uid 10001 with a read-only root filesystem, no capabilities and `no-new-privileges`. Base images are pinned by digest, age and rclone are checksummed, and a second process cannot take the `/data` lock. CI scans the image for high and critical vulnerabilities and secrets; findings that cannot be fixed yet need a dated exception in `.trivyignore.yaml`. Releases carry an SBOM and provenance for amd64 and arm64.
+**Defence:** the image runs as uid 10001 with a read-only root filesystem, no capabilities and `no-new-privileges`. Base images are pinned by digest, age and rclone are checksummed, and a second process cannot take the `/data` lock. The release workflow scans the image for high and critical vulnerabilities and secrets; findings that cannot be fixed yet need a dated exception in `.trivyignore.yaml`. Releases carry an SBOM and provenance for amd64 and arm64.
 **Tests:**
 - `tests/test_deploy.py::test_compose_publishes_drydock_and_hardens_the_container`
 - `tests/test_deploy.py::test_dockerfile_runtime_stage`
@@ -590,7 +590,7 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 - `tests/test_deploy.py::test_runtime_image_carries_a_checksummed_age`
 - `tests/test_deploy.py::test_runtime_image_carries_a_checksummed_rclone`
 - `tests/test_lifespan.py::test_second_process_cannot_take_the_flock`
-- `tests/test_deploy.py::test_ci_images_are_pinned_by_digest`
+- `tests/test_deploy.py::test_release_images_are_pinned_by_digest`
 - `tests/test_deploy.py::test_scan_exceptions_say_why_and_expire`
 - `tests/test_deploy.py::test_releases_carry_an_sbom_and_provenance_for_both_platforms`
 
