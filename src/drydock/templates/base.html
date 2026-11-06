@@ -25,7 +25,8 @@
       {% if auth %}
       {% set current = request.url.path %}
       {% set logs = [("/runs", "Runs", Role.viewer), ("/logs", "Container logs", Role.admin)] %}
-      {% set manage = [("/stacks", "Stacks", Role.viewer), ("/images", "Images", Role.viewer), ("/jobs", "Jobs", Role.viewer), ("/backups", "Backups", Role.viewer), ("/updates", "Updates", Role.operator), ("/restore", "Restore", Role.admin), ("/hooks", "Hooks", Role.admin), ("/hosts", "Hosts", Role.admin), ("/storage", "Storage", Role.admin)] %}
+      {% set docker = [("/containers", "Containers", Role.viewer), ("/stacks", "Stacks", Role.viewer), ("/images", "Images", Role.viewer)] %}
+      {% set backups = [("/jobs", "Jobs", Role.viewer), ("/backups", "Backups", Role.viewer), ("/updates", "Updates", Role.operator), ("/restore", "Restore", Role.admin), ("/hooks", "Hooks", Role.admin), ("/hosts", "Hosts", Role.admin), ("/storage", "Storage", Role.admin)] %}
       {% macro dropdown(title, items) %}
       {% set shown = items|selectattr(2, "le", auth.user.role)|list %}
       {% if shown %}
@@ -47,10 +48,10 @@
       <nav aria-label="Main">
         <ul class="menu menu-horizontal gap-1 p-0">
           <li><a href="/"{% if current == "/" %} class="menu-active" aria-current="page"{% endif %}>Dashboard</a></li>
-          <li><a href="/containers"{% if current == "/containers" %} class="menu-active" aria-current="page"{% endif %}>Containers</a></li>
+          {{ dropdown("Docker", docker) }}
           <li><a href="/activity"{% if current == "/activity" %} class="menu-active" aria-current="page"{% endif %}>Activity</a></li>
           {{ dropdown("Logs", logs) }}
-          {{ dropdown("Manage", manage) }}
+          {{ dropdown("Backups", backups) }}
         </ul>
       </nav>
       {% endif %}

@@ -6,14 +6,15 @@ Notable changes to drydock. Versions follow [semantic versioning](https://semver
 
 **Upgrading:** this version adds a column to the users table and a table of health acknowledgements, so copy the `drydock-data` volume first ([Upgrading](docs/operations.md#upgrading)).
 
-- Stacks page under Manage: each Compose stack on a host with its running containers, newer images and backup jobs. Operators update, start, stop and restart a whole stack; admins remove one (containers only, volumes and networks kept).
-- Images page under Manage: a host's images with the containers that use each one. Admins remove unused images.
+- Stacks page under Docker: each Compose stack on a host with its running containers, newer images and backup jobs. Operators update, start, stop and restart a whole stack; admins remove one (containers only, volumes and networks kept).
+- Images page under Docker: a host's images with the containers that use each one. Admins remove unused images.
 - Admins can remove containers from the containers page (stopped first, volumes kept). Removing containers, stacks and images asks for the password again.
 - The dashboard's Environments section is now Hosts, and it folds away; whether it starts folded is a preference on the Account page.
 - The logs page's container list folds away, and stays as it was left in this browser.
 - Adding a host asks for the password again before the form, not after it is filled in.
 - A container that exited while unhealthy stays unhealthy until an operator acknowledges it on the containers page; it counts again once it has started since. On daemons before API 1.52, an exited container's health now comes from its last inspect.
 - The activity page lists backup runs among the container events, with a Backup run filter.
+- Containers, Stacks and Images share a Docker menu in the navigation bar, and the Manage menu is now Backups.
 - Starting an update of a container or a stack no longer fails with HTTP 500 ("database is locked") after 5 seconds.
 - The containers table gives every column a width and scrolls sideways when they do not fit, so headers no longer overlap and the actions column is never cut off.
 

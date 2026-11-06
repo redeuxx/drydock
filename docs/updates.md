@@ -22,7 +22,7 @@ An update holds the same locks as a backup or restore of the container, so they 
 
 ## Updating a stack
 
-On the **Stacks** page (under Manage), or with a Compose stack chosen in the containers page's stack filter, operators can **Update stack** when any of its containers has a newer image. Drydock finds the stack's containers when the run starts and orders them by their `depends_on` (dependencies first), then:
+On the **Stacks** page (under Docker), or with a Compose stack chosen in the containers page's stack filter, operators can **Update stack** when any of its containers has a newer image. Drydock finds the stack's containers when the run starts and orders them by their `depends_on` (dependencies first), then:
 
 1. Pulls every newer image first, so a failed pull changes nothing.
 2. Stops the members it updates (dependents first) and makes them again in dependency order. A member whose `depends_on` says `service_healthy` waits for an updated dependency to be healthy before it starts.
@@ -34,7 +34,7 @@ A container that another container joins the network of (`network_mode: service:
 
 ## Scheduled updates
 
-**Manage > Updates** lists update policies; admins create and edit them, operators can run one now. A policy names a host, a container (by name) or a Compose stack, and a schedule (a preset or a cron expression, in drydock's time zone or its own). When it fires, drydock starts an update run as above, for the container or for every member of the stack with a newer image.
+**Backups > Updates** lists update policies; admins create and edit them, operators can run one now. A policy names a host, a container (by name) or a Compose stack, and a schedule (a preset or a cron expression, in drydock's time zone or its own). When it fires, drydock starts an update run as above, for the container or for every member of the stack with a newer image.
 
 - **Back up first:** pick a job that backs up that container or stack on that host. Drydock runs it and waits for every one of its targets. If any of them does not end done, the update does not run (the run fails and says why), unless you untick "Do not update when the backup first fails".
 - **Tell:** a notification target hears about every failed or interrupted update, and about successful ones too if you tick that.

@@ -63,10 +63,10 @@ Port 8000 is open to every network that can reach the host; Docker's published p
 
 ## First backup
 
-1. **Manage > Hosts > Add local host** (the Docker URL is prefilled), or **Add SSH host** for a remote one: its address and a user that can use Docker, then scan its host key and enter that user's password once so drydock can install its own key ([hosts](docs/hosts.md)).
-2. **Manage > Storage > Add storage**: a directory mounted into the container, or a remote target ([backups](docs/backups.md#storage)).
-3. **Manage > Jobs > Add job**: pick the container or Compose project, the scope, the mode and optionally a schedule, retention and notifications ([backups](docs/backups.md#jobs-and-runs)).
-4. **Run now** on the job's page, then **Manage > Restore** to bring an archive back ([restore](docs/restore.md)).
+1. **Backups > Hosts > Add local host** (the Docker URL is prefilled), or **Add SSH host** for a remote one: its address and a user that can use Docker, then scan its host key and enter that user's password once so drydock can install its own key ([hosts](docs/hosts.md)).
+2. **Backups > Storage > Add storage**: a directory mounted into the container, or a remote target ([backups](docs/backups.md#storage)).
+3. **Backups > Jobs > Add job**: pick the container or Compose project, the scope, the mode and optionally a schedule, retention and notifications ([backups](docs/backups.md#jobs-and-runs)).
+4. **Run now** on the job's page, then **Backups > Restore** to bring an archive back ([restore](docs/restore.md)).
 
 The dashboard shows each host's containers live (running, stopped, unhealthy, CPU and memory; [hosts](docs/hosts.md#container-status)), failed backups, recent runs and the next scheduled runs. **Containers** lists one host's containers with live stats and the jobs that back them up, to search, filter and sort. The bell beside your name lists finished runs (and, for admins, missed schedules, host key mismatches and storage that needs reconnecting). Your name opens your account, the admin pages and **About**, which shows the version and every component of the stack.
 

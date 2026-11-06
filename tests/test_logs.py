@@ -191,12 +191,23 @@ async def test_runs_and_container_logs_share_the_logs_menu(admin: Browser) -> No
     assert 'href="/runs" class="menu-active" aria-current="page">Runs<' in menu
     assert 'href="/logs">Container logs<' in menu
     assert '<summary class="menu-active">Logs</summary>' in page
-    assert 'href="/runs"' not in nav_menu(page, "Manage")
+    assert 'href="/runs"' not in nav_menu(page, "Backups")
     # A viewer gets the menu with the runs only.
     await add_user(admin, "watcher", "viewer")
     await admin.login("watcher")
     menu = nav_menu((await admin.get("/")).text, "Logs")
     assert 'href="/runs"' in menu and 'href="/logs"' not in menu
+
+
+async def test_containers_stacks_and_images_share_the_docker_menu(admin: Browser) -> None:
+    await add_user(admin, "watcher", "viewer")
+    await admin.login("watcher")
+    page = (await admin.get("/stacks")).text
+    menu = nav_menu(page, "Docker")
+    assert 'href="/containers">Containers<' in menu and 'href="/images">Images<' in menu
+    assert 'href="/stacks" class="menu-active" aria-current="page">Stacks<' in menu
+    assert '<summary class="menu-active">Docker</summary>' in page
+    assert 'href="/stacks"' not in nav_menu(page, "Backups")
 
 
 def pollers(page: str) -> list[str]:
