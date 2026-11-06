@@ -336,56 +336,40 @@ def test_test_images_are_pinned_by_digest() -> None:
             assert re.fullmatch(DIGEST_RE, source), (name, source)
 
 
-# CI
+# RELEASE WORKFLOW
 
 
-def ci_workflow() -> dict:
-    return YAML(typ="safe").load((ROOT / ".forgejo" / "workflows" / "ci.yml").read_text())
+def release_workflow() -> dict:
+    return YAML(typ="safe").load((ROOT / ".forgejo" / "workflows" / "release.yml").read_text())
 
 
-def test_ci_images_are_pinned_by_digest() -> None:
-    workflow = ci_workflow()
-    images = [v for k, v in workflow["env"].items() if k.isupper()]
-    images += [
-        cell["image"] for cell in workflow["jobs"]["python"]["strategy"]["matrix"]["include"]
-    ]
-    assert len(images) == 6
+def test_release_images_are_pinned_by_digest() -> None:
+    images = [v for k, v in release_workflow()["env"].items() if k.isupper()]
+    assert len(images) == 3
     for image in images:
         assert re.fullmatch(DIGEST_RE, image), image
 
 
-def test_ci_tests_every_python_the_project_allows() -> None:
-    """requires-python is >=3.14, the image runs 3.15: both run the whole suite."""
-    python = ci_workflow()["jobs"]["python"]
-    cells = python["strategy"]["matrix"]["include"]
-    assert {cell["python"] for cell in cells} == {"3.14", "3.15"}
-    for cell in cells:
-        assert cell["image"].startswith(f"python:{cell['python']}.")
-    # Forgejo runs the cells at once on one daemon: each gets its own Compose project.
-    assert "${{ matrix.slug }}" in python["env"]["COMPOSE_PROJECT_NAME"]
-    assert python["env"]["DRYDOCK_TEST_PYTHON_IMAGE"] == "${{ matrix.image }}"
-    assert 'requires-python = ">=3.14"' in (ROOT / "pyproject.toml").read_text()
+def test_the_tests_default_to_the_python_the_image_ships() -> None:
     default = load_compose("compose.test.yaml")["services"]["tests"]["build"]["args"]
-    assert cells[0]["image"] in default["PYTHON_IMAGE"]
-    assert cells[0]["image"] in (ROOT / "Dockerfile").read_text()
+    image = default["PYTHON_IMAGE"].split(":-", 1)[1].rstrip("}")
+    assert re.fullmatch(DIGEST_RE, image), image
+    assert image in (ROOT / "Dockerfile").read_text()
 
 
-def multiarch_steps() -> dict[str, dict]:
-    return {s.get("name", ""): s for s in ci_workflow()["jobs"]["multiarch"]["steps"]}
+def release_steps() -> dict[str, dict]:
+    return {s.get("name", ""): s for s in release_workflow()["jobs"]["release"]["steps"]}
 
 
 def test_releases_carry_an_sbom_and_provenance_for_both_platforms() -> None:
-    """A tag publishes, from the scanned build's cache, only after every other job."""
-    jobs = ci_workflow()["jobs"]
-    assert set(jobs["multiarch"]["needs"]) == set(jobs) - {"multiarch"}
-    steps = multiarch_steps()
-    tagged = "startsWith(github.ref, 'refs/tags/v')"
+    """Only a tag runs the workflow; it publishes from the scanned build's cache."""
+    workflow = release_workflow()
+    assert workflow["on"] == {"push": {"tags": ["v*"]}}
+    steps = release_steps()
     for name in ("Build both platforms", "Publish the release"):
         assert "--platform linux/amd64,linux/arm64 --sbom=true --provenance=mode=max" in (
             " ".join(steps[name]["run"].split())
         ), name
-    for name in ("A release tag is vX.Y.Z of the version in pyproject.toml", "Publish the release"):
-        assert steps[name]["if"] == tagged, name
     assert (
         "grep -qE '^[0-9]+[.][0-9]+[.][0-9]+$'"
         in steps["A release tag is vX.Y.Z of the version in pyproject.toml"]["run"]
@@ -403,7 +387,7 @@ def test_scan_exceptions_say_why_and_expire() -> None:
         assert set(entry) <= {"id", "paths", "statement", "expired_at"}, entry
         assert re.fullmatch(r"(CVE-\d{4}-\d+|GHSA(-[0-9a-z]{4}){3})", entry["id"]), entry
         assert len(entry["statement"]) > 20 and entry["expired_at"], entry
-    scan = multiarch_steps()["Scan both platforms"]["run"]
+    scan = release_steps()["Scan both platforms"]["run"]
     assert "for arch in amd64 arm64" in scan and "--input /w/oci" in scan
     assert "--ignorefile /w/.trivyignore.yaml" in scan and ".trivyignore.yaml |" in scan
     assert "--exit-code 1" in scan and "--severity HIGH,CRITICAL" in scan

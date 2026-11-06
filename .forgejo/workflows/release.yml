@@ -1,0 +1,98 @@
+name: Release
+
+# Runs on a self-hosted Forgejo runner, on a tag vX.Y.Z only: tests run locally, not here.
+# Builds the image for amd64 and arm64, scans both with Trivy, checks each carries an SBOM
+# and provenance, then publishes X.Y.Z and X.Y. The runner's jobs drive its host's Docker
+# daemon (the runner mounts its socket), which also runs Forgejo.
+
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: release-drydock
+  cancel-in-progress: false
+
+env:
+  TRIVY: docker.io/aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c
+  # QEMU for the arm64 stages of the multi-arch build, and the BuildKit that runs it (the
+  # daemon's own builder cannot build several platforms or attach attestations).
+  BINFMT: docker.io/tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+  BUILDKIT: docker.io/moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
+
+jobs:
+  release:
+    name: amd64 and arm64 image, scan, and publish
+    runs-on: docker
+    timeout-minutes: 60
+    env:
+      BUILDER: drydock-ci-${{ github.run_id }}-multiarch
+      ARM64_IMAGE: drydock-ci-${{ github.run_id }}:arm64
+      # Registry credentials stay in the job container, never in the host's config.
+      DOCKER_CONFIG: /tmp/docker-config
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: A release tag is vX.Y.Z of the version in pyproject.toml
+        run: |
+          version=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)
+          if [ "$GITHUB_REF_NAME" != "v$version" ] || ! echo "$version" | grep -qE '^[0-9]+[.][0-9]+[.][0-9]+$'; then
+            echo "Tag $GITHUB_REF_NAME is not v$version, or $version is not X.Y.Z" >&2
+            exit 1
+          fi
+      # A timed-out run may skip its cleanup and leave its BuildKit container behind.
+      # The binfmt registration is kernel-wide until the host reboots; --install repeats
+      # safely. It needs --privileged, like the sshhost the tests run.
+      - name: Set up arm64 emulation and a builder
+        run: |
+          # grep exits 1 when nothing is left over, and steps run with pipefail.
+          docker ps -a --format '{{.Names}}' | grep '^buildx_buildkit_drydock-ci-' | grep -v "drydock-ci-${{ github.run_id }}-" | xargs -r docker rm -f || true
+          docker volume ls -q | grep '^buildx_buildkit_drydock-ci-' | grep -v "drydock-ci-${{ github.run_id }}-" | xargs -r docker volume rm || true
+          docker run --rm --privileged "$BINFMT" --install arm64
+          docker buildx create --name "$BUILDER" --driver docker-container --driver-opt "image=$BUILDKIT"
+      - name: Build both platforms
+        run: >-
+          docker buildx build --builder "$BUILDER" --platform linux/amd64,linux/arm64
+          --sbom=true --provenance=mode=max --output type=oci,dest=/tmp/drydock-oci,tar=false .
+      # index.json points at the image index; each platform's attestation manifest lists
+      # its predicates.
+      - name: Every platform carries an SBOM and provenance
+        run: |
+          for predicate in https://spdx.dev/Document https://slsa.dev/provenance/v1; do
+            count=$(grep -lF '"in-toto.io/predicate-type": "'"$predicate"'"' /tmp/drydock-oci/blobs/sha256/* | wc -l)
+            echo "$predicate: $count"
+            test "$count" -eq 2
+          done
+      # Fails on any high or critical finding not excepted in .trivyignore.yaml. Trivy
+      # reads one platform per OCI layout, so each is exported on its own (from the build
+      # cache) and reaches the scanner on stdin with the exceptions: a bind mount would
+      # resolve on the runner host.
+      - name: Scan both platforms
+        run: |
+          for arch in amd64 arm64; do
+            docker buildx build --builder "$BUILDER" --platform "linux/$arch" --output "type=oci,dest=/tmp/drydock-$arch.tar" .
+            tar -cf - -C /tmp "drydock-$arch.tar" -C "$GITHUB_WORKSPACE" .trivyignore.yaml | docker run --rm -i -v drydock-ci-trivy-cache:/cache --entrypoint sh "$TRIVY" -c "mkdir -p /w/oci && tar -xf - -C /w && tar -xf /w/drydock-$arch.tar -C /w/oci && exec trivy image --cache-dir /cache --quiet --scanners vuln,secret --severity HIGH,CRITICAL --ignorefile /w/.trivyignore.yaml --exit-code 1 --table-mode detailed --input /w/oci"
+          done
+      - name: The arm64 image starts
+        run: |
+          docker buildx build --builder "$BUILDER" --platform linux/arm64 --load -t "$ARM64_IMAGE" .
+          docker run --rm --platform linux/arm64 --entrypoint sh "$ARM64_IMAGE" -c 'python -c "import uvloop, httptools, argon2, pydantic_core, cryptography.fernet, drydock.archive.verify" && /opt/age/age --version && /opt/rclone/rclone version'
+      # REGISTRY_TOKEN: a Forgejo access token with the write:package scope, stored as an
+      # Actions secret of the repository. The same builder and inputs as the scanned build,
+      # so every layer comes from its cache. Pushes X.Y.Z and X.Y.
+      - name: Publish the release
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          registry=${GITHUB_SERVER_URL#https://}
+          image="$registry/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          echo "$REGISTRY_TOKEN" | docker login "$registry" -u "$GITHUB_REPOSITORY_OWNER" --password-stdin
+          docker buildx build --builder "$BUILDER" --platform linux/amd64,linux/arm64 --sbom=true --provenance=mode=max --build-arg "DRYDOCK_COMMIT=$GITHUB_SHA" -t "$image:$version" -t "$image:${version%.*}" --push .
+          docker buildx imagetools inspect "$image:$version"
+      - if: always()
+        run: |
+          docker logout "${GITHUB_SERVER_URL#https://}" || true
+          docker buildx rm "$BUILDER" || true
+          docker image rm "$ARM64_IMAGE" || true

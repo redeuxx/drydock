@@ -1,6 +1,7 @@
 # High and critical findings in the drydock image that cannot be fixed yet, each with
-# why drydock is not exposed and a date after which CI fails on it again. CI scans the
-# image with Trivy (.forgejo/workflows/ci.yml); anything not listed here fails the build.
+# why drydock is not exposed and a date after which the scan fails on it again. The release
+# workflow scans the image with Trivy (.forgejo/workflows/release.yml); anything not listed
+# here fails the release.
 #
 # Review an entry before its date: drop it when a fixed package or release exists, or
 # extend it with a fresh statement. Never extend one without re-reading the advisory.

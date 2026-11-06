@@ -28,13 +28,22 @@ docker compose -f compose.test.yaml down
 npm run check
 ```
 
-CI runs only on a self-hosted Forgejo instance (Forgejo Actions, `.forgejo/workflows/ci.yml`), on a runner whose jobs drive its host's Docker daemon; `compose.ci.yaml` swaps the checkout's bind mount for a volume there and skips the `slow` tests, whose latency ceilings a busy shared runner cannot hold. A newer push cancels the run in progress, and Markdown-only changes start none. The repository is pushed to GitHub too, without any workflow.
+There is no CI on push: the tests, audits and smoke test run locally before a push. The only workflow, `.forgejo/workflows/release.yml`, runs on a release tag (see Releases). The repository is pushed to GitHub too, without any workflow.
+
+The suite runs on the image's Python by default. To run it on another supported Python, set `DRYDOCK_TEST_PYTHON_IMAGE` to a digest-pinned `python:X.Y-slim` image.
+
+Audits before a release:
+
+```sh
+docker compose -f compose.test.yaml run --rm --no-deps -e HOME=/tmp -e UV_TOOL_DIR=/tmp/uv-tools tests sh -c 'uv export --locked --no-dev --no-emit-project --format requirements-txt -o /tmp/requirements.txt -q && uvx pip-audit==2.10.1 --strict --require-hashes --disable-pip -r /tmp/requirements.txt'
+npm audit
+```
 
 The integration tests reach the host's Docker daemon through the same socket proxy as production and create (then remove) containers and volumes there. A privileged `docker:dind` container running sshd stands in for a remote host; the tests generate the SSH key pair in memory and authorize it at test time. The Phase 1 spikes (marked `slow`) move a gigabyte through each path and need about 4 GB free in the Docker VM; `pytest -m 'not slow'` skips them.
 
 ## Releases
 
-The `multiarch` CI job builds amd64 and arm64 on every push, scans both with Trivy and checks that each carries an SBOM and provenance. A tag `vX.Y.Z` that matches `version` in `pyproject.toml` then pushes `X.Y.Z` and `X.Y` to the Forgejo instance's container registry (`<forgejo host>/<owner>/drydock`), from the same build that was scanned. Push the branch first and the tag after: a newer push cancels a run in progress.
+A tag `vX.Y.Z` that matches `version` in `pyproject.toml` runs the release workflow on the self-hosted Forgejo runner. It builds amd64 and arm64, scans both with Trivy, checks that each carries an SBOM and provenance, then pushes `X.Y.Z` and `X.Y` to the Forgejo instance's container registry (`<forgejo host>/<owner>/drydock`) from the same build that was scanned. It runs no tests, so tag only a commit whose local suite passed.
 
 The job logs in with the repository Actions secret `REGISTRY_TOKEN`, a Forgejo access token of the repository owner with the `write:package` scope and nothing else. Without it, tags fail at the publish step.
 

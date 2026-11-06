@@ -23,8 +23,8 @@ services:
       # and rclone for tests/test_rclone_rc.py and the `rclone serve sftp` stand-in SFTP server
       # (tests/rclone_support.py), each checked against the SHA-256 pinned per
       # architecture in the Dockerfile.
-      # PYTHON_IMAGE is the interpreter the tests run on. CI runs them on every supported
-      # Python (.forgejo/workflows/ci.yml); the image itself ships the default here.
+      # PYTHON_IMAGE is the interpreter the tests run on: the image's own by default, or
+      # another supported Python through DRYDOCK_TEST_PYTHON_IMAGE.
       args:
         PYTHON_IMAGE: ${DRYDOCK_TEST_PYTHON_IMAGE:-python:3.15.2-slim@sha256:c4158543ecb725b99e57d129dfd43d761d4c43e4577b5e23326aabb223cf7f4e}
       dockerfile_inline: |

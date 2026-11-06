@@ -36,11 +36,11 @@ from tests.conftest import PASSWORD, Browser
 DOCKER_URL = os.environ.get("DRYDOCK_TEST_DOCKER_URL", "")
 SSH_HOST = os.environ.get("DRYDOCK_TEST_SSH_HOST", "")
 SSH_USER = "drydock"
-# compose.test.yaml's project; CI runs it under its own name (compose.ci.yaml).
-TEST_PROJECT = os.environ.get("DRYDOCK_TEST_PROJECT", "drydock-test")
+# compose.test.yaml's project.
+TEST_PROJECT = "drydock-test"
 TEST_LABEL = "drydock.test"
 # Helpers that test code makes outside a running app carry this installation ID. One per
-# test run: CI runs every Python at once on one daemon, and each run counts and reaps
+# test run: two runs can share a daemon (say, two Pythons at once), and each counts and reaps
 # only its own helpers.
 TEST_INSTANCE = f"drydocktest{uuid.uuid4().hex[:12]}"
 
