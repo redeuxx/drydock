@@ -9,7 +9,7 @@
    Names, images, addresses and ports come from the host: autoescaped only. #}
 {% set columns = [
   ("name", "Name", "w-48"),
-  ("image", "Image", "max-md:hidden"),
+  ("image", "Image", "w-56 max-md:hidden"),
   ("state", "State", "w-32"),
   ("uptime", "Uptime", "w-36 max-sm:hidden"),
   ("restarts", "Restarts", "w-20 max-lg:hidden"),
@@ -88,6 +88,8 @@
   <button type="button" class="btn btn-xs" commandfor="confirm-restart" command="show-modal" aria-haspopup="dialog">Restart</button>
   <button type="submit" name="action" value="pause" class="btn btn-xs">Pause</button>
   <button type="submit" name="action" value="unpause" class="btn btn-xs">Unpause</button>
+  <button type="submit" name="action" value="acknowledge" class="btn btn-xs" title="Exited, unhealthy containers stop counting as unhealthy until they start again">Acknowledge</button>
+  {% if admin %}<button type="button" class="btn btn-xs" commandfor="confirm-remove" command="show-modal" aria-haspopup="dialog">Remove</button>{% endif %}
 </form>
 {# Asks the registries now (routes/containers.py check_updates); otherwise drydock checks
    every 6 hours. #}
@@ -126,14 +128,17 @@
 </dialog>
 {% endif %}
 {{ confirm("confirm-restart", "restart", "Restart", "Restart the selected containers?") }}
+{% if admin %}{{ confirm("confirm-remove", "remove", "Remove", "Remove the selected containers? Each is stopped first (its own stop timeout), then deleted. Their volumes are kept. This cannot be undone.") }}{% endif %}
 {% endif %}
-<div class="overflow-hidden rounded-box border border-base-300 bg-base-100">
+{# Every column has a width, so none collapses and spills its header over the next; the
+   table scrolls sideways when they add up to more than the page. #}
+<div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
   <table class="table table-zebra table-sm table-fixed w-full">
     <thead>
       <tr>
         {% if operator %}<th scope="col" class="w-8"><input type="checkbox" class="checkbox checkbox-xs" data-select-all aria-label="Select all shown"></th>{% endif %}
         {% for key, label, width in columns %}
-        <th scope="col" class="{{ width }}"{% if key and key == sort %} aria-sort="{{ 'descending' if order == 'desc' else 'ascending' }}"{% endif %}>
+        <th scope="col" class="truncate {{ width }}"{% if key and key == sort %} aria-sort="{{ 'descending' if order == 'desc' else 'ascending' }}"{% endif %}>
           {%- if key -%}
           <a class="link link-hover" href="/containers?{{ {'host': chosen.id, 'sort': key, 'order': 'desc' if key == sort and order == 'asc' else 'asc', 'status': status, 'stack': stack, 'q': q}|urlencode }}">{{ label }}{% if key == sort %}<span aria-hidden="true">{{ " ▼" if order == "desc" else " ▲" }}</span>{% endif %}</a>
           {%- else %}{{ label }}{% endif -%}
@@ -173,6 +178,8 @@
           {%- if c.state == "running" %}{{ ask(loop.index, c, "restart", "Restart") }}{{ act(c, "pause", "Pause") }}{% endif %}
           {%- if c.state in ("running", "paused", "restarting") %}{{ ask(loop.index, c, "stop", "Stop") }}{% endif %}
           {%- set v = verdicts.get(c.id) %}{% if v and v.state == "update" %}{{ ask(loop.index, c, "update", "Update") }}{% endif %}
+          {%- if c.state == "exited" and c.health == "unhealthy" %}{{ act(c, "acknowledge", "Acknowledge") }}{% endif %}
+          {%- if admin %}{{ ask(loop.index, c, "remove", "Remove") }}{% endif %}
         </div></td>
         {% endif %}
       </tr>
@@ -221,6 +228,7 @@
 </dialog>
 {% if operator and c.state == "running" %}{{ confirm("ctr-" ~ loop.index ~ "-restart", "restart:" ~ c.id, "Restart", "Restart " ~ c.name ~ "?") }}{% endif %}
 {% if operator and c.state in ("running", "paused", "restarting") %}{{ confirm("ctr-" ~ loop.index ~ "-stop", "stop:" ~ c.id, "Stop", "Stop " ~ c.name ~ "? It gets its own stop timeout to shut down.") }}{% endif %}
+{% if admin %}{{ confirm("ctr-" ~ loop.index ~ "-remove", "remove:" ~ c.id, "Remove", "Remove " ~ c.name ~ "? It is stopped first (its own stop timeout), then deleted. Its volumes are kept. This cannot be undone.") }}{% endif %}
 {% set v = verdicts.get(c.id) %}
 {% if operator and v and v.state == "update" %}
 <dialog id="ctr-{{ loop.index }}-update" class="modal" aria-labelledby="ctr-{{ loop.index }}-update-title">

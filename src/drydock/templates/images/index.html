@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Images{% endblock %}
+{% block content %}
+<h1 class="mb-4 text-3xl font-bold">Images</h1>
+{% set admin = auth.user.role >= Role.admin %}
+{# Read from the daemon when the page loads (routes/images.py). Tags and container names
+   come from the host: autoescaped only. #}
+{% if not hosts %}
+<p class="text-sm opacity-70">No host is set up yet.{% if admin %} <a class="link" href="/hosts/new?kind=local">Add the local host</a> or <a class="link" href="/hosts/new?kind=ssh">an SSH host</a>.{% endif %}</p>
+{% else %}
+<form id="host-picker" method="get" action="/images" hx-get="/images" hx-trigger="change" hx-push-url="true" hx-nonce="{{ csp_nonce }}" class="mb-3 flex items-center gap-2">
+  <label for="host-select" class="text-sm font-semibold">Host</label>
+  <select id="host-select" name="host" class="select select-sm w-auto" data-remember-host data-focus-result>
+    {% for h in hosts %}<option value="{{ h.id }}"{% if h.id == chosen.id %} selected{% endif %}>{{ h.name }}{% if not h.enabled %} (disabled){% endif %}</option>{% endfor %}
+  </select>
+  <noscript><button type="submit" class="btn btn-sm">Show</button></noscript>
+</form>
+{% if notice %}
+<div role="alert" class="alert {{ 'alert-success' if notice[1] else 'alert-warning' }} alert-soft mb-3 text-sm"><span>{{ notice[0] }}</span></div>
+{% endif %}
+{% if not chosen.enabled %}
+<p class="text-sm opacity-70">Disabled: drydock does not connect to this host.</p>
+{% elif error %}
+<div class="alert alert-warning alert-soft text-sm"><span>Cannot read the images: {{ error }}</span></div>
+{% else %}
+<p class="mb-2 text-sm opacity-70">{{ images|length }} image{{ "" if images|length == 1 else "s" }}, {{ images|sum(attribute="size")|filesize or "0 bytes" }}</p>
+<div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
+  <table class="table table-zebra table-sm">
+    <thead><tr><th scope="col">Tags</th><th scope="col" class="max-md:hidden">ID</th><th scope="col">Size</th><th scope="col" class="max-sm:hidden">Created</th><th scope="col">Used by</th>{% if admin %}<th scope="col"><span class="sr-only">Actions</span></th>{% endif %}</tr></thead>
+    <tbody>
+      {% for i in images %}
+      {% set label = i.tags[0] if i.tags else i.id[7:19] %}
+      <tr>
+        <td class="break-all">{% for t in i.tags %}{{ t }}{% if not loop.last %}<br>{% endif %}{% else %}<span class="opacity-50">untagged</span>{% endfor %}</td>
+        <td class="font-mono text-xs max-md:hidden">{{ i.id[7:19] }}</td>
+        <td>{{ i.size|filesize or "0 bytes" }}</td>
+        <td class="max-sm:hidden">{{ i.created|stamp(False) }}</td>
+        <td class="break-all">{{ i.users|join(", ") if i.users else "" }}</td>
+        {% if admin %}
+        <td>{% if not i.users %}
+          <button type="button" class="btn btn-ghost btn-xs" commandfor="img-{{ loop.index }}" command="show-modal" aria-haspopup="dialog">Remove<span class="sr-only"> {{ label }}</span></button>
+          <dialog id="img-{{ loop.index }}" class="modal" aria-labelledby="img-{{ loop.index }}-title">
+            <div class="modal-box">
+              <h2 id="img-{{ loop.index }}-title" class="mb-2 text-lg font-bold break-all">Remove {{ label }}</h2>
+              <p class="text-sm break-words">Remove this image{% if i.tags|length > 1 %} and all {{ i.tags|length }} of its tags{% endif %}? Pulling it again brings it back.</p>
+              <div class="modal-action">
+                <form method="dialog"><button class="btn btn-sm">Cancel</button></form>
+                <form method="post" action="/images/remove" hx-post="/images/remove" hx-nonce="{{ csp_nonce }}">
+                  <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+                  <input type="hidden" name="host" value="{{ chosen.id }}">
+                  <input type="hidden" name="image" value="{{ i.id }}">
+                  <button type="submit" class="btn btn-sm btn-warning">Remove</button>
+                </form>
+              </div>
+            </div>
+            <form method="dialog" class="modal-backdrop"><button>Close</button></form>
+          </dialog>
+        {% endif %}</td>
+        {% endif %}
+      </tr>
+      {% else %}
+      <tr><td colspan="{{ 6 if admin else 5 }}">No images on this host.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endif %}
+{% endblock %}

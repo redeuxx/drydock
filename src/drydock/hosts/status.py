@@ -41,7 +41,7 @@ from drydock.hosts import client
 from drydock.hosts.helper import is_helper
 from drydock.hosts.inventory import PROJECT_LABEL, SERVICE_LABEL
 from drydock.hosts.manager import HostManager, HostUnavailable
-from drydock.models import Host, utcnow
+from drydock.models import HealthAck, Host, utcnow
 
 log = logging.getLogger("drydock.hosts.status")
 
@@ -183,6 +183,7 @@ class Inspected:
     state: str
     restarts: int
     started_at: datetime | None
+    health: str | None = None  # State.Health.Status, which Docker keeps after an exit
 
 
 @dataclass(frozen=True)
@@ -194,6 +195,12 @@ class Reading:
     volumes: int
     networks: int
     started: dict[str, datetime | None] = field(default_factory=dict)
+    health: dict[str, str | None] = field(default_factory=dict)  # from the last inspect
+
+
+def health_in(inspect: dict[str, Any]) -> str | None:
+    status = ((inspect.get("State") or {}).get("Health") or {}).get("Status")
+    return status if status in HEALTH else None
 
 
 def started_of(inspect: dict[str, Any]) -> datetime | None:
@@ -219,6 +226,7 @@ def read(api, instance_id: str, inspected: dict[str, Inspected], now: float) -> 
     stats: dict[str, dict[str, Any]] = {}
     restarts: dict[str, int] = {}
     started: dict[str, datetime | None] = {}
+    health: dict[str, str | None] = {}
     # ponytail: one request per container, one after another. Fine for tens of containers
     # per host; send them concurrently (bounded by the collector's threads) if a host's
     # poll ever takes close to INTERVAL.
@@ -240,10 +248,11 @@ def read(api, instance_id: str, inspected: dict[str, Inspected], now: float) -> 
                 continue
             count = details.get("RestartCount")
             seen = inspected[cid] = Inspected(
-                now, state, count if is_int(count) else 0, started_of(details)
+                now, state, count if is_int(count) else 0, started_of(details), health_in(details)
             )
         restarts[cid] = seen.restarts
         started[cid] = seen.started_at
+        health[cid] = seen.health
     for gone in inspected.keys() - {c["Id"] for c in containers}:
         del inspected[gone]
     return Reading(
@@ -254,6 +263,7 @@ def read(api, instance_id: str, inspected: dict[str, Inspected], now: float) -> 
         volumes=len(api.volumes().get("Volumes") or []),
         networks=len(api.networks()),
         started=started,
+        health=health,
     )
 
 
@@ -391,7 +401,10 @@ def summarize(
                 image=str(c.get("Image", "")),
                 state=str(c.get("State", "")),
                 status=str(c.get("Status", "")),
-                health=health_of(c),
+                # An exited container keeps its last health, also on daemons whose list
+                # leaves it out (before API 1.52), until someone acknowledges it.
+                health=health_of(c)
+                or (reading.health.get(cid) if c.get("State") == "exited" else None),
                 project=labels.get(PROJECT_LABEL),
                 service=labels.get(SERVICE_LABEL),
                 restarts=reading.restarts.get(cid),
@@ -545,6 +558,10 @@ class StatusCollector:
         self._task: asyncio.Task[None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._wake = asyncio.Event()  # a page showed the hosts after none had lately
+        # (host ID, container ID): when its unhealthy exit was acknowledged. Loaded by start,
+        # outside any request: a route's transaction holds SQLite's write lock.
+        self._acks: dict[tuple[int, str], datetime] | None = None
+        self._acks_lock = threading.Lock()
 
     @property
     def running(self) -> bool:
@@ -553,6 +570,7 @@ class StatusCollector:
     def start(self) -> None:
         """Only in the process holding the data directory lock (it owns the tunnels)."""
         self._loop = asyncio.get_running_loop()
+        self._load_acks()
         self._task = asyncio.create_task(self._run(), name="status-collector")
 
     async def close(self) -> None:
@@ -604,8 +622,38 @@ class StatusCollector:
             await asyncio.wait({task}, timeout=remaining)
 
     def snapshot(self, host_id: int) -> HostSnapshot | None:
+        """The host's last reading. An exited, unhealthy container that was acknowledged
+        and has not started since then shows no health. Thread-safe."""
         cache = self._caches.get(host_id)
-        return cache.snapshot if cache is not None else None
+        snap = cache.snapshot if cache is not None else None
+        if snap is None:
+            return None
+        acks = self._acks or {}
+
+        def acked(c: ContainerStatus) -> bool:
+            at = acks.get((host_id, c.id))
+            return (
+                at is not None
+                and c.state == "exited"
+                and c.health == "unhealthy"
+                and (c.started_at is None or c.started_at <= at)
+            )
+
+        if not any(acked(c) for c in snap.containers):
+            return snap
+        rows = tuple(replace(c, health=None) if acked(c) else c for c in snap.containers)
+        return replace(snap, containers=rows)
+
+    def acknowledge(self, host_id: int, container_id: str, at: datetime) -> None:
+        """After the route stored the HealthAck. Thread-safe."""
+        with self._acks_lock:
+            self._acks = (self._acks or {}) | {(host_id, container_id): at}
+
+    def _load_acks(self) -> None:
+        with self._sessions() as db:
+            acks = {(a.host_id, a.container_id): a.acked_at for a in db.scalars(select(HealthAck))}
+        with self._acks_lock:
+            self._acks = acks
 
     def history(self, host_id: int, containers: bool = True) -> History:
         """The host's sparklines, oldest reading first (and its containers' unless

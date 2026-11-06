@@ -55,6 +55,8 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     # The bell's notifications up to here are read (drydock.feed).
     feed_read_at: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
+    # The dashboard's Hosts section starts collapsed (set on the account page).
+    hosts_collapsed: Mapped[bool] = mapped_column(default=False, server_default=false())
 
 
 class UserSession(Base):
@@ -86,6 +88,20 @@ class AuditEvent(Base):
     target: Mapped[str | None] = mapped_column(String(255))
     outcome: Mapped[str] = mapped_column(String(16))
     details: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class HealthAck(Base):
+    """Someone has seen that an exited container was unhealthy: it no longer counts as
+    unhealthy (hosts/status.py StatusCollector.snapshot) until it starts again."""
+
+    __tablename__ = "health_acks"
+
+    host_id: Mapped[int] = mapped_column(
+        ForeignKey("hosts.id", ondelete="CASCADE"), primary_key=True
+    )
+    container_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    acked_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    acked_by: Mapped[str] = mapped_column(String(64))
 
 
 class DockerEvent(Base):

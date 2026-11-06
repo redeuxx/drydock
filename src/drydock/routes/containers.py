@@ -16,6 +16,7 @@ import re
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from typing import Annotated, Any
 from urllib.parse import urlencode, urlsplit
 
@@ -35,10 +36,10 @@ from drydock.hosts.helper import HELPER_LABEL
 from drydock.hosts.inventory import PROJECT_LABEL
 from drydock.hosts.status import ContainerStatus
 from drydock.jobs.dispatcher import DispatchError, lock_scope, name_key
-from drydock.models import Host, Job, JobTarget, UpdatePolicy
+from drydock.models import HealthAck, Host, Job, JobTarget, UpdatePolicy, utcnow
 from drydock.routes.auth import client_ip
 from drydock.routes.hosts import DOCKER_ERRORS, open_host, release, target
-from drydock.security.rbac import Role, require_role
+from drydock.security.rbac import Role, require_recent_auth, require_role
 from drydock.security.sessions import Auth
 from drydock.templating import is_htmx, render, see_other
 
@@ -306,6 +307,8 @@ ACTIONS = {
     "restart": "restarted",
     "pause": "paused",
     "unpause": "unpaused",
+    "remove": "removed",  # admins only, with a recent password; volumes are kept
+    "acknowledge": "acknowledged",  # an exited, unhealthy container; no Docker call
 }
 CONTAINER_ID_RE = re.compile(r"[0-9a-f]{12,64}")
 MAX_SELECTED = 100
@@ -377,11 +380,14 @@ def act_on(
     if not anyio.from_thread.run(dispatcher.try_hold, keys, owner):
         return Outcome(action, name, "A backup or restore is using it. Try again when it ends.")
     try:
-        if action in ("stop", "restart"):
+        if action in ("stop", "restart", "remove"):
             # Its own stop timeout, as `docker stop` uses; docker-py needs a number.
             grace = (info.get("Config") or {}).get("StopTimeout")
             grace = grace if isinstance(grace, int) and 0 <= grace <= MAX_GRACE else 10
-            getattr(api, action)(info["Id"], timeout=grace)
+            getattr(api, "stop" if action == "remove" else action)(info["Id"], timeout=grace)
+            if action == "remove":
+                # Stopped first, so it shuts down as `docker stop` would; its volumes stay.
+                api.remove_container(info["Id"], v=False)
         else:
             getattr(api, action)(info["Id"])
     except ACTION_ERRORS as exc:
@@ -418,6 +424,33 @@ def run_actions(
         handle.close()
 
 
+def acknowledge(
+    request: Request, db: Session, auth: Auth, host: Host, chosen: list[str]
+) -> tuple[list[Outcome], list[tuple[str, datetime]]]:
+    """Marks exited, unhealthy containers (as the cache has them) as seen, so they no longer
+    count as unhealthy until they start again (StatusCollector.snapshot). The caller
+    commits, then tells the collector the (container ID, time) pairs returned."""
+    snap = request.app.state.status.snapshot(host.id)
+    rows = snap.containers if snap is not None else ()
+    now = utcnow()
+    outcomes, acked = [], []
+    for cid in chosen:
+        c = next((c for c in rows if c.id.startswith(cid)), None)
+        if c is None:
+            outcomes.append(Outcome("acknowledge", cid[:12], "No such container any more."))
+        elif c.state != "exited" or c.health != "unhealthy":
+            outcomes.append(Outcome("acknowledge", c.name, "It is not an exited, unhealthy one."))
+        else:
+            db.merge(
+                HealthAck(
+                    host_id=host.id, container_id=c.id, acked_at=now, acked_by=auth.user.username
+                )
+            )
+            acked.append((c.id, now))
+            outcomes.append(Outcome("acknowledge", c.name))
+    return outcomes, acked
+
+
 @router.post("/containers/actions")
 def container_actions(
     request: Request,
@@ -438,6 +471,8 @@ def container_actions(
     chosen = list(dict.fromkeys([one] if one else ids or []))
     if verb not in ACTIONS or not all(CONTAINER_ID_RE.fullmatch(i) for i in chosen):
         raise HTTPException(status_code=422)
+    if verb == "remove":
+        require_admin_reauth(auth)
     target_host = db.get(Host, host)
     if target_host is None:
         raise HTTPException(status_code=404)
@@ -447,7 +482,11 @@ def container_actions(
     elif len(chosen) > MAX_SELECTED:
         outcomes = [Outcome(verb, "Nothing", f"Select at most {MAX_SELECTED} containers.")]
     else:
-        outcomes = run_actions(request, auth, target_host, verb, chosen)
+        acked: list[tuple[str, datetime]] = []
+        if verb == "acknowledge":
+            outcomes, acked = acknowledge(request, db, auth, target_host, chosen)
+        else:
+            outcomes = run_actions(request, auth, target_host, verb, chosen)
         for outcome in outcomes:
             audit.record(
                 db,
@@ -460,7 +499,10 @@ def container_actions(
                 | ({} if outcome.error is None else {"error": outcome.error}),
             )
         db.commit()
-        anyio.from_thread.run(request.app.state.status.refresh, target_host.id)
+        for container_id, at in acked:
+            request.app.state.status.acknowledge(target_host.id, container_id, at)
+        if verb != "acknowledge":
+            anyio.from_thread.run(request.app.state.status.refresh, target_host.id)
     if not is_htmx(request):
         # A form without script: redirect, so reloading the page never acts again. The
         # outcomes are in the audit log and the table.
@@ -468,6 +510,13 @@ def container_actions(
     response = page(request, auth, db, view, outcomes)
     response.headers["HX-Replace-Url"] = view.url  # the POST's own URL is no page
     return response
+
+
+def require_admin_reauth(auth: Auth) -> None:
+    """Removing cannot be undone: admins only, with the password from the last 10 minutes."""
+    if auth.user.role < Role.admin:
+        raise HTTPException(status_code=403, detail="Only admins remove containers.")
+    require_recent_auth(auth)
 
 
 def redacted(info: dict[str, Any]) -> dict[str, Any]:

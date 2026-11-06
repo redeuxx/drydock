@@ -29,10 +29,13 @@
   <noscript><button type="submit" class="btn btn-sm">Show</button></noscript>
 </form>
 {{ host_bar(chosen, state, snap, where) }}
-<div class="grid gap-4 md:grid-cols-[16rem_minmax(0,1fr)]">
+<div class="grid gap-4 md:grid-cols-[auto_minmax(0,1fr)]">
   {# The list is what the status collector last read. A name opens that container's log;
-     the checkboxes choose several (#log-select). The filter and the favourites (starred
-     names, kept per host in this browser) are frontend/app.ts's. #}
+     the checkboxes choose several (#log-select). The filter, the favourites (starred
+     names, kept per host in this browser) and whether the list is folded away
+     (data-remember-open, kept in this browser) are frontend/app.ts's. #}
+  <details open data-remember-open class="min-w-0 md:w-64 md:[&:not([open])]:w-auto">
+  <summary class="mb-2 cursor-pointer text-sm font-semibold">Containers</summary>
   <nav aria-label="Containers" class="min-w-0">
     {# The filter box is outside the form: Enter in it must not reload the page. #}
     <div class="mb-2 flex items-center gap-2">
@@ -68,6 +71,7 @@
     </ul>
     {% endif %}
   </nav>
+  </details>
   <section class="min-w-0" aria-labelledby="log-title">
     {% if selected %}
     <h2 id="log-title" class="mb-2 truncate text-lg font-semibold" title="{{ selected|map(attribute=1)|join(', ') }}">{{ selected|map(attribute=1)|join(", ") }}</h2>

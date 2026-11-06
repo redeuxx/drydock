@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Stacks{% endblock %}
+{% block content %}
+<h1 class="mb-4 text-3xl font-bold">Stacks</h1>
+{% set operator = auth.user.role >= Role.operator %}
+{% set admin = auth.user.role >= Role.admin %}
+{# One form per action. The update posts to the containers page's update-stack route, which
+   opens its run. Names come from the host: autoescaped only. #}
+{% macro stack_form(s, url, verb, label, cls="btn btn-sm btn-warning") -%}
+<form method="post" action="{{ url }}" hx-post="{{ url }}" hx-nonce="{{ csp_nonce }}">
+  <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+  <input type="hidden" name="host" value="{{ chosen.id }}">
+  <input type="hidden" name="stack" value="{{ s.name }}">
+  {% if verb %}<input type="hidden" name="action" value="{{ verb }}">{% endif %}
+  <button type="submit" class="{{ cls }}">{{ label }}<span class="sr-only"> {{ s.name }}</span></button>
+</form>
+{%- endmacro %}
+{% macro ask(n, s, url, verb, label, text) -%}
+<button type="button" class="btn btn-ghost btn-xs" commandfor="stack-{{ n }}-{{ label|lower }}" command="show-modal" aria-haspopup="dialog">{{ label }}<span class="sr-only"> {{ s.name }}</span></button>
+<dialog id="stack-{{ n }}-{{ label|lower }}" class="modal" aria-labelledby="stack-{{ n }}-{{ label|lower }}-title">
+  <div class="modal-box">
+    <h2 id="stack-{{ n }}-{{ label|lower }}-title" class="mb-2 text-lg font-bold break-all">{{ label }} {{ s.name }}</h2>
+    <p class="text-sm break-words">{{ text }}</p>
+    <div class="modal-action">
+      <form method="dialog"><button class="btn btn-sm">Cancel</button></form>
+      {{ stack_form(s, url, verb, label) }}
+    </div>
+  </div>
+  <form method="dialog" class="modal-backdrop"><button>Close</button></form>
+</dialog>
+{%- endmacro %}
+{% if not hosts %}
+<p class="text-sm opacity-70">No host is set up yet.{% if admin %} <a class="link" href="/hosts/new?kind=local">Add the local host</a> or <a class="link" href="/hosts/new?kind=ssh">an SSH host</a>.{% endif %}</p>
+{% else %}
+<form id="host-picker" method="get" action="/stacks" hx-get="/stacks" hx-trigger="change" hx-push-url="true" hx-nonce="{{ csp_nonce }}" class="mb-3 flex items-center gap-2">
+  <label for="host-select" class="text-sm font-semibold">Host</label>
+  <select id="host-select" name="host" class="select select-sm w-auto" data-remember-host data-focus-result>
+    {% for h in hosts %}<option value="{{ h.id }}"{% if h.id == chosen.id %} selected{% endif %}>{{ h.name }}{% if not h.enabled %} (disabled){% endif %}</option>{% endfor %}
+  </select>
+  <noscript><button type="submit" class="btn btn-sm">Show</button></noscript>
+</form>
+{% if outcomes %}
+{% set failed = outcomes|selectattr("error")|list %}
+<div role="alert" class="alert {{ 'alert-warning' if failed else 'alert-success' }} alert-soft mb-3 text-sm">
+  <ul>
+    {% for o in outcomes %}<li>{{ o.name }}: {{ o.error if o.error else verbs[o.action] }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
+{# Polls itself like the containers table; frontend/app.ts skips a poll while a dialog is open. #}
+<div id="stacks"
+  {%- if chosen.enabled %} data-poller="Stack status" hx-get="/stacks?host={{ chosen.id }}" hx-trigger="every 10s" hx-target="this" hx-select="#stacks" hx-swap="outerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}"{% endif %}>
+{% if not chosen.enabled %}
+<p class="text-sm opacity-70">Disabled: drydock does not connect to this host.</p>
+{% elif snap is none or snap.taken_at is none %}
+{% if snap and snap.error %}
+<div class="alert alert-warning alert-soft text-sm"><span>Cannot read the containers: {{ snap.error }}</span></div>
+{% else %}
+<p class="text-sm opacity-70">Reading the containers&hellip;</p>
+{% endif %}
+{% else %}
+{% if snap.error %}
+<div class="alert alert-warning alert-soft mb-3 px-3 py-2 text-sm"><span>Stale since {{ snap.stale_since|ago }}: {{ snap.error }}</span></div>
+{% endif %}
+<div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
+  <table class="table table-zebra table-sm">
+    <thead><tr><th scope="col">Stack</th><th scope="col">Running</th><th scope="col">Updates</th><th scope="col" class="max-md:hidden">Backup jobs</th>{% if operator %}<th scope="col">Actions</th>{% endif %}</tr></thead>
+    <tbody>
+      {% for s in stacks %}
+      <tr>
+        <td class="font-semibold"><a class="link link-hover" href="/containers?{{ {'host': chosen.id, 'stack': s.name}|urlencode }}">{{ s.name }}</a></td>
+        <td>{{ s.running }} of {{ s.total }}</td>
+        <td>{% if s.newer %}<span class="badge badge-soft badge-info badge-sm">{{ s.newer }} newer</span>{% endif %}</td>
+        <td class="max-md:hidden">{% for job in s.jobs %}<a class="link" href="/jobs/{{ job.id }}">{{ job.name }}</a>{% if not job.enabled %} (disabled){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+        {% if operator %}
+        <td><div class="flex flex-wrap items-center gap-1">
+          {%- if s.newer %}{{ ask(loop.index, s, "/containers/update-stack", None, "Update", "Pull the newer images of " ~ s.name ~ " first, then make its containers that have one again in dependency order, waiting for each one's healthy dependencies. If any of them does not start or become healthy, all of them are put back. Containers without a newer image are left alone.") }}{% endif %}
+          {%- if s.running < s.total %}{{ stack_form(s, "/stacks/actions", "start", "Start", "btn btn-ghost btn-xs") }}{% endif %}
+          {%- if s.running %}{{ ask(loop.index, s, "/stacks/actions", "restart", "Restart", "Restart every container of " ~ s.name ~ "?") }}{{ ask(loop.index, s, "/stacks/actions", "stop", "Stop", "Stop every container of " ~ s.name ~ "? Each gets its own stop timeout to shut down.") }}{% endif %}
+          {%- if admin %}{{ ask(loop.index, s, "/stacks/actions", "remove", "Remove", "Remove every container of " ~ s.name ~ "? Each is stopped first, then deleted. Volumes and networks are kept, but drydock cannot make the stack again: run docker compose up on the host for that. This cannot be undone.") }}{% endif %}
+        </div></td>
+        {% endif %}
+      </tr>
+      {% else %}
+      <tr><td colspan="{{ 5 if operator else 4 }}">No Compose stacks on this host.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+</div>
+{% endif %}
+{% endblock %}

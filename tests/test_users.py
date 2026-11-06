@@ -138,6 +138,15 @@ async def test_invalid_input_is_rejected(admin: Browser) -> None:
     assert response.status_code == 303
 
 
+async def test_hosts_section_collapse_preference(admin: Browser) -> None:
+    assert '<details class="mb-4" open>' in (await admin.get("/")).text
+    saved = await admin.post("/account/preferences", {"hosts_collapsed": "1"})
+    assert saved.status_code == 303
+    assert '<details class="mb-4">' in (await admin.get("/")).text
+    await admin.post("/account/preferences", {})
+    assert '<details class="mb-4" open>' in (await admin.get("/")).text
+
+
 async def test_usernames_render_escaped(admin: Browser) -> None:
     evil = "<script>alert(1)</script>"
     user_id = await add_user(admin, evil, "viewer")

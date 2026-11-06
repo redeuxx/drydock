@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import role_badge %}
+{% from "_macros.html" import role_badge, submit %}
 {% block title %}Account{% endblock %}
 {% block content %}
 <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
@@ -12,6 +12,19 @@
       <dt class="font-semibold">Username</dt><dd>{{ auth.user.username }}</dd>
       <dt class="font-semibold">Role</dt><dd>{{ role_badge(auth.user.role) }}</dd>
     </dl>
+  </div>
+</section>
+<h2 class="mb-2 text-xl font-semibold">Preferences</h2>
+<section class="card mb-6 bg-base-100 shadow-sm">
+  <div class="card-body">
+    <form method="post" action="/account/preferences" hx-post="/account/preferences" hx-nonce="{{ csp_nonce }}" class="flex flex-col items-start gap-2">
+      <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+      <label class="label cursor-pointer gap-2">
+        <input type="checkbox" class="checkbox" name="hosts_collapsed" value="1"{% if auth.user.hosts_collapsed %} checked{% endif %}>
+        Collapse the Hosts section on the dashboard
+      </label>
+      {{ submit("Save") }}
+    </form>
   </div>
 </section>
 <h2 class="mb-2 text-xl font-semibold">Active sessions</h2>

@@ -26,6 +26,7 @@ from drydock.restore import apply as restore_apply
 from drydock.restore import plan as restore_plan
 from drydock.routes import auth as auth_routes
 from drydock.routes import containers as containers_routes
+from drydock.routes import images as images_routes
 from drydock.security import csrf
 from drydock.security.rbac import Role, authenticated
 from drydock.storage import certs, gdrive_oauth
@@ -100,6 +101,8 @@ EXPECTED_MIN_ROLE = [
     ({"POST"}, re.compile(r"^/containers/check-updates$"), Role.operator),
     ({"POST"}, re.compile(r"^/containers/update$"), Role.operator),
     ({"POST"}, re.compile(r"^/containers/update-stack$"), Role.operator),
+    ({"POST"}, re.compile(r"^/stacks/actions$"), Role.operator),
+    ({"POST"}, re.compile(r"^/images/remove$"), Role.admin),
     ({"GET"}, re.compile(r"^/containers/[^/]+/[^/]+/inspect$"), Role.admin),
     ({"GET"}, re.compile(r"^/logs"), Role.admin),
     ({"POST"}, re.compile(r"^/activity/clear$"), Role.admin),
@@ -116,11 +119,16 @@ INVENTORY = {
     ("GET", "/account"),
     ("GET", "/account/password"),
     ("POST", "/account/password"),
+    ("POST", "/account/preferences"),
     ("GET", "/audit"),
     ("GET", "/healthz"),
     ("GET", "/feed"),
     ("GET", "/status/hosts"),
     ("GET", "/containers"),
+    ("GET", "/stacks"),
+    ("POST", "/stacks/actions"),
+    ("GET", "/images"),
+    ("POST", "/images/remove"),
     ("POST", "/containers/actions"),
     ("POST", "/containers/check-updates"),
     ("POST", "/containers/update"),
@@ -694,6 +702,10 @@ AUDITED_SUCCESS = [
     ("/containers/update", {"host": "{host_id}", "container": "c" * 64}, "container.update", 303),
     # The stack faked in the status cache, the run in Dispatcher.submit_update.
     ("/containers/update-stack", {"host": "{host_id}", "stack": "app"}, "stack.update", 303),
+    # The stack faked in the status cache, Docker's side in run_actions.
+    ("/stacks/actions", {"host": "{host_id}", "stack": "app", "action": "stop"}, "stack.stop", 303),
+    # Docker's side faked (images.remove_image).
+    ("/images/remove", {"host": "{host_id}", "image": "sha256:" + "b" * 64}, "image.remove", 303),
     (
         "/storage",
         {"name": "backups", "path": "{storage_root}", "enabled": "1"},
@@ -820,6 +832,7 @@ AUDITED_SUCCESS = [
     ("/activity/clear", {"host": "{host_id}"}, "activity.clear", 303),
     ("/hosts/{host_id}/delete", {}, "host.delete", 303),
     ("/reauth", {"password": PASSWORD, "next": "/"}, "auth.reauth", 303),
+    ("/account/preferences", {"hosts_collapsed": "1"}, "account.preferences", 303),
     (
         "/account/password",
         {
@@ -918,6 +931,9 @@ async def test_every_unsafe_route_audits_its_success(fresh: Browser, monkeypatch
         containers_routes,
         "run_actions",
         lambda request, auth, host, verb, chosen: [containers_routes.Outcome(verb, "web")],
+    )
+    monkeypatch.setattr(
+        images_routes, "remove_image", lambda request, host, image: ("busybox:1.37", None)
     )
 
     async def nothing_newer(host) -> HostChecks:

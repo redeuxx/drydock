@@ -3,10 +3,11 @@
 {% block title %}Dashboard{% endblock %}
 {% block content %}
 <h1 class="mb-4 text-3xl font-bold">Dashboard</h1>
-<section class="mb-4" aria-labelledby="environments-heading">
-  <h2 id="environments-heading" class="mb-2 text-xl font-bold">Environments</h2>
+{# Open or closed by default per the account preference; toggling here is not saved. #}
+<details class="mb-4"{% if not auth.user.hosts_collapsed %} open{% endif %}>
+  <summary class="mb-2 cursor-pointer text-xl font-bold"><h2 class="inline">Hosts</h2></summary>
   {% include "status/_hosts.html" %}
-</section>
+</details>
 <div class="mb-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
   <a href="/jobs" class="card bg-base-100 shadow-sm hover:shadow">
     <div class="card-body p-4"><p class="text-sm opacity-70">Jobs</p><p class="text-2xl font-bold">{{ jobs|length }}</p><p class="text-xs opacity-70">{{ enabled }} enabled</p></div>

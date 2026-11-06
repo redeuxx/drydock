@@ -468,6 +468,7 @@ async def collector(monkeypatch) -> tuple[StatusCollector, FakeManager, list[Any
     monkeypatch.setattr(status.client, "open_client", open_client)
     collector = StatusCollector(None, manager)  # type: ignore[arg-type]
     monkeypatch.setattr(collector, "_load_hosts", lambda: list(hosts))
+    monkeypatch.setattr(collector, "_load_acks", lambda: None)  # no database to read
     collector.queue = queue  # type: ignore[attr-defined]
     collector.opens = opens  # type: ignore[attr-defined]
     return collector, manager, queue, hosts
@@ -1066,6 +1067,121 @@ async def test_actions_refuse_bad_input_before_calling_docker(admin: Browser, mo
         "/containers/actions", {"host": str(off), "action": "start", "id": ["a" * 64]}
     )
     assert plain.status_code == 303 and plain.headers["location"].startswith("/containers?host=")
+
+
+async def test_remove_needs_an_admin_with_a_recent_password(admin: Browser, monkeypatch) -> None:
+    _, host_id = await a_host_with_containers(admin, monkeypatch)
+    remove = {"host": str(host_id), "action": f"remove:{'a' * 64}"}
+    assert 'value="remove:' + "a" * 64 in (await admin.get(f"/containers?host={host_id}")).text
+    await add_user(admin, "runner", "operator")
+    admin.sql("UPDATE sessions SET reauth_at = NULL")
+    stale = await admin.post("/containers/actions", remove)
+    assert stale.status_code == 403 and "Re-enter your password" in stale.text
+
+    await admin.login("runner")
+    assert 'value="remove:' not in (await admin.get(f"/containers?host={host_id}")).text
+    assert (await admin.post("/containers/actions", remove)).status_code == 403
+    stack = {"host": str(host_id), "stack": "app", "action": "remove"}
+    assert (await admin.post("/stacks/actions", stack)).status_code == 403
+    assert not admin.sql("SELECT 1 FROM audit_events WHERE action LIKE '%.remove'")
+
+
+async def test_stacks_page_groups_the_cache_and_acts_on_every_member(
+    admin: Browser, monkeypatch
+) -> None:
+    _, host_id = await a_host_with_containers(admin, monkeypatch)
+    page = (await admin.get(f"/stacks?host={host_id}")).text
+    assert ">app</a>" in page and "1 of 2" in page  # db runs, cache exited
+    assert 'value="remove"' in page
+
+    calls = []
+
+    def fake(request, auth, host, verb, chosen):
+        calls.append((verb, sorted(chosen)))
+        return [containers.Outcome(verb, "db"), containers.Outcome(verb, "cache", "Nope.")]
+
+    monkeypatch.setattr(containers, "run_actions", fake)
+    htmx = {"HX-Request": "true"}
+    data = {"host": str(host_id), "stack": "app", "action": "stop"}
+    done = await admin.post("/stacks/actions", data, headers=htmx)
+    assert calls == [("stop", ["b" * 64, "c" * 64])]
+    assert "db: stopped" in done.text and "cache: Nope." in done.text
+    assert done.headers["HX-Replace-Url"] == f"/stacks?host={host_id}"
+    assert admin.sql("SELECT target, outcome FROM audit_events WHERE action = 'stack.stop'") == [
+        ("stack:app", "failure")
+    ]
+    assert (await admin.post("/stacks/actions", data | {"stack": "nope"})).status_code == 404
+    assert (await admin.post("/stacks/actions", data | {"action": "kill"})).status_code == 422
+
+    await add_user(admin, "watcher", "viewer")
+    await admin.login("watcher")
+    page = (await admin.get(f"/stacks?host={host_id}")).text
+    assert ">app</a>" in page and "/stacks/actions" not in page
+    assert (await admin.post("/stacks/actions", data)).status_code == 403
+
+
+def test_an_exited_container_keeps_the_health_its_last_inspect_found() -> None:
+    """Daemons before API 1.52 leave Health out of the list: inspect has it, also after
+    an exit. A running container's health comes from the list alone."""
+    containers = [
+        summary("a" * 64, "gone", "exited", "Exited (1) 1 minute ago"),
+        summary("b" * 64, "up", "running", "Up 2 hours"),
+    ]
+    found = replace(reading(containers, {}), health={"a" * 64: "unhealthy", "b" * 64: "unhealthy"})
+    taken, _ = status.summarize(1, found, {}, datetime.now(UTC))
+    assert by_name(taken)["gone"].health == "unhealthy"
+    assert by_name(taken)["up"].health is None
+    assert status.health_in({"State": {"Health": {"Status": "unhealthy"}}}) == "unhealthy"
+    assert status.health_in({"State": {"Health": {"Status": "<b>"}}}) is None
+
+
+async def test_an_acknowledged_exit_is_unhealthy_no_more_until_it_starts_again(
+    admin: Browser, monkeypatch
+) -> None:
+    collector = await cached(admin, monkeypatch)
+    host_id = add_host(admin)
+    started = datetime(2026, 11, 1, tzinfo=UTC)
+    containers = [
+        summary(
+            "e" * 64, "worker", "exited", "Exited (1) 1 hour ago", Health={"Status": "unhealthy"}
+        ),
+        summary("a" * 64, "web", Health={"Status": "unhealthy"}),
+    ]
+
+    def show(start: datetime) -> None:
+        found = replace(reading(containers, {}), started={"e" * 64: start})
+        put(collector, status.summarize(host_id, found, {}, datetime.now(UTC))[0])
+
+    show(started)
+    page = (await admin.get(f"/containers?host={host_id}&status=unhealthy")).text
+    assert names_in_order(page) == ["web", "worker"]
+    assert 'value="acknowledge:' + "e" * 64 in page
+    assert 'value="acknowledge:' + "a" * 64 not in page, "running containers: not yet"
+
+    htmx = {"HX-Request": "true"}
+    data = {"host": str(host_id), "action": "acknowledge", "id": ["e" * 64, "a" * 64]}
+    done = await admin.post("/containers/actions", data, headers=htmx)
+    assert "worker: acknowledged" in done.text
+    assert "web: It is not an exited, unhealthy one." in done.text
+    assert names_in_order(
+        (await admin.get(f"/containers?host={host_id}&status=unhealthy")).text
+    ) == ["web"]
+    assert admin.sql("SELECT container_id, acked_by FROM health_acks") == [("e" * 64, "admin")]
+    assert admin.sql(
+        "SELECT target, outcome FROM audit_events WHERE action = 'container.acknowledge'"
+    ) == [("container:worker", "success"), ("container:web", "failure")]
+
+    collector._acks = None  # as after a restart: start reads them from the database again
+    collector._load_acks()
+    assert collector.snapshot(host_id).health == {"unhealthy": 1}
+
+    # It started again (and exited unhealthy again) after the acknowledgement.
+    show(datetime.now(UTC) + timedelta(minutes=1))
+    assert collector.snapshot(host_id).health == {"unhealthy": 2}
+
+    await add_user(admin, "watcher", "viewer")
+    await admin.login("watcher")
+    assert (await admin.post("/containers/actions", data)).status_code == 403
 
 
 def test_inspect_hides_environment_values_and_secret_labels() -> None:

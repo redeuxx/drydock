@@ -31,6 +31,26 @@ def account(
     return render(request, "account/index.html", auth=auth, sessions=own_sessions)
 
 
+@router.post("/account/preferences")
+def preferences_submit(
+    request: Request,
+    hosts_collapsed: FormStr = "",
+    auth: Auth = Depends(require_role(Role.viewer)),
+    db: Session = Depends(get_db),
+) -> Response:
+    auth.user.hosts_collapsed = hosts_collapsed == "1"
+    audit.record(
+        db,
+        actor=auth.user.username,
+        action="account.preferences",
+        target=f"user:{auth.user.id}",
+        ip=client_ip(request),
+        details={"hosts_collapsed": auth.user.hosts_collapsed},
+    )
+    db.commit()
+    return see_other(request, "/account")
+
+
 @router.get("/account/password")
 def password_form(request: Request, auth: Auth = Depends(require_role(Role.viewer))) -> Response:
     return render(request, "account/password.html", auth=auth, errors=[])

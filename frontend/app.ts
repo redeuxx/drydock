@@ -246,9 +246,10 @@ document.addEventListener("change", (event) => {
 
 // THE CONTAINERS PAGE'S HOST
 //
-// The host picker (data-remember-host, on the containers and logs pages) remembers the
-// last host chosen, and the menu's Containers and Logs links open that host. A convenience only: storage may be unavailable, and
-// the server falls back to its own choice for a host that no longer exists.
+// The host picker (data-remember-host, on the containers, stacks, images and logs pages)
+// remembers the last host chosen, and the menu's links to those pages open that host. A
+// convenience only: storage may be unavailable, and the server falls back to its own
+// choice for a host that no longer exists.
 
 const HOST_KEY = "drydock.containers.host";
 
@@ -264,7 +265,7 @@ document.addEventListener("change", (event) => {
 
 try {
   const saved = localStorage.getItem(HOST_KEY);
-  for (const path of ["/containers", "/logs"]) {
+  for (const path of ["/containers", "/stacks", "/images", "/logs"]) {
     const link = document.querySelector<HTMLAnchorElement>(`nav a[href="${path}"]`);
     if (saved && link) link.href = `${path}?host=${encodeURIComponent(saved)}`;
   }
@@ -432,10 +433,43 @@ document.addEventListener("input", (event) => {
   }
 });
 
+// The container list folds away (details[data-remember-open]) and stays as it was left
+// when the page changes, in this browser. A convenience only: storage may be unavailable.
+
+const LIST_OPEN_KEY = "drydock.logs.list-open";
+
+function restoreList(): void {
+  const list = document.querySelector<HTMLDetailsElement>("details[data-remember-open]");
+  try {
+    if (list && localStorage.getItem(LIST_OPEN_KEY) === "0") list.open = false;
+  } catch {
+    // storage blocked
+  }
+}
+
+// toggle does not bubble: listen in the capture phase.
+document.addEventListener(
+  "toggle",
+  (event) => {
+    const list = event.target;
+    if (!(list instanceof HTMLDetailsElement) || !list.hasAttribute("data-remember-open")) return;
+    try {
+      localStorage.setItem(LIST_OPEN_KEY, list.open ? "1" : "0");
+    } catch {
+      // storage blocked
+    }
+  },
+  true,
+);
+
 showFavourites();
+restoreList();
 document.addEventListener("htmx:after:swap", (event) => {
   const target = event.detail.ctx?.target;
-  if (target instanceof HTMLElement && target.id === "main") showFavourites();
+  if (target instanceof HTMLElement && target.id === "main") {
+    showFavourites();
+    restoreList();
+  }
 });
 
 

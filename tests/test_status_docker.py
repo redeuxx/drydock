@@ -491,3 +491,69 @@ async def test_a_container_that_dies_alerts_through_the_event_stream(admin: Brow
             await docker_client.run_blocking(remove, handle.client, quitter)
     finally:
         handle.close()
+
+
+@needs_ssh
+async def test_remove_a_container_then_its_image(admin: Browser) -> None:
+    host_id = await add_ssh_host(admin)
+    handle = await connect_host(admin, host_id)
+    client = handle.client
+    htmx = {"HX-Request": "true"}
+    tag = "drydock-test-rmi:1"
+    await docker_client.run_blocking(helper.ensure_image, client, IMAGE)
+    base = await docker_client.run_blocking(
+        functools.partial(
+            client.containers.create, IMAGE, ["true"], labels={TEST_LABEL: "1"}, network_mode="none"
+        )
+    )
+    # Its own image (a commit gets a new ID), so removing it leaves the helper image alone.
+    image = await docker_client.run_blocking(
+        functools.partial(base.commit, repository="drydock-test-rmi", tag="1")
+    )
+    web = await docker_client.run_blocking(
+        functools.partial(
+            client.containers.run,
+            tag,
+            QUICK_STOP,
+            detach=True,
+            labels={TEST_LABEL: "1"},
+            network_mode="none",
+        )
+    )
+    try:
+        await poll(admin.app.state.status, host_id)
+        listed = (await admin.get(f"/images?host={host_id}")).text
+        assert tag in listed and web.name in listed
+
+        # In use: refused before anything is untagged.
+        data = {"host": str(host_id), "image": image.id}
+        refused = await admin.post("/images/remove", data, headers=htmx)
+        assert f"Used by {web.name}" in html.unescape(refused.text), refused.text
+        await docker_client.run_blocking(client.api.inspect_image, tag)
+
+        # A running container: stopped, then removed.
+        action = {"host": str(host_id), "action": f"remove:{web.id}"}
+        removed = await admin.post("/containers/actions", action, headers=htmx)
+        assert f"{web.name}: removed" in removed.text, removed.text
+        with pytest.raises(docker.errors.NotFound):
+            await docker_client.run_blocking(client.api.inspect_container, web.id)
+
+        done = await admin.post("/images/remove", data, headers=htmx)
+        assert f"{tag}: removed" in done.text, done.text
+        with pytest.raises(docker.errors.NotFound):
+            await docker_client.run_blocking(client.api.inspect_image, image.id)
+        audited = admin.sql(
+            "SELECT action, outcome FROM audit_events WHERE action LIKE '%.remove' ORDER BY id"
+        )
+        assert audited == [
+            ("image.remove", "failure"),
+            ("container.remove", "success"),
+            ("image.remove", "success"),
+        ]
+    finally:
+        await docker_client.run_blocking(remove, client, web, base)
+        with contextlib.suppress(docker.errors.NotFound):
+            await docker_client.run_blocking(
+                functools.partial(client.api.remove_image, image.id, force=True)
+            )
+        handle.close()
