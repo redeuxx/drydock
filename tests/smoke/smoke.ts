@@ -547,7 +547,7 @@ if (eventRows > 0) {
   await page.keyboard.press("Escape");
 } else {
   check(
-    (await page.getByText("No container events in the last 24 hours.").count()) === 1,
+    (await page.getByText("No activity in the last 24 hours.").count()) === 1,
     "the activity page says when nothing happened yet",
   );
 }

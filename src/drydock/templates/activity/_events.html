@@ -1,5 +1,6 @@
 {% from "_icons.html" import icon %}
-{# Stored container events (routes/activity.py). The newest page polls itself every 5 s
+{% from "_macros.html" import run_status_badge %}
+{# Stored container events and backup runs (routes/activity.py); a run's row opens its page. The newest page polls itself every 5 s
    with the filters' fields (data-poller, frontend/app.ts, which skips a poll while a
    dialog is open); older pages hold still. Each row's time is a button stretched over the
    row that opens its dialog, as on the audit log. Names and images come from the hosts:
@@ -14,7 +15,7 @@
 {%- endmacro %}
 <div id="activity"
   {%- if live %} data-poller="Activity" hx-get="/activity" hx-include="#activity-filter" hx-trigger="every 5s" hx-target="this" hx-select="#activity" hx-swap="outerHTML ignoreTitle:true" hx-sync="#activity-filter:drop" hx-nonce="{{ csp_nonce }}"{% endif %}>
-<p class="mb-2 text-sm opacity-70">{% if rows %}{{ first }} to {{ first + rows|length - 1 }} of {{ "{:,}".format(total) }}{% else %}No events{% endif %}{% if live %} &middot; updates every 5 seconds{% endif %}</p>
+<p class="mb-2 text-sm opacity-70">{% if rows %}{{ first }} to {{ first + rows|length - 1 }} of {{ "{:,}".format(total) }}{% else %}Nothing{% endif %}{% if live %} &middot; updates every 5 seconds{% endif %}</p>
 <div class="overflow-hidden rounded-box border border-base-300 bg-base-100">
   <table class="table table-zebra table-sm table-fixed w-full">
     <thead>
@@ -22,13 +23,15 @@
         <th scope="col" class="w-52">Time</th>
         <th scope="col" class="w-32 max-md:hidden">Host</th>
         <th scope="col" class="w-36">Action</th>
-        <th scope="col">Container</th>
-        <th scope="col" class="max-sm:hidden">Image</th>
+        <th scope="col">Container or job</th>
+        <th scope="col" class="max-sm:hidden">Image or status</th>
         <th scope="col" class="w-20">Exit code</th>
       </tr>
     </thead>
     <tbody>
-      {% for e in rows %}
+      {% for row in rows %}
+      {% set e = row.event %}
+      {% if e %}
       <tr class="relative hover:bg-base-200">
         <td class="truncate"><button type="button" class="cursor-pointer after:absolute after:inset-0" commandfor="event-{{ e.id }}" command="show-modal" aria-haspopup="dialog">{{ e.when|stamp }}</button></td>
         <td class="truncate max-md:hidden">{{ host_names.get(e.host_id, "") }}</td>
@@ -38,12 +41,25 @@
         <td class="truncate">{{ exit_code(e) }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="6">{% if view.query|length > 1 or view.range != "24h" %}No event matches.{% else %}No container events in the last 24 hours.{% endif %}</td></tr>
+      {% set r = row.run %}
+      {% set label = (row.job_name or "deleted job") ~ (": " ~ r.target_label if r.target_label else "") %}
+      <tr class="relative hover:bg-base-200">
+        <td class="truncate"><a class="after:absolute after:inset-0" href="/runs/{{ r.id }}">{{ r.created_at|stamp }}</a></td>
+        <td class="truncate max-md:hidden">{{ host_names.get(row.host_id, "") }}</td>
+        <td class="truncate"><span class="flex items-center gap-1 {{ 'text-error' if r.status in ('failed', 'interrupted') else '' }}">{{ icon("package", "size-3.5") }}Backup run</span></td>
+        <td class="truncate font-semibold" title="{{ label }}">{{ label }}</td>
+        <td class="truncate max-sm:hidden">{{ run_status_badge(r.status) }}</td>
+        <td></td>
+      </tr>
+      {% endif %}
+      {% else %}
+      <tr><td colspan="6">{% if view.query|length > 1 or view.range != "24h" %}Nothing matches.{% else %}No activity in the last 24 hours.{% endif %}</td></tr>
       {% endfor %}
     </tbody>
   </table>
 </div>
-{% for e in rows %}
+{% for row in rows if row.event %}
+{% set e = row.event %}
 <dialog id="event-{{ e.id }}" class="modal" aria-labelledby="event-{{ e.id }}-title">
   <div class="modal-box">
     <h2 id="event-{{ e.id }}-title" class="mb-3 text-lg font-bold">{{ action_of(e) }}</h2>
