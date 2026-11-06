@@ -24,26 +24,33 @@
       <a href="/" class="mr-2 flex items-center gap-2 text-xl font-bold tracking-tight">{{ logo() }}Drydock</a>
       {% if auth %}
       {% set current = request.url.path %}
-      {% set manage = [("/jobs", "Jobs", Role.viewer), ("/runs", "Runs", Role.viewer), ("/backups", "Backups", Role.viewer), ("/updates", "Updates", Role.operator), ("/restore", "Restore", Role.admin), ("/hooks", "Hooks", Role.admin), ("/hosts", "Hosts", Role.admin), ("/storage", "Storage", Role.admin)] %}
-      {% set ns = namespace(manage_active=false) %}
-      {% for href, label, minimum in manage %}{% if current == href or current.startswith(href + "/") %}{% set ns.manage_active = true %}{% endif %}{% endfor %}
-      <nav aria-label="Main">
-        <ul class="menu menu-horizontal gap-1 p-0">
-          <li><a href="/"{% if current == "/" %} class="menu-active" aria-current="page"{% endif %}>Dashboard</a></li>
-          <li><a href="/containers"{% if current == "/containers" %} class="menu-active" aria-current="page"{% endif %}>Containers</a></li>
-          <li><a href="/activity"{% if current == "/activity" %} class="menu-active" aria-current="page"{% endif %}>Activity</a></li>
-          {% if auth.user.role >= Role.admin %}<li><a href="/logs"{% if current == "/logs" %} class="menu-active" aria-current="page"{% endif %}>Logs</a></li>{% endif %}
+      {% set logs = [("/runs", "Runs", Role.viewer), ("/logs", "Container logs", Role.admin)] %}
+      {% set manage = [("/jobs", "Jobs", Role.viewer), ("/backups", "Backups", Role.viewer), ("/updates", "Updates", Role.operator), ("/restore", "Restore", Role.admin), ("/hooks", "Hooks", Role.admin), ("/hosts", "Hosts", Role.admin), ("/storage", "Storage", Role.admin)] %}
+      {% macro dropdown(title, items) %}
+      {% set shown = items|selectattr(2, "le", auth.user.role)|list %}
+      {% if shown %}
+      {% set ns = namespace(active=false) %}
+      {% for href, label, minimum in shown %}{% if current == href or current.startswith(href + "/") %}{% set ns.active = true %}{% endif %}{% endfor %}
           <li>
             <details data-menu>
-              <summary{% if ns.manage_active %} class="menu-active"{% endif %}>Manage</summary>
+              <summary{% if ns.active %} class="menu-active"{% endif %}>{{ title }}</summary>
               <ul class="z-30 w-44 rounded-box bg-base-100 p-2 shadow">
-                {% for href, label, minimum in manage if auth.user.role >= minimum %}
+                {% for href, label, minimum in shown %}
                 {% set active = current == href or current.startswith(href + "/") %}
                 <li><a href="{{ href }}"{% if active %} class="menu-active" aria-current="page"{% endif %}>{{ label }}</a></li>
                 {% endfor %}
               </ul>
             </details>
           </li>
+      {% endif %}
+      {% endmacro %}
+      <nav aria-label="Main">
+        <ul class="menu menu-horizontal gap-1 p-0">
+          <li><a href="/"{% if current == "/" %} class="menu-active" aria-current="page"{% endif %}>Dashboard</a></li>
+          <li><a href="/containers"{% if current == "/containers" %} class="menu-active" aria-current="page"{% endif %}>Containers</a></li>
+          <li><a href="/activity"{% if current == "/activity" %} class="menu-active" aria-current="page"{% endif %}>Activity</a></li>
+          {{ dropdown("Logs", logs) }}
+          {{ dropdown("Manage", manage) }}
         </ul>
       </nav>
       {% endif %}

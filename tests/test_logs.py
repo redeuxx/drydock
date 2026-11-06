@@ -179,6 +179,26 @@ async def test_logs_are_for_admins_only(admin: Browser, monkeypatch) -> None:
             assert (await admin.get(path)).status_code == 403, path
 
 
+def nav_menu(page: str, title: str) -> str:
+    match = re.search(rf"<summary[^>]*>{title}</summary>(.*?)</details>", page, re.S)
+    assert match, title
+    return match.group(1)
+
+
+async def test_runs_and_container_logs_share_the_logs_menu(admin: Browser) -> None:
+    page = (await admin.get("/runs")).text
+    menu = nav_menu(page, "Logs")
+    assert 'href="/runs" class="menu-active" aria-current="page">Runs<' in menu
+    assert 'href="/logs">Container logs<' in menu
+    assert '<summary class="menu-active">Logs</summary>' in page
+    assert 'href="/runs"' not in nav_menu(page, "Manage")
+    # A viewer gets the menu with the runs only.
+    await add_user(admin, "watcher", "viewer")
+    await admin.login("watcher")
+    menu = nav_menu((await admin.get("/")).text, "Logs")
+    assert 'href="/runs"' in menu and 'href="/logs"' not in menu
+
+
 def pollers(page: str) -> list[str]:
     return [
         url.replace("&amp;", "&")
