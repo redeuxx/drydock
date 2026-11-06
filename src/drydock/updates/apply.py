@@ -400,6 +400,17 @@ def plan_stack(
     return Planned(planned.plan, (order, *planned.notes), planned.changes)
 
 
+def stack_names(api: Any, own: frozenset[str]) -> list[str]:
+    """Blocking. The Compose projects on this daemon, drydock's own left out."""
+    return sorted(
+        {
+            label
+            for c in api.containers(all=True, filters={"label": PROJECT_LABEL})
+            if c["Id"] not in own and (label := (c.get("Labels") or {}).get(PROJECT_LABEL))
+        }
+    )
+
+
 def own_health_wait(info: dict[str, Any]) -> float:
     """How long the container's own healthcheck may take to call it healthy: its start
     period, then its retries, each an interval plus a timeout (Docker's defaults where

@@ -4,10 +4,12 @@ notifications of the runs they start."""
 import json
 import re
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from drydock.jobs import dispatcher as dispatcher_module
 from drydock.jobs import scheduler as scheduler_module
 from drydock.jobs.dispatcher import DispatchError
 from drydock.jobs.runlog import RunLog
@@ -313,3 +315,56 @@ async def test_one_run_per_policy_at_a_time(admin: Browser, monkeypatch) -> None
     await __import__("asyncio").sleep(0.05)
     await dispatcher.submit_policy(policy_id, "c")
     gate.set()
+
+
+async def test_a_policy_for_every_stack(admin: Browser, monkeypatch, tmp_path) -> None:
+    """* updates each stack with something to update in a run of its own, one after
+    another; the policy's run fails when any of them does. It cannot back up first."""
+    host_id = add_host(admin, "web-host")
+    job_id = await add_job(admin, "web nightly", host_id=str(host_id))
+    every = policy_form(host_id, name="every", target_type="stack", target="*")
+    refused = await admin.post("/updates", every | {"backup_job_id": str(job_id)})
+    assert refused.status_code == 422 and "cannot back up first" in refused.text
+    assert (await admin.post("/updates", every)).status_code == 303
+    ((policy_id,),) = admin.sql("SELECT id FROM update_policies")
+    assert "Every stack" in (await admin.get("/updates")).text
+
+    dispatcher = admin.app.state.dispatcher
+    parent = dispatcher._create_policy_run(policy_id, "the schedule")
+    assert admin.sql("SELECT target_label FROM runs WHERE id = ?", (parent,)) == [("every stack",)]
+    monkeypatch.setattr(dispatcher_module.update_apply, "stack_names", lambda api, own: list("abc"))
+    monkeypatch.setattr(
+        dispatcher_module.update_apply,
+        "plan_stack",
+        lambda api, host, name, *rest: SimpleNamespace(plan=None if name == "b" else object()),
+    )
+    children: list[str] = []
+
+    async def submit_update(host, ids, by, label, *, project=None) -> int:
+        children.append(project)
+        with admin.app.state.sessionmaker() as db, db.begin():
+            run = Run(
+                kind="update",
+                status="failed" if project == "c" else "done",
+                triggered_by=by,
+                target_label=label,
+            )
+            db.add(run)
+            db.flush()
+            return run.id
+
+    async def wait(run_id: int) -> None:
+        pass
+
+    monkeypatch.setattr(dispatcher, "submit_update", submit_update)
+    monkeypatch.setattr(dispatcher, "wait", wait)
+    active = dispatcher_module.ActiveRun(parent, None)
+    handle = SimpleNamespace(client=SimpleNamespace(api=None), api_version="1.47")
+    host = SimpleNamespace(id=host_id, name="web-host")
+    with pytest.raises(DispatchError, match=r"Not every stack was updated: c \(#\d+ failed\)"):
+        await dispatcher._update_every_stack(
+            active, handle, host, frozenset(), "the schedule", RunLog(tmp_path / "run.log")
+        )
+    assert children == ["a", "c"], "b has nothing to update: no run"
+    log = (tmp_path / "run.log").read_text()
+    assert "Stacks on web-host: a, b, c." in log and "Stack b: nothing to update." in log

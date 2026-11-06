@@ -36,6 +36,8 @@ A container that another container joins the network of (`network_mode: service:
 
 **Backups > Updates** lists update policies; admins create and edit them, operators can run one now. A policy names a host, a container (by name) or a Compose stack, and a schedule (a preset or a cron expression, in drydock's time zone or its own). When it fires, drydock starts an update run as above, for the container or for every member of the stack with a newer image.
 
+A stack policy whose target is `*` updates every Compose stack on its host, drydock's own left out, so stacks added later are covered too. When it fires, drydock lists the stacks and checks each one; every stack with something to update gets its own stack update run as above, one after another, so a failed stack is put back without touching the others. The policy's run lists them and fails if any of them did, and only it tells the notification target. It cannot back up first (no single job covers every stack): pair it with backup jobs on their own schedule. On the **Stacks** page, each stack lists the policies that update it, and admins can schedule one stack or every stack from there.
+
 - **Back up first:** pick a job that backs up that container or stack on that host. Drydock runs it and waits for every one of its targets. If any of them does not end done, the update does not run (the run fails and says why), unless you untick "Do not update when the backup first fails".
 - **Tell:** a notification target hears about every failed or interrupted update, and about successful ones too if you tick that.
 - A fire missed while drydock was stopped runs late if it was less than an hour ago; an older one is skipped, recorded in the audit log and shown in the bell, like a job's.

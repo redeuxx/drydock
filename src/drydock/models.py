@@ -331,6 +331,10 @@ class JobNotification(Base):
     on_failure: Mapped[bool] = mapped_column(default=True)
 
 
+# A stack policy's target for every Compose stack on its host: no project name has a "*".
+EVERY_STACK = "*"
+
+
 class UpdatePolicy(Base):
     """A scheduled update of a container or a Compose stack (updates/apply.py), optionally
     after a backup by one of the jobs, telling a notification target how it went."""

@@ -14,6 +14,7 @@ policies and health checks usually cover a start; follow depends_on if that fall
 
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Annotated
 
 import anyio.from_thread
@@ -24,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from drydock import audit
 from drydock.db import get_db
-from drydock.models import Host, Job
+from drydock.models import EVERY_STACK, Host, Job, UpdatePolicy
 from drydock.routes import containers as container_routes
 from drydock.routes.auth import client_ip
 from drydock.routes.hosts import release
@@ -47,6 +48,7 @@ class Stack:
     running: int
     newer: int  # members with a newer image, as the update checker last saw
     jobs: list[Job]
+    policies: list[tuple[UpdatePolicy, datetime | None]]  # its update policies, next run
 
 
 def page(
@@ -64,6 +66,7 @@ def page(
     )
     snap = None
     stacks: list[Stack] = []
+    every = False  # a policy updates every stack on the host
     if chosen is not None:
         snap = collector.snapshot(chosen.id)
         checks = request.app.state.updates.result(chosen.id)
@@ -74,6 +77,16 @@ def page(
                 if c.project:
                     groups[c.project].append(c)
             covers = container_routes.covering_jobs(db, chosen.id)
+            scheduler = request.app.state.scheduler
+            policies = defaultdict(list)
+            for p in db.scalars(
+                select(UpdatePolicy)
+                .where(UpdatePolicy.host_id == chosen.id, UpdatePolicy.target_type == "stack")
+                .order_by(UpdatePolicy.name)
+            ):
+                policies[p.target].append(
+                    (p, scheduler.next_update_time(p.id) if p.enabled else None)
+                )
             stacks = [
                 Stack(
                     name,
@@ -81,9 +94,11 @@ def page(
                     sum(c.state == "running" for c in members),
                     sum(c.id in verdicts and verdicts[c.id].state == "update" for c in members),
                     covers[("stack", name)],
+                    policies[name] + policies[EVERY_STACK],
                 )
                 for name, members in sorted(groups.items())
             ]
+            every = bool(policies[EVERY_STACK])
     return render(
         request,
         "stacks/index.html",
@@ -92,6 +107,7 @@ def page(
         chosen=chosen,
         snap=snap,
         stacks=stacks,
+        every=every,
         outcomes=outcomes or [],
         verbs=container_routes.ACTIONS,
     )

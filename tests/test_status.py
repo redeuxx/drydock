@@ -17,7 +17,7 @@ from drydock.hosts import client, status
 from drydock.hosts.helper import helper_labels
 from drydock.hosts.manager import HostUnavailable
 from drydock.hosts.status import Reading, Sample, StatusCollector
-from drydock.models import Host, Job, JobTarget, StorageTarget, UserSession
+from drydock.models import Host, Job, JobTarget, StorageTarget, UpdatePolicy, UserSession
 from drydock.routes import containers
 from tests.conftest import Browser, add_user
 
@@ -1118,6 +1118,32 @@ async def test_stacks_page_groups_the_cache_and_acts_on_every_member(
     page = (await admin.get(f"/stacks?host={host_id}")).text
     assert ">app</a>" in page and "/stacks/actions" not in page
     assert (await admin.post("/stacks/actions", data)).status_code == 403
+
+
+async def test_stacks_page_shows_each_stacks_update_policies(admin: Browser, monkeypatch) -> None:
+    _, host_id = await a_host_with_containers(admin, monkeypatch)
+    page = (await admin.get(f"/stacks?host={host_id}")).text
+    assert f'href="/updates/new?host={host_id}&amp;type=stack&amp;target=app"' in page
+    assert f'href="/updates/new?host={host_id}&amp;type=stack&amp;target=%2A"' in page
+    with admin.app.state.sessionmaker() as db, db.begin():
+        policy = UpdatePolicy(
+            name="app weekly", host_id=host_id, target_type="stack", target="app", cron="0 4 * * 0"
+        )
+        db.add(policy)
+        db.flush()
+        policy_id = policy.id
+        db.add(
+            UpdatePolicy(
+                name="all", host_id=host_id, target_type="stack", target="*", cron="0 5 * * 0"
+            )
+        )
+    page = (await admin.get(f"/stacks?host={host_id}")).text
+    assert f'href="/updates/{policy_id}">app weekly</a>' in page and "/updates/new" not in page
+    assert ">all</a>" in page, "every stack's policy is listed for each stack"
+    await add_user(admin, "watcher", "viewer")
+    await admin.login("watcher")
+    page = (await admin.get(f"/stacks?host={host_id}")).text
+    assert "app weekly" in page and "/updates/" not in page
 
 
 def test_an_exited_container_keeps_the_health_its_last_inspect_found() -> None:

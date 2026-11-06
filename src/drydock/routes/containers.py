@@ -36,7 +36,7 @@ from drydock.hosts.helper import HELPER_LABEL
 from drydock.hosts.inventory import PROJECT_LABEL
 from drydock.hosts.status import ContainerStatus
 from drydock.jobs.dispatcher import DispatchError, lock_scope, name_key
-from drydock.models import HealthAck, Host, Job, JobTarget, UpdatePolicy, utcnow
+from drydock.models import EVERY_STACK, HealthAck, Host, Job, JobTarget, UpdatePolicy, utcnow
 from drydock.routes.auth import client_ip
 from drydock.routes.hosts import DOCKER_ERRORS, open_host, release, target
 from drydock.security.rbac import Role, require_recent_auth, require_role
@@ -260,7 +260,9 @@ def page(
                 c.id: [
                     (p, scheduler.next_update_time(p.id) if p.enabled else None)
                     for p in policies
-                    if (p.target_type, p.target) in (("container", c.name), ("stack", c.project))
+                    if (p.target_type, p.target)
+                    in (("container", c.name), ("stack", c.project))
+                    + ((("stack", EVERY_STACK),) if c.project else ())
                 ]
                 for c in context["rows"]
             }

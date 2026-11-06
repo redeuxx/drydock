@@ -141,7 +141,17 @@ from drydock.hosts.manager import HostManager, HostUnavailable
 from drydock.jobs import hooks, mounts, retention
 from drydock.jobs import targets as job_targets
 from drydock.jobs.runlog import RunLog, env_values, log_dir, log_path, public_names
-from drydock.models import Backup, Host, Job, Run, StorageTarget, UpdatePolicy, Upload, utcnow
+from drydock.models import (
+    EVERY_STACK,
+    Backup,
+    Host,
+    Job,
+    Run,
+    StorageTarget,
+    UpdatePolicy,
+    Upload,
+    utcnow,
+)
 from drydock.models import Hook as HookRow
 from drydock.restore import apply as restore_apply
 from drydock.restore import paths as restore_paths
@@ -1857,6 +1867,9 @@ class Dispatcher:
                 api = handle.client.api
                 scope = await run_blocking(self._lock_scope, handle, host.id)
                 own = await run_blocking(inventory.own_ids, api)
+                if project == EVERY_STACK:
+                    await self._update_every_stack(active, handle, host, own, triggered_by, run_log)
+                    return
                 if isinstance(doc.get("name"), str):  # a policy's container, by its name
                     found = await run_blocking(restore_apply.by_name, api, doc["name"])
                     # Exactly that name: Docker falls back to an ID prefix.
@@ -1923,6 +1936,54 @@ class Dispatcher:
                 raise
         finally:
             self._active.pop(run_id, None)
+
+    async def _update_every_stack(
+        self,
+        active: ActiveRun,
+        handle: DockerHandle,
+        host: Host,
+        own: frozenset[str],
+        triggered_by: str | None,
+        run_log: RunLog,
+    ) -> None:
+        """A policy for every stack on the host: each stack with something to update gets
+        its own stack update run, one after another, so each keeps its own locks, journal
+        and all-or-nothing rollback. This run fails if any of them does.
+
+        ponytail: cancelling this run stops before the next stack, not the one running
+        (cancel that run itself). Pass the cancel on if that is not enough."""
+        api = handle.client.api
+        names = await run_blocking(update_apply.stack_names, api, own)
+        active.started = True
+        await run_blocking(self._mark_running, active.run_id)
+        run_log(f"Stacks on {host.name}: {', '.join(names) or 'none'}.")
+        failed = []
+        for name in names:
+            if active.cancel.is_set():
+                raise Cancelled("The run was cancelled.")
+            planned = await run_blocking(
+                update_apply.plan_stack,
+                api,
+                host.id,
+                name,
+                self._hosts.instance_id,
+                own,
+                handle.api_version,
+            )
+            if planned.plan is None:
+                run_log(f"Stack {name}: nothing to update.")
+                continue
+            child = await self.submit_update(
+                host.id, [], triggered_by, f"stack {name}", project=name
+            )
+            run_log(f"Stack {name}: update run #{child}.")
+            await self.wait(child)
+            status = dict(await run_blocking(self._job_run_statuses, child)).get(child)
+            if status != "done":
+                failed.append(f"{name} (#{child} {status})")
+        if failed:
+            raise DispatchError(f"Not every stack was updated: {', '.join(failed)}.")
+        await run_blocking(self._finish, active.run_id, run_log, "done", None)
 
     async def _apply_update(
         self,
@@ -2830,7 +2891,7 @@ class Dispatcher:
             }
             if policy.target_type == "stack":
                 update["project"] = policy.target
-                label = f"stack {policy.target}"
+                label = "every stack" if policy.target == EVERY_STACK else f"stack {policy.target}"
             else:
                 update["name"] = policy.target
                 label = policy.target

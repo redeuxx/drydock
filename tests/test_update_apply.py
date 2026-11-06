@@ -368,3 +368,18 @@ async def test_starting_a_stack_update_does_not_wait_on_its_own_request(
     done = await admin.post("/containers/update-stack", {"host": str(host_id), "stack": "app"})
     assert done.status_code == 303 and done.headers["location"].startswith("/runs/")
     await admin.app.state.dispatcher.wait(int(done.headers["location"].rsplit("/", 1)[1]))
+
+
+def test_every_stack_is_named_once_and_drydocks_own_is_left_out() -> None:
+    class Listing:
+        def containers(self, all: bool, filters: dict[str, str]) -> list[dict[str, Any]]:
+            assert all and filters == {"label": "com.docker.compose.project"}
+            project = "com.docker.compose.project"
+            return [
+                {"Id": "1", "Labels": {project: "web"}},
+                {"Id": "2", "Labels": {project: "db"}},
+                {"Id": "3", "Labels": {project: "web"}},
+                {"Id": "4", "Labels": {project: "drydock"}},
+            ]
+
+    assert update_apply.stack_names(Listing(), frozenset({"4"})) == ["db", "web"]

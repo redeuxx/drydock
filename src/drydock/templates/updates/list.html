@@ -21,7 +21,7 @@
       {% for p, label, when in rows %}
       <tr>
         <td class="truncate font-semibold" title="{{ p.name }}">{% if auth.user.role >= Role.admin %}<a class="link" href="/updates/{{ p.id }}">{{ p.name }}</a>{% else %}{{ p.name }}{% endif %}{% if not p.enabled %} <span class="badge badge-soft badge-neutral badge-sm">disabled</span>{% endif %}</td>
-        <td class="truncate" title="{{ p.target_type }} {{ p.target }} on {{ hosts.get(p.host_id, '') }}">{{ "Stack" if p.target_type == "stack" else "Container" }} <a class="link" href="/containers?{{ ({'host': p.host_id, 'q': p.target} if p.target_type == 'container' else {'host': p.host_id, 'stack': p.target})|urlencode }}">{{ p.target }}</a> <span class="opacity-70">on {{ hosts.get(p.host_id, "") }}</span></td>
+        <td class="truncate" title="{{ p.target_type }} {{ p.target }} on {{ hosts.get(p.host_id, '') }}">{% if p.target_type == "stack" and p.target == "*" %}Every stack <a class="link" href="/stacks?{{ {'host': p.host_id}|urlencode }}">on {{ hosts.get(p.host_id, "") }}</a>{% else %}{{ "Stack" if p.target_type == "stack" else "Container" }} <a class="link" href="/containers?{{ ({'host': p.host_id, 'q': p.target} if p.target_type == 'container' else {'host': p.host_id, 'stack': p.target})|urlencode }}">{{ p.target }}</a> <span class="opacity-70">on {{ hosts.get(p.host_id, "") }}</span>{% endif %}</td>
         <td class="truncate max-md:hidden" title="{{ p.cron }}">{{ label }}</td>
         <td class="truncate max-lg:hidden">{{ when|stamp(False) if when else "" }}</td>
         <td class="truncate max-lg:hidden">{{ jobs.get(p.backup_job_id, "") if p.backup_job_id else "No" }}</td>

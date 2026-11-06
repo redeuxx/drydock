@@ -62,9 +62,12 @@
 {% if snap.error %}
 <div class="alert alert-warning alert-soft mb-3 px-3 py-2 text-sm"><span>Stale since {{ snap.stale_since|ago }}: {{ snap.error }}</span></div>
 {% endif %}
+{% if admin and stacks and not every %}
+<p class="mb-2 text-sm"><a class="link" href="/updates/new?{{ {'host': chosen.id, 'type': 'stack', 'target': '*'}|urlencode }}">Schedule updates of every stack on {{ chosen.name }}</a></p>
+{% endif %}
 <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
   <table class="table table-zebra table-sm">
-    <thead><tr><th scope="col">Stack</th><th scope="col">Running</th><th scope="col">Updates</th><th scope="col" class="max-md:hidden">Backup jobs</th>{% if operator %}<th scope="col">Actions</th>{% endif %}</tr></thead>
+    <thead><tr><th scope="col">Stack</th><th scope="col">Running</th><th scope="col">Updates</th><th scope="col" class="max-md:hidden">Backup jobs</th><th scope="col" class="max-lg:hidden">Auto-update</th>{% if operator %}<th scope="col">Actions</th>{% endif %}</tr></thead>
     <tbody>
       {% for s in stacks %}
       <tr>
@@ -72,6 +75,10 @@
         <td>{{ s.running }} of {{ s.total }}</td>
         <td>{% if s.newer %}<span class="badge badge-soft badge-info badge-sm">{{ s.newer }} newer</span>{% endif %}</td>
         <td class="max-md:hidden">{% for job in s.jobs %}<a class="link" href="/jobs/{{ job.id }}">{{ job.name }}</a>{% if not job.enabled %} (disabled){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+        <td class="max-lg:hidden">
+          {%- for policy, when in s.policies %}<span title="{{ 'next ' ~ when|stamp(False) if when else 'disabled' }}">{% if admin %}<a class="link" href="/updates/{{ policy.id }}">{{ policy.name }}</a>{% else %}{{ policy.name }}{% endif %}{% if not policy.enabled %} (disabled){% endif %}</span>{% if not loop.last %}, {% endif %}{% endfor %}
+          {%- if admin and not s.policies %}<a class="link" href="/updates/new?{{ {'host': chosen.id, 'type': 'stack', 'target': s.name}|urlencode }}">Schedule<span class="sr-only"> updates of {{ s.name }}</span></a>{% endif -%}
+        </td>
         {% if operator %}
         <td><div class="flex flex-wrap items-center gap-1">
           {%- if s.newer %}{{ ask(loop.index, s, "/containers/update-stack", None, "Update", "Pull the newer images of " ~ s.name ~ " first, then make its containers that have one again in dependency order, waiting for each one's healthy dependencies. If any of them does not start or become healthy, all of them are put back. Containers without a newer image are left alone.") }}{% endif %}
@@ -82,7 +89,7 @@
         {% endif %}
       </tr>
       {% else %}
-      <tr><td colspan="{{ 5 if operator else 4 }}">No Compose stacks on this host.</td></tr>
+      <tr><td colspan="{{ 6 if operator else 5 }}">No Compose stacks on this host.</td></tr>
       {% endfor %}
     </tbody>
   </table>

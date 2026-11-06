@@ -25,7 +25,8 @@
         <label class="label text-sm"><input type="radio" class="radio radio-sm" name="target_type" value="container"{% if form.target_type == "container" %} checked{% endif %}> A container</label>
         <label class="label text-sm"><input type="radio" class="radio radio-sm" name="target_type" value="stack"{% if form.target_type == "stack" %} checked{% endif %}> A Compose stack (every container with a newer image, in dependency order, all or nothing)</label>
         <label class="label text-sm" for="policy-target">Container name or Compose project</label>
-        <input id="policy-target" class="input w-full" name="target" value="{{ form.target }}" maxlength="255" required>
+        <input id="policy-target" class="input w-full" name="target" value="{{ form.target }}" maxlength="255" required aria-describedby="policy-target-help">
+        <p id="policy-target-help" class="label whitespace-normal">For a stack, <code>*</code> updates every Compose stack on the host (drydock's own left out), one after another, each in its own run. Such a policy cannot back up first.</p>
       </fieldset>
       <div class="fieldset" data-schedule>
         <label class="fieldset-legend" for="policy-cron-preset">Schedule</label>

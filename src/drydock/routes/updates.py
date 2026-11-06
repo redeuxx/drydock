@@ -19,7 +19,7 @@ from drydock.db import get_db
 from drydock.jobs import scheduler
 from drydock.jobs import targets as job_targets
 from drydock.jobs.dispatcher import DispatchError
-from drydock.models import Host, Job, NotificationTarget, UpdatePolicy, utcnow
+from drydock.models import EVERY_STACK, Host, Job, NotificationTarget, UpdatePolicy, utcnow
 from drydock.routes.auth import client_ip
 from drydock.routes.containers import CONTAINER_ID_RE
 from drydock.routes.jobs import (
@@ -120,7 +120,11 @@ def validate(db: Session, form: PolicyForm, default_tz: str, policy_id: int | No
     host_id = as_id(form.host_id)
     if host_id is None or db.get(Host, host_id) is None:
         errors.append("Choose a host.")
-    if (target_error := check_one(form.target_type, form.target)) is not None:
+    every_stack = form.target_type == "stack" and form.target == EVERY_STACK
+    if every_stack:
+        if form.backup_job_id:
+            errors.append("A policy for every stack cannot back up first: no job covers them all.")
+    elif (target_error := check_one(form.target_type, form.target)) is not None:
         errors.append(target_error.replace("back up", "update"))
     elif form.target_type == "container" and CONTAINER_ID_RE.fullmatch(form.target):
         # An update makes the container again with a new ID: only its name stays.
@@ -134,7 +138,7 @@ def validate(db: Session, form: PolicyForm, default_tz: str, policy_id: int | No
             scheduler.checked(form.cron, form.timezone or default_tz, utcnow())
         except scheduler.CronError as exc:
             errors.append(str(exc))
-    if form.backup_job_id:
+    if form.backup_job_id and not every_stack:
         job = db.get(Job, as_id(form.backup_job_id) or 0)
         if job is None:
             errors.append("Choose an existing job for the backup first.")
