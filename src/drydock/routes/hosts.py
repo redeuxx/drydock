@@ -258,11 +258,17 @@ def get_host(db: Session, host_id: int) -> Host:
     return host
 
 
-def release(db: Session, host: Host) -> Host:
-    """Ends the transaction (and its write lock) but keeps host usable, detached."""
-    db.expunge(host)
-    db.rollback()
-    return host
+def release[T](db: Session, obj: T) -> T:
+    """Ends a read-only transaction (and its write lock) but keeps obj usable, detached.
+    Committed, not rolled back: a rollback expires everything loaded (auth.user too), and
+    reading it again would take the write lock back while the request waits on a run or a
+    host. Refuses pending changes, which a commit would write."""
+    if db.new or db.dirty or db.deleted:
+        raise RuntimeError("release() with pending changes")
+    if obj in db:
+        db.expunge(obj)
+    db.commit()
+    return obj
 
 
 def get_ssh_host(db: Session, host_id: int) -> Host:

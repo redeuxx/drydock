@@ -357,3 +357,14 @@ def test_a_stack_update_refuses_to_strand_another_stacks_container() -> None:
     )
     with pytest.raises(UpdateError, match="c2222 uses the network of c1111: update it with them"):
         plan_update(api, 1, [vpn], frozenset(), "1.47", stack=True)
+
+
+async def test_starting_a_stack_update_does_not_wait_on_its_own_request(
+    admin: Browser, monkeypatch
+) -> None:
+    # The real dispatcher writes the run in its own session: the request's session must not
+    # hold the write lock meanwhile (reading auth.user after a rollback took it back).
+    _, host_id = await a_host_with_containers(admin, monkeypatch)
+    done = await admin.post("/containers/update-stack", {"host": str(host_id), "stack": "app"})
+    assert done.status_code == 303 and done.headers["location"].startswith("/runs/")
+    await admin.app.state.dispatcher.wait(int(done.headers["location"].rsplit("/", 1)[1]))

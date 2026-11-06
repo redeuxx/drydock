@@ -70,7 +70,7 @@ from drydock.restore import plan as restore_plan
 from drydock.restore import uploads as restore_uploads
 from drydock.restore import verify as restore_verify
 from drydock.routes.auth import FormStr, client_ip
-from drydock.routes.hosts import DOCKER_ERRORS, INVENTORY_TIMEOUT, open_host
+from drydock.routes.hosts import DOCKER_ERRORS, INVENTORY_TIMEOUT, open_host, release
 from drydock.routes.jobs import as_id
 from drydock.routes.runs import PAGE_LOG_LIMIT
 from drydock.routes.storage import KIND_LABELS, get_target, remote_backend
@@ -280,14 +280,6 @@ def target_root(request: Request, target: StorageTarget) -> str | None:
         return str(json.loads(request.app.state.crypto.decrypt(target.config_enc))["path"])
     except CryptoError, ValueError, KeyError, TypeError:
         return None
-
-
-def release[T](db: Session, obj: T) -> T:
-    """Ends the transaction (and its write lock) but keeps obj usable, detached."""
-    if obj in db:
-        db.expunge(obj)
-    db.rollback()
-    return obj
 
 
 def deny(db: Session, auth: Auth, request: Request, action: str, run: Run, reason: str) -> NoReturn:
@@ -553,10 +545,9 @@ def start_restore(
     passphrase: str,
 ) -> Response:
     """Starts a restore run from storage, an upload or a server path: the archive is
-    verified before anything else happens. username is read before any release, which
-    expires auth.user. passphrase, when entered, is for an archive from another drydock:
-    the dispatcher keeps it in memory for the run, and the audit records only that one
-    was entered."""
+    verified before anything else happens. passphrase, when entered, is for an archive
+    from another drydock: the dispatcher keeps it in memory for the run, and the audit
+    records only that one was entered."""
 
     def record(outcome: str, target: str | None, **details: Any) -> None:
         audit.record(
