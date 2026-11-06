@@ -16,7 +16,7 @@ import socket
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 import anyio.from_thread
 import asyncssh
@@ -34,7 +34,7 @@ from drydock.hosts import inventory, ssh
 from drydock.hosts.manager import HostManager, HostUnavailable
 from drydock.models import Hook, Host, Job, NotificationTarget, UpdatePolicy, utcnow
 from drydock.routes.auth import FormStr, client_ip
-from drydock.security.rbac import Role, require_recent_auth, require_role
+from drydock.security.rbac import Role, has_recent_auth, require_recent_auth, require_role
 from drydock.security.sessions import Auth
 from drydock.templating import is_htmx, render, see_other
 
@@ -351,6 +351,9 @@ def list_hosts(request: Request, auth: Admin, db: Session = Depends(get_db)) -> 
 def new_host_form(request: Request, auth: Admin, kind: str = "ssh") -> Response:
     if kind not in ("local", "ssh"):
         raise HTTPException(status_code=404)
+    # Ask for the password before the form is filled in, not after (the POST would discard it).
+    if not has_recent_auth(auth):
+        return see_other(request, "/reauth?" + urlencode({"next": f"/hosts/new?kind={kind}"}))
     form = HostForm(kind=kind, docker_url=request.app.state.settings.local_docker_url or "")
     return render(request, "hosts/new.html", auth=auth, form=form, errors=[], key_source="generate")
 

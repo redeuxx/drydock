@@ -84,6 +84,16 @@ async def test_new_local_host_form_suggests_the_configured_proxy(admin: Browser)
     assert (await admin.get("/hosts/new?kind=other")).status_code == 404
 
 
+async def test_new_host_form_asks_for_the_password_first(admin: Browser) -> None:
+    stale_reauth(admin)
+    page = await admin.get("/hosts/new?kind=ssh")
+    assert page.status_code == 303
+    assert page.headers["location"] == "/reauth?next=%2Fhosts%2Fnew%3Fkind%3Dssh"
+    back = await admin.post("/reauth", {"password": PASSWORD, "next": "/hosts/new?kind=ssh"})
+    assert back.headers["location"] == "/hosts/new?kind=ssh"
+    assert (await admin.get("/hosts/new?kind=ssh")).status_code == 200
+
+
 async def test_add_ssh_host_generates_a_key_and_shows_only_the_public_half(admin: Browser) -> None:
     host_id = host_id_from(await admin.post("/hosts", SSH_FORM))
     row = host_row(admin, host_id)
