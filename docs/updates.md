@@ -22,7 +22,7 @@ An update holds the same locks as a backup or restore of the container, so they 
 
 ## Updating a stack
 
-With a Compose stack chosen in the containers page's stack filter, operators can **Update stack** when any of its containers has a newer image. Drydock finds the stack's containers when the run starts and orders them by their `depends_on` (dependencies first), then:
+On the **Stacks** page (under Manage), or with a Compose stack chosen in the containers page's stack filter, operators can **Update stack** when any of its containers has a newer image. Drydock finds the stack's containers when the run starts and orders them by their `depends_on` (dependencies first), then:
 
 1. Pulls every newer image first, so a failed pull changes nothing.
 2. Stops the members it updates (dependents first) and makes them again in dependency order. A member whose `depends_on` says `service_healthy` waits for an updated dependency to be healthy before it starts.

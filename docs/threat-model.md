@@ -597,9 +597,13 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 ### T41. Starting, stopping or inspecting containers from the containers page
 
 **Threat:** a viewer or a forged request stops containers, an action stops drydock itself or yanks a container from under a backup or restore, or inspect shows a container's secrets.
-**Defence:** start, stop, restart, pause and unpause need an operator and a CSRF token, take only container IDs, and audit every container acted on or refused. Each refuses drydock's own container and Compose project (the socket proxy among them) and its helpers, and holds the keys a backup or restore of the container would take: a container a run holds is refused, and a run that starts meanwhile waits. Inspect is for admins only and shows environment values, secret-looking labels and log driver options as `***`.
+**Defence:** start, stop, restart, pause and unpause need an operator and a CSRF token, take only container IDs, and audit every container acted on or refused. Each refuses drydock's own container and Compose project (the socket proxy among them) and its helpers, and holds the keys a backup or restore of the container would take: a container a run holds is refused, and a run that starts meanwhile waits. Inspect is for admins only and shows environment values, secret-looking labels and log driver options as `***`. Removing a container, removing a stack's containers (the stacks page) and removing an image (the images page) cannot be undone: they need an admin with the password from the last 10 minutes, keep volumes, never force an image any container uses, and are audited. Stack actions are the same per-container actions with the same refusals. Acknowledging an exited, unhealthy container needs an operator and a CSRF token, calls no Docker API and is audited.
 **Tests:**
 - `tests/test_status.py::test_actions_and_inspect_need_their_roles_and_csrf`
+- `tests/test_status.py::test_remove_needs_an_admin_with_a_recent_password`
+- `tests/test_status.py::test_an_acknowledged_exit_is_unhealthy_no_more_until_it_starts_again`
+- `tests/test_status.py::test_stacks_page_groups_the_cache_and_acts_on_every_member`
+- `tests/test_status_docker.py::test_remove_a_container_then_its_image`
 - `tests/test_status.py::test_actions_refuse_bad_input_before_calling_docker`
 - `tests/test_status.py::test_actions_refuse_drydock_itself_and_its_helpers`
 - `tests/test_status.py::test_inspect_hides_environment_values_and_secret_labels`
