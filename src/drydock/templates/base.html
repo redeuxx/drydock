@@ -24,9 +24,9 @@
       <a href="/" class="mr-2 flex items-center gap-2 text-xl font-bold tracking-tight">{{ logo() }}Drydock</a>
       {% if auth %}
       {% set current = request.url.path %}
-      {% set logs = [("/runs", "Runs", Role.viewer), ("/logs", "Container logs", Role.admin)] %}
-      {% set docker = [("/containers", "Containers", Role.viewer), ("/stacks", "Stacks", Role.viewer), ("/images", "Images", Role.viewer)] %}
-      {% set backups = [("/jobs", "Jobs", Role.viewer), ("/backups", "Backups", Role.viewer), ("/updates", "Updates", Role.operator), ("/restore", "Restore", Role.admin), ("/hooks", "Hooks", Role.admin), ("/hosts", "Hosts", Role.admin), ("/storage", "Storage", Role.admin)] %}
+      {% set logs_menu = [("/runs", "Runs", Role.viewer), ("/logs", "Container logs", Role.admin)] %}
+      {% set docker_menu = [("/containers", "Containers", Role.viewer), ("/stacks", "Stacks", Role.viewer), ("/images", "Images", Role.viewer)] %}
+      {% set backups_menu = [("/jobs", "Jobs", Role.viewer), ("/backups", "Backups", Role.viewer), ("/updates", "Updates", Role.operator), ("/restore", "Restore", Role.admin), ("/hooks", "Hooks", Role.admin), ("/hosts", "Hosts", Role.admin), ("/storage", "Storage", Role.admin)] %}
       {% macro dropdown(title, items) %}
       {% set shown = items|selectattr(2, "le", auth.user.role)|list %}
       {% if shown %}
@@ -48,10 +48,10 @@
       <nav aria-label="Main">
         <ul class="menu menu-horizontal gap-1 p-0">
           <li><a href="/"{% if current == "/" %} class="menu-active" aria-current="page"{% endif %}>Dashboard</a></li>
-          {{ dropdown("Docker", docker) }}
+          {{ dropdown("Docker", docker_menu) }}
           <li><a href="/activity"{% if current == "/activity" %} class="menu-active" aria-current="page"{% endif %}>Activity</a></li>
-          {{ dropdown("Logs", logs) }}
-          {{ dropdown("Backups", backups) }}
+          {{ dropdown("Logs", logs_menu) }}
+          {{ dropdown("Backups", backups_menu) }}
         </ul>
       </nav>
       {% endif %}
