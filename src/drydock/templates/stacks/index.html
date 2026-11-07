@@ -44,7 +44,7 @@
     <h2 id="stack-{{ n }}-switch-title" class="mb-2 text-lg font-bold break-all">Switch the tag of {{ s.name }}</h2>
     <p class="mb-2 text-sm break-words">The main service, {{ s.main }}, follows {% if s.main_tag %}<code>{{ s.main_tag }}</code>{% else %}a pinned image{% endif %}. {% if s.follow %}{{ s.follow|join(", ") }} {{ "moves" if s.follow|length == 1 else "move" }} with it (the same app, on the same tag); the{% else %}It moves alone; the{% endif %} other services keep their tags and get the newest image of them. Picking another main service changes who moves with it; the run page lists them.</p>
     <p class="mb-3 text-sm break-words">The containers are stopped and made again from their new images, keeping their configuration, in dependency order and all or nothing: if one does not start or become healthy, every one is put back. That does not undo what a new version did to its data, so back the stack up first for a major version or an older tag. The Compose file still names the old tags, so <code>docker compose up</code> brings those back.</p>
-    <form method="post" action="/containers/update-stack" hx-post="/containers/update-stack" hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-2">
+    <form method="post" action="/containers/update-stack" hx-post="/containers/update-stack" hx-confirm="Switch stack {{ s.name }} to tag {tag}? Its containers are stopped and made again, all or nothing." hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-2">
       <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
       <input type="hidden" name="host" value="{{ s.host.id }}">
       <input type="hidden" name="stack" value="{{ s.name }}">

@@ -223,6 +223,7 @@ async def test_switching_from_the_containers_and_stacks_pages(admin: Browser, mo
     monkeypatch.setattr(admin.app.state.dispatcher, "submit_update", submit_update)
     page = (await admin.get(f"/containers?host={host_id}")).text
     assert 'popovertarget="about-tag"' in page and "Switch tag</label>" in page
+    assert 'hx-confirm="Switch web to tag {tag}?' in page, "app.ts names the tag typed in"
     form = {"host": str(host_id), "container": WEB, "tag": "1.38"}
     done = await admin.post("/containers/update", form)
     assert done.status_code == 303 and done.headers["location"] == "/runs/81"
@@ -235,6 +236,7 @@ async def test_switching_from_the_containers_and_stacks_pages(admin: Browser, mo
     stacks = (await admin.get(f"/stacks?host={host_id}")).text
     assert "main: db" in stacks and "Switch the tag of app" in stacks
     assert 'popovertarget="about-main"' in stacks and 'popovertarget="about-tags"' in stacks
+    assert 'hx-confirm="Switch stack app to tag {tag}?' in stacks
     stack = {"host": str(host_id), "stack": "app", "tag": "2"}
     assert (await admin.post("/containers/update-stack", stack)).headers["location"] == "/runs/81"
     assert submitted[-1] == ([], "stack app to tag 2", {"project": "app", "tag": "2", "main": None})

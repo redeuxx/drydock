@@ -252,7 +252,7 @@
     </dl>
     {% if operator and c.image|repository %}
     {# A switch is an update to another tag (routes/containers.py update_container). #}
-    <form method="post" action="/containers/update" hx-post="/containers/update" hx-nonce="{{ csp_nonce }}" class="mt-4 rounded-box border border-base-300 p-3">
+    <form method="post" action="/containers/update" hx-post="/containers/update" hx-confirm="Switch {{ c.name }} to tag {tag}? It is stopped and made again from the new image, keeping its configuration, and put back if it does not start or become healthy." hx-nonce="{{ csp_nonce }}" class="mt-4 rounded-box border border-base-300 p-3">
       <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
       <input type="hidden" name="host" value="{{ r.host.id }}">
       <input type="hidden" name="view" value="{{ host_value or 'all' }}">

@@ -233,6 +233,20 @@ document.addEventListener("htmx:finally:request", (event) => {
   button.closest("dialog")?.removeAttribute("data-busy");
 });
 
+// CONFIRMING A TAG
+//
+// A Switch tag form asks first (hx-confirm); its question names the tag typed in, where
+// it says {tag}.
+
+document.addEventListener("htmx:confirm", (event) => {
+  // hx-confirm's text: htmx keeps it on the context, which its types leave out.
+  const ctx = event.detail.ctx as typeof event.detail.ctx & { confirm?: unknown };
+  const field = ctx.sourceElement?.querySelector?.('input[name="tag"]');
+  if (typeof ctx.confirm === "string" && field instanceof HTMLInputElement) {
+    ctx.confirm = ctx.confirm.replaceAll("{tag}", field.value.trim());
+  }
+});
+
 // MENUS
 //
 // The header's dropdowns are <details data-menu> elements: they open without script, and
