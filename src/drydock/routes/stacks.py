@@ -57,6 +57,7 @@ def page(
     db: Session,
     host: int | None,
     outcomes: list[container_routes.Outcome] | None = None,
+    notice: tuple[str, bool] | None = None,
 ) -> Response:
     collector = request.app.state.status
     collector.touch()
@@ -65,6 +66,7 @@ def page(
         (h for h in hosts if h.enabled), hosts[0] if hosts else None
     )
     snap = None
+    checks = None
     stacks: list[Stack] = []
     every = False  # a policy updates every stack on the host
     if chosen is not None:
@@ -108,6 +110,8 @@ def page(
         snap=snap,
         stacks=stacks,
         every=every,
+        checks=checks,
+        notice=notice,
         outcomes=outcomes or [],
         verbs=container_routes.ACTIONS,
     )
@@ -118,6 +122,30 @@ def stacks(
     request: Request, auth: Viewer, db: Session = Depends(get_db), host: int | None = None
 ) -> Response:
     return page(request, auth, db, host)
+
+
+@router.post("/stacks/check-updates")
+def check_updates(
+    request: Request, auth: Operator, host: Annotated[int, Form()], db: Session = Depends(get_db)
+) -> Response:
+    """The containers page's Check for updates, shown on this page."""
+    target_host, notice, error = container_routes.ask_registries(request, db, host)
+    audit.record(
+        db,
+        actor=auth.user.username,
+        action="container.check_updates",
+        target=f"host:{target_host.id}",
+        outcome="success" if error is None else "failure",
+        ip=client_ip(request),
+        details={"host": target_host.name} | ({} if error is None else {"error": error}),
+    )
+    db.commit()
+    url = f"/stacks?host={host}"
+    if not is_htmx(request):
+        return see_other(request, url)
+    response = page(request, auth, db, host, notice=notice)
+    response.headers["HX-Replace-Url"] = url
+    return response
 
 
 @router.post("/stacks/actions")

@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from drydock import audit
 from drydock.db import get_db
 from drydock.models import Host
+from drydock.routes import containers as container_routes
 from drydock.routes.auth import client_ip
 from drydock.routes.containers import ACTION_ERRORS
 from drydock.routes.hosts import DOCKER_ERRORS, open_host, release
@@ -36,6 +37,7 @@ from drydock.templating import is_htmx, render, see_other
 router = APIRouter()
 
 Viewer = Annotated[Auth, Depends(require_role(Role.viewer))]
+Operator = Annotated[Auth, Depends(require_role(Role.operator))]
 Admin = Annotated[Auth, Depends(require_role(Role.admin))]
 
 IMAGE_ID_RE = re.compile(r"sha256:[0-9a-f]{64}")
@@ -50,6 +52,7 @@ class Image:
     size: int
     created: datetime
     users: list[str]  # names of the containers that use it
+    newer: bool = False  # a container using it has a newer image, as last checked
 
 
 def image_error(exc: BaseException) -> str:
@@ -63,23 +66,26 @@ def image_error(exc: BaseException) -> str:
     return "Cannot reach the Docker daemon."
 
 
-def users_by_image(api: Any) -> dict[str, list[str]]:
+def users_by_image(containers: list[dict[str, Any]]) -> dict[str, list[str]]:
     users: dict[str, list[str]] = defaultdict(list)
-    for c in api.containers(all=True):
+    for c in containers:
         names = c.get("Names") or [str(c.get("Id", ""))[:12]]
         users[str(c.get("ImageID", ""))].append(str(names[0]).lstrip("/"))
     return users
 
 
-def read_images(request: Request, host: Host) -> tuple[list[Image], str | None]:
-    """Blocking. (the images, an error that is safe to show or None)."""
+def read_images(request: Request, host: Host, newer: set[str]) -> tuple[list[Image], str | None]:
+    """Blocking. (the images, an error that is safe to show or None). newer: the IDs of
+    the containers with a newer image."""
     try:
         handle = open_host(request, host, IMAGE_TIMEOUT)
     except DOCKER_ERRORS as exc:
         return [], str(exc)
     try:
         api = handle.client.api
-        users = users_by_image(api)
+        containers = api.containers(all=True)
+        users = users_by_image(containers)
+        behind = {str(c.get("ImageID", "")) for c in containers if c.get("Id") in newer}
         images = [
             Image(
                 str(i["Id"]),
@@ -87,6 +93,7 @@ def read_images(request: Request, host: Host) -> tuple[list[Image], str | None]:
                 int(i.get("Size") or 0),
                 datetime.fromtimestamp(int(i.get("Created") or 0), UTC),
                 sorted(users.get(str(i["Id"]), [])),
+                str(i["Id"]) in behind,
             )
             for i in api.images()
         ]
@@ -109,7 +116,7 @@ def remove_image(request: Request, host: Host, image_id: str) -> tuple[str, str 
         info = api.inspect_image(image_id)
         tags = sorted(t for t in info.get("RepoTags") or [] if t != NO_TAG)
         label = tags[0] if tags else image_id[:19]
-        users = users_by_image(api).get(image_id)
+        users = users_by_image(api.containers(all=True)).get(image_id)
         if users:
             return label, f"Used by {', '.join(sorted(users))}. Remove those containers first."
         for ref in tags or [image_id]:
@@ -134,11 +141,14 @@ def page(
     )
     images: list[Image] = []
     error = None
+    checks = request.app.state.updates.result(chosen.id) if chosen is not None else None
     if chosen is not None and chosen.enabled:
         for h in hosts:
             db.expunge(h)
         db.rollback()  # no lock while waiting on the network (routes/hosts.py release)
-        images, error = read_images(request, chosen)
+        verdicts = checks.verdicts if checks is not None else {}
+        newer = {cid for cid, v in verdicts.items() if v.state == "update"}
+        images, error = read_images(request, chosen, newer)
     return render(
         request,
         "images/index.html",
@@ -147,6 +157,7 @@ def page(
         chosen=chosen,
         images=images,
         error=error,
+        checks=checks,
         notice=notice,
     )
 
@@ -156,6 +167,30 @@ def images(
     request: Request, auth: Viewer, db: Session = Depends(get_db), host: int | None = None
 ) -> Response:
     return page(request, auth, db, host)
+
+
+@router.post("/images/check-updates")
+def check_updates(
+    request: Request, auth: Operator, host: Annotated[int, Form()], db: Session = Depends(get_db)
+) -> Response:
+    """The containers page's Check for updates, shown on this page."""
+    target_host, notice, error = container_routes.ask_registries(request, db, host)
+    audit.record(
+        db,
+        actor=auth.user.username,
+        action="container.check_updates",
+        target=f"host:{target_host.id}",
+        outcome="success" if error is None else "failure",
+        ip=client_ip(request),
+        details={"host": target_host.name} | ({} if error is None else {"error": error}),
+    )
+    db.commit()
+    url = f"/images?host={host}"
+    if not is_htmx(request):
+        return see_other(request, url)
+    response = page(request, auth, db, host, notice)
+    response.headers["HX-Replace-Url"] = url
+    return response
 
 
 @router.post("/images/remove")

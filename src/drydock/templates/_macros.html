@@ -95,3 +95,14 @@
 {% macro log_poller(run_id, offset, csp_nonce) -%}
 <span id="log-poller" hx-get="/runs/{{ run_id }}/log?offset={{ offset }}" hx-trigger="every 2s" hx-target="this" hx-select="#log-chunk" hx-swap="outerHTML strip:true ignoreTitle:true" hx-nonce="{{ csp_nonce }}"></span>
 {%- endmacro %}
+
+{# Check for updates on the stacks and images pages (routes/containers.py ask_registries):
+   found is how many of what the page lists have a newer image. Import with context. #}
+{% macro check_updates(url, checks, found, noun) -%}
+<form method="post" action="{{ url }}" hx-post="{{ url }}" hx-nonce="{{ csp_nonce }}" class="mb-2 flex flex-wrap items-center gap-2 text-sm">
+  <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+  <input type="hidden" name="host" value="{{ chosen.id }}">
+  <button type="submit" class="btn btn-xs">Check for updates</button>
+  <span class="opacity-70">{% if checks %}{{ found }} {{ noun }}{{ "" if found == 1 else "s" }} with a newer image, checked {{ checks.checked_at|ago }}{% if checks.error %} ({{ checks.error }}){% endif %}{% else %}Not checked yet{% endif %}</span>
+</form>
+{%- endmacro %}

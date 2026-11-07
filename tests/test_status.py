@@ -19,6 +19,8 @@ from drydock.hosts.manager import HostUnavailable
 from drydock.hosts.status import Reading, Sample, StatusCollector
 from drydock.models import Host, Job, JobTarget, StorageTarget, UpdatePolicy, UserSession
 from drydock.routes import containers
+from drydock.routes import images as images_routes
+from drydock.updates.check import HostChecks, Verdict
 from tests.conftest import Browser, add_user
 
 pytestmark = pytest.mark.anyio
@@ -1280,3 +1282,59 @@ async def test_refresh_waits_for_a_reading_however_it_starts(collector) -> None:
         assert by_name(status_collector.snapshot(1))["web"].state == "running"
     finally:
         await status_collector.close()
+
+
+async def test_stacks_and_images_pages_check_for_updates(admin: Browser, monkeypatch) -> None:
+    _, host_id = await a_host_with_containers(admin, monkeypatch)
+    newer = {"b" * 64: Verdict("update", "newer", "postgres:17", "sha256:" + "2" * 64)}
+
+    async def check_now(host) -> HostChecks:
+        found = HostChecks(datetime.now(UTC), newer)
+        admin.app.state.updates._results[host.id] = found
+        return found
+
+    monkeypatch.setattr(admin.app.state.updates, "check_now", check_now)
+    monkeypatch.setattr(
+        images_routes,
+        "read_images",
+        lambda request, host, behind: (
+            [images_routes.Image("sha256:" + "f" * 64, ["pg:17"], 1, datetime.now(UTC), [])],
+            None,
+        ),
+    )
+    assert "Not checked yet" in (await admin.get(f"/stacks?host={host_id}")).text
+    htmx = {"HX-Request": "true"}
+    done = await admin.post("/stacks/check-updates", {"host": str(host_id)}, headers=htmx)
+    assert "1 container with a newer image." in done.text
+    assert "1 stack with a newer image" in done.text
+    assert done.headers["HX-Replace-Url"] == f"/stacks?host={host_id}"
+    done = await admin.post("/images/check-updates", {"host": str(host_id)}, headers=htmx)
+    assert done.status_code == 200 and "Check for updates" in done.text
+    assert (await admin.post("/stacks/check-updates", {"host": "999"})).status_code == 404
+
+    await add_user(admin, "watcher", "viewer")
+    await admin.login("watcher")
+    assert "Check for updates" not in (await admin.get(f"/stacks?host={host_id}")).text
+    assert (await admin.post("/images/check-updates", {"host": str(host_id)})).status_code == 403
+
+
+def test_an_image_used_by_a_container_with_a_newer_image_is_marked(monkeypatch) -> None:
+    class Api:
+        def containers(self, all: bool) -> list[dict]:
+            return [{"Id": "c1", "Names": ["/web"], "ImageID": "sha256:old"}]
+
+        def images(self) -> list[dict]:
+            return [
+                {"Id": "sha256:old", "RepoTags": ["web:1"], "Size": 1, "Created": 0},
+                {"Id": "sha256:other", "RepoTags": ["x:1"], "Size": 1, "Created": 0},
+            ]
+
+    class Handle:
+        client = type("C", (), {"api": Api()})
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(images_routes, "open_host", lambda request, host, timeout: Handle())
+    found, error = images_routes.read_images(None, None, {"c1"})  # type: ignore[arg-type]
+    assert error is None and {i.tags[0]: i.newer for i in found} == {"web:1": True, "x:1": False}

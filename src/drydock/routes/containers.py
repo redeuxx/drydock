@@ -557,6 +557,30 @@ def check_updates(
     """Asks the registries now which containers of the host have a newer image (at most
     once a minute per host). Audited: it makes drydock contact registries."""
     view = View(host, sort, order, status, stack, q)
+    target_host, notice, error = ask_registries(request, db, host)
+    audit.record(
+        db,
+        actor=auth.user.username,
+        action="container.check_updates",
+        target=f"host:{target_host.id}",
+        outcome="success" if error is None else "failure",
+        ip=client_ip(request),
+        details={"host": target_host.name} | ({} if error is None else {"error": error}),
+    )
+    db.commit()
+    if not is_htmx(request):
+        return see_other(request, view.url)
+    response = page(request, auth, db, view, notice=notice)
+    response.headers["HX-Replace-Url"] = view.url
+    return response
+
+
+def ask_registries(
+    request: Request, db: Session, host: int
+) -> tuple[Host, tuple[str, bool], str | None]:
+    """The check behind every page's Check for updates: (the host, the notice to show as
+    its text and whether it went well, the error to audit). 404 for a host that does not
+    exist. Each route audits it as container.check_updates."""
     target_host = db.get(Host, host)
     if target_host is None:
         raise HTTPException(status_code=404)
@@ -584,21 +608,7 @@ def check_updates(
             if failed:
                 text += f" {failed} could not be checked (see each row)."
             notice = (text, True)
-    audit.record(
-        db,
-        actor=auth.user.username,
-        action="container.check_updates",
-        target=f"host:{target_host.id}",
-        outcome="success" if error is None else "failure",
-        ip=client_ip(request),
-        details={"host": target_host.name} | ({} if error is None else {"error": error}),
-    )
-    db.commit()
-    if not is_htmx(request):
-        return see_other(request, view.url)
-    response = page(request, auth, db, view, notice=notice)
-    response.headers["HX-Replace-Url"] = view.url
-    return response
+    return target_host, notice, error
 
 
 @router.post("/containers/update")

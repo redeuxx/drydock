@@ -102,6 +102,7 @@ EXPECTED_MIN_ROLE = [
     ({"POST"}, re.compile(r"^/containers/update$"), Role.operator),
     ({"POST"}, re.compile(r"^/containers/update-stack$"), Role.operator),
     ({"POST"}, re.compile(r"^/stacks/actions$"), Role.operator),
+    ({"POST"}, re.compile(r"^/(stacks|images)/check-updates$"), Role.operator),
     ({"POST"}, re.compile(r"^/images/remove$"), Role.admin),
     ({"GET"}, re.compile(r"^/containers/[^/]+/[^/]+/inspect$"), Role.admin),
     ({"GET"}, re.compile(r"^/logs"), Role.admin),
@@ -127,6 +128,8 @@ INVENTORY = {
     ("GET", "/containers"),
     ("GET", "/stacks"),
     ("POST", "/stacks/actions"),
+    ("POST", "/stacks/check-updates"),
+    ("POST", "/images/check-updates"),
     ("GET", "/images"),
     ("POST", "/images/remove"),
     ("POST", "/containers/actions"),
@@ -698,6 +701,8 @@ AUDITED_SUCCESS = [
     ),
     # Docker's side faked (UpdateChecker.check_now): nothing to update.
     ("/containers/check-updates", {"host": "{host_id}"}, "container.check_updates", 303),
+    ("/stacks/check-updates", {"host": "{host_id}"}, "container.check_updates", 303),
+    ("/images/check-updates", {"host": "{host_id}"}, "container.check_updates", 303),
     # Docker's side faked (Dispatcher.submit_update): a run starts.
     ("/containers/update", {"host": "{host_id}", "container": "c" * 64}, "container.update", 303),
     # The stack faked in the status cache, the run in Dispatcher.submit_update.

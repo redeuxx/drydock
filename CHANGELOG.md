@@ -14,6 +14,7 @@ Notable changes to drydock. Versions follow [semantic versioning](https://semver
 - Adding a host asks for the password again before the form, not after it is filled in.
 - A container that exited while unhealthy stays unhealthy until an operator acknowledges it on the containers page; it counts again once it has started since. On daemons before API 1.52, an exited container's health now comes from its last inspect.
 - The activity page lists backup runs among the container events, with a Backup run filter.
+- Check for updates on the Stacks and Images pages too; the Images page marks images whose containers have a newer one.
 - Update policies can update every Compose stack on a host (target `*`), each stack in its own run, and the Stacks page lists and schedules them.
 - Containers, Stacks and Images share a Docker menu in the navigation bar, and the Manage menu is now Backups.
 - Starting an update of a container or a stack no longer fails with HTTP 500 ("database is locked") after 5 seconds.

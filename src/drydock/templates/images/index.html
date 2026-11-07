@@ -1,8 +1,10 @@
 {% extends "base.html" %}
+{% from "_macros.html" import check_updates with context %}
 {% block title %}Images{% endblock %}
 {% block content %}
 <h1 class="mb-4 text-3xl font-bold">Images</h1>
 {% set admin = auth.user.role >= Role.admin %}
+{% set operator = auth.user.role >= Role.operator %}
 {# Read from the daemon when the page loads (routes/images.py). Tags and container names
    come from the host: autoescaped only. #}
 {% if not hosts %}
@@ -23,6 +25,7 @@
 {% elif error %}
 <div class="alert alert-warning alert-soft text-sm"><span>Cannot read the images: {{ error }}</span></div>
 {% else %}
+{% if operator %}{{ check_updates("/images/check-updates", checks, images|selectattr("newer")|list|length, "image") }}{% endif %}
 <p class="mb-2 text-sm opacity-70">{{ images|length }} image{{ "" if images|length == 1 else "s" }}, {{ images|sum(attribute="size")|filesize or "0 bytes" }}</p>
 <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
   <table class="table table-zebra table-sm">
@@ -31,7 +34,7 @@
       {% for i in images %}
       {% set label = i.tags[0] if i.tags else i.id[7:19] %}
       <tr>
-        <td class="break-all">{% for t in i.tags %}{{ t }}{% if not loop.last %}<br>{% endif %}{% else %}<span class="opacity-50">untagged</span>{% endfor %}</td>
+        <td class="break-all">{% for t in i.tags %}{{ t }}{% if not loop.last %}<br>{% endif %}{% else %}<span class="opacity-50">untagged</span>{% endfor %}{% if i.newer %} <span class="badge badge-soft badge-info badge-sm">newer image</span>{% endif %}</td>
         <td class="font-mono text-xs max-md:hidden">{{ i.id[7:19] }}</td>
         <td>{{ i.size|filesize or "0 bytes" }}</td>
         <td class="max-sm:hidden">{{ i.created|stamp(False) }}</td>
