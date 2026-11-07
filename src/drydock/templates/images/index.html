@@ -61,7 +61,7 @@
       {% for i in images %}
       {% set label = i.tags[0] if i.tags else i.id[7:19] %}
       <tr>
-        <td class="break-all">{% for t in i.tags %}{{ t }}{% if not loop.last %}<br>{% endif %}{% else %}<span class="opacity-50">untagged</span>{% endfor %}{% if i.newer %} <span class="badge badge-soft badge-info badge-sm">newer image</span>{% endif %}</td>
+        <td class="break-all">{% for t in i.tags %}{{ t }}{% if not loop.last %}<br>{% endif %}{% else %}<span class="opacity-50">untagged</span>{% endfor %}{% if i.newer %} <span class="badge badge-soft badge-info badge-sm whitespace-nowrap">newer image</span>{% endif %}</td>
         {% if not chosen %}<td>{{ i.host.name }}</td>{% endif %}
         <td class="font-mono text-xs max-md:hidden">{{ i.id[7:19] }}</td>
         <td>{{ i.size|filesize or "0 bytes" }}</td>

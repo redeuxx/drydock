@@ -114,7 +114,7 @@
         {% if not chosen %}<td>{{ s.host.name }}</td>{% endif %}
         <td>{{ s.running }} of {{ s.total }}</td>
         <td class="max-sm:hidden">{% for t in s.tags %}<span class="badge badge-soft badge-neutral badge-sm mr-1">{{ t }}</span>{% endfor %}</td>
-        <td>{% if s.newer %}<span class="badge badge-soft badge-info badge-sm">{{ s.newer }} newer</span>{% endif %}</td>
+        <td>{% if s.newer %}<span class="badge badge-soft badge-info badge-sm whitespace-nowrap" title="{{ s.newer }} of its containers {{ 'has' if s.newer == 1 else 'have' }} a newer image">{{ s.newer }} newer</span>{% endif %}</td>
         <td class="max-md:hidden">{% for job in s.jobs %}<a class="link" href="/jobs/{{ job.id }}">{{ job.name }}</a>{% if not job.enabled %} (disabled){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</td>
         <td class="max-lg:hidden">
           {%- for policy, when in s.policies %}<span title="{{ 'next ' ~ when|stamp(False) if when else 'disabled' }}">{% if admin %}<a class="link" href="/updates/{{ policy.id }}">{{ policy.name }}</a>{% else %}{{ policy.name }}{% endif %}{% if not policy.enabled %} (disabled){% endif %}</span>{% if not loop.last %}, {% endif %}{% endfor %}
