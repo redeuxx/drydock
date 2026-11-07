@@ -22,6 +22,7 @@ Notable changes to drydock. Versions follow [semantic versioning](https://semver
 - The Containers, Stacks and Images pages show every enabled host at once (All hosts, now the default in the host picker), with a Host column, and show 100 rows a page. Selected containers on several hosts are acted on together.
 - The containers and stacks pages show the tag each container follows (`latest`, `v1.0`), or that it is pinned by digest.
 - Switch tag: operators move a container, or a whole stack, to another tag of its image (say `1.28`, or `latest`), as an update that is put back if the new one fails. A stack switches its main service (the one no other service depends on, preferring one with ports) and the services from the same publisher on the same tag; databases and caches keep theirs. Update policies can name a tag to follow and a stack's main service.
+- Short notes explain the Docker pages in place: each page says what it shows, and an "i" next to Tag, Tags and Stack explains tags and main services.
 - Admins prune a host's images, or every host's, from the Images page: untagged ones only, or every image no container uses. Refused while a run is active.
 - The containers table gives every column a width and scrolls sideways when they do not fit, so headers no longer overlap and the actions column is never cut off.
 

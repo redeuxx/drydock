@@ -3,7 +3,8 @@
 {% block title %}Containers{% endblock %}
 {% block width %}max-w-screen-2xl{% endblock %}
 {% block content %}
-<h1 class="mb-4 text-3xl font-bold">Containers</h1>
+<h1 class="mb-1 text-3xl font-bold">Containers</h1>
+<p class="mb-4 text-sm opacity-70">Every container drydock can reach, as it last read them (every 10 seconds while a page shows them). Pick a host to see one, or All hosts for every enabled one. Click a row for all of a container{% if auth.user.role >= Role.operator %}, and to switch the tag it follows{% endif %}.</p>
 {% if not hosts %}
 <p class="text-sm opacity-70">No host is set up yet.{% if auth.user.role >= Role.admin %} <a class="link" href="/hosts/new?kind=local">Add the local host</a> or <a class="link" href="/hosts/new?kind=ssh">an SSH host</a>.{% endif %}</p>
 {% else %}

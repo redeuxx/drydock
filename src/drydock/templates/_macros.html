@@ -1,3 +1,4 @@
+{% from "_icons.html" import icon %}
 {# The drydock mark: a D holding three stacked containers. The D takes the text color, so it
    suits both themes; static/logo.svg is the same mark on a navy tile, for the favicon. #}
 {% macro logo(size="size-7") -%}
@@ -105,6 +106,22 @@
   <button type="submit" class="btn btn-xs">Check for updates</button>
   <span class="opacity-70">{% if checks %}{{ found }} {{ noun }}{{ "" if found == 1 else "s" }} with a newer image, checked {{ checks.checked_at|ago }}{% if checks.error %} ({{ checks.error }}){% endif %}{% else %}Not checked yet{% endif %}</span>
 </form>
+{%- endmacro %}
+
+{# About notes: a small "i" button (about_button) opens a short note (about_note, whose
+   call body is the note) on what sits next to it. The popover API, so no script; Escape or
+   a click outside closes it. The note is in the top layer, so a scrolling table does not
+   clip it, and a polled region waits while it is open (frontend/app.ts). Render a note
+   once, outside anything hidden at some widths; any number of buttons may open it. #}
+{% macro about_button(id, title) -%}
+<button type="button" class="btn btn-ghost btn-circle btn-xs align-middle font-normal opacity-60 hover:opacity-100 focus-visible:opacity-100" popovertarget="{{ id }}" title="About {{ title|lower }}" aria-label="About {{ title|lower }}">{{ icon("info", "size-3.5") }}</button>
+{%- endmacro %}
+
+{% macro about_note(id, title) -%}
+<div id="{{ id }}" popover role="dialog" aria-labelledby="{{ id }}-title" class="m-auto w-80 max-w-[calc(100vw-2rem)] rounded-box border border-base-300 bg-base-100 p-4 text-left text-sm font-normal whitespace-normal text-base-content normal-case shadow-xl backdrop:bg-black/20">
+  <p id="{{ id }}-title" class="mb-2 font-semibold">{{ title }}</p>
+  <div class="flex flex-col gap-2 opacity-90">{{ caller() }}</div>
+</div>
 {%- endmacro %}
 
 {# Previous and next for a Docker page's rows (routes/containers.py paginate); url ends in

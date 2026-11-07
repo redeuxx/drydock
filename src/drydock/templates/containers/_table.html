@@ -1,6 +1,6 @@
 {% from "status/_host_bar.html" import host_bar %}
 {% from "_spark.html" import sparkline %}
-{% from "_macros.html" import pager, unread_hosts %}
+{% from "_macros.html" import about_button, about_note, pager, unread_hosts with context %}
 {# One host's containers, or every enabled host's, from the status collector's cache
    (routes/containers.py), a page at a time. The
    region polls itself every 10 s with the toolbar's fields (data-poller, frontend/app.ts,
@@ -161,6 +161,7 @@
           {%- if key -%}
           <a class="link link-hover" href="/containers?{{ {'host': host_value, 'sort': key, 'order': 'desc' if key == sort and order == 'asc' else 'asc', 'status': status, 'stack': stack, 'q': q}|urlencode }}">{{ label }}{% if key == sort %}<span aria-hidden="true">{{ " ▼" if order == "desc" else " ▲" }}</span>{% endif %}</a>
           {%- else %}{{ label }}{% endif -%}
+          {%- if label == "Tag" %} {{ about_button("about-tag", "The tag a container follows") }}{% endif -%}
         </th>
         {% endfor %}
         {% if operator %}<th scope="col" class="w-44">Actions</th>{% endif %}
@@ -211,6 +212,13 @@
   </table>
 </div>
 {{ pager(page, pages, page_url) }}
+{# Outside the table, so a hidden column does not hide it; the row dialogs say it in brief. #}
+{% call about_note("about-tag", "The tag a container follows") %}
+  <p>The part after the colon in the image a container was made from: <code>1.27</code> in <code>nginx:1.27</code>. An image named without one follows <code>latest</code>.</p>
+  <p>Updates bring the newest image of that tag. A tag like <code>latest</code> can jump a major version; a tag like <code>1.27</code> stays within it.</p>
+  <p><span class="font-semibold">Pinned</span>: made from a digest or an image ID, so it never changes by itself.</p>
+  {% if operator %}<p>To follow another tag, open the container's row and use Switch tag{% if admin %}, or name the tag on an update policy{% endif %}.</p>{% endif %}
+{% endcall %}
 {% for r in rows %}
 {% set c = r.c %}
 {% set jobs = r.jobs %}
@@ -221,7 +229,7 @@
       <dt class="font-semibold">Host</dt><dd class="break-all">{{ r.host.name }}</dd>
       <dt class="font-semibold">ID</dt><dd class="font-mono text-xs break-all">{{ c.id }}</dd>
       <dt class="font-semibold">Image</dt><dd class="break-all">{{ c.image }}</dd>
-      <dt class="font-semibold">Tag</dt><dd>{{ tag_badge(c.image) }}</dd>
+      <dt class="font-semibold">Tag</dt><dd>{{ tag_badge(c.image) }} <span class="text-xs opacity-70">{% if c.image|tag %}Updates bring the newest image of this tag.{% else %}It never changes by itself.{% endif %}</span></dd>
       {% set v = r.verdict %}
       <dt class="font-semibold">Updates</dt><dd>{% if v %}{{ v.reason }}{% if v.latest %} <span class="font-mono text-xs opacity-70">({{ v.latest[7:19] }})</span>{% endif %}{% else %}Not checked yet.{% endif %}</dd>
       <dt class="font-semibold">State</dt><dd>{{ c.state }}{% if c.health %}, {{ c.health }}{% endif %}</dd>

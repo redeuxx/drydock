@@ -222,7 +222,7 @@ async def test_switching_from_the_containers_and_stacks_pages(admin: Browser, mo
 
     monkeypatch.setattr(admin.app.state.dispatcher, "submit_update", submit_update)
     page = (await admin.get(f"/containers?host={host_id}")).text
-    assert "Switch tag</label>" in page
+    assert 'popovertarget="about-tag"' in page and "Switch tag</label>" in page
     form = {"host": str(host_id), "container": WEB, "tag": "1.38"}
     done = await admin.post("/containers/update", form)
     assert done.status_code == 303 and done.headers["location"] == "/runs/81"
@@ -234,6 +234,7 @@ async def test_switching_from_the_containers_and_stacks_pages(admin: Browser, mo
 
     stacks = (await admin.get(f"/stacks?host={host_id}")).text
     assert "main: db" in stacks and "Switch the tag of app" in stacks
+    assert 'popovertarget="about-main"' in stacks and 'popovertarget="about-tags"' in stacks
     stack = {"host": str(host_id), "stack": "app", "tag": "2"}
     assert (await admin.post("/containers/update-stack", stack)).headers["location"] == "/runs/81"
     assert submitted[-1] == ([], "stack app to tag 2", {"project": "app", "tag": "2", "main": None})
@@ -253,7 +254,7 @@ async def test_switching_from_the_containers_and_stacks_pages(admin: Browser, mo
     await add_user(admin, "watcher", "viewer")
     await admin.login("watcher")
     page = (await admin.get(f"/containers?host={host_id}")).text
-    assert "Switch tag</label>" not in page
+    assert "Switch tag</label>" not in page and 'popovertarget="about-tag"' in page
 
 
 async def test_a_policy_names_the_tag_and_main_service_its_runs_switch_to(admin: Browser) -> None:

@@ -1,8 +1,9 @@
 {% extends "base.html" %}
-{% from "_macros.html" import check_updates, host_picker, pager, unread_hosts with context %}
+{% from "_macros.html" import about_button, about_note, check_updates, host_picker, pager, unread_hosts with context %}
 {% block title %}Stacks{% endblock %}
 {% block content %}
-<h1 class="mb-4 text-3xl font-bold">Stacks</h1>
+<h1 class="mb-1 text-3xl font-bold">Stacks</h1>
+<p class="mb-4 text-sm opacity-70">Compose stacks, gathered from their containers' labels. Start, stop, update or switch the tag of a whole stack at once; drydock never edits its Compose file.</p>
 {% set operator = auth.user.role >= Role.operator %}
 {% set admin = auth.user.role >= Role.admin %}
 {# One form per action, on the stack's own host; view is the host the page shows ("all"
@@ -105,7 +106,7 @@
 {% endif %}
 <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
   <table class="table table-zebra table-sm">
-    <thead><tr><th scope="col" abbr="Stack">Stack</th>{% if not chosen %}<th scope="col">Host</th>{% endif %}<th scope="col">Running</th><th scope="col" abbr="Tags" class="max-sm:hidden">Tags</th><th scope="col">Updates</th><th scope="col" class="max-md:hidden">Backup jobs</th><th scope="col" class="max-lg:hidden">Auto-update</th>{% if operator %}<th scope="col">Actions</th>{% endif %}</tr></thead>
+    <thead><tr><th scope="col" abbr="Stack">Stack {{ about_button("about-main", "A stack's main service") }}</th>{% if not chosen %}<th scope="col">Host</th>{% endif %}<th scope="col">Running</th><th scope="col" abbr="Tags" class="max-sm:hidden">Tags {{ about_button("about-tags", "The tags a stack follows") }}</th><th scope="col">Updates</th><th scope="col" class="max-md:hidden">Backup jobs</th><th scope="col" class="max-lg:hidden">Auto-update</th>{% if operator %}<th scope="col">Actions</th>{% endif %}</tr></thead>
     <tbody>
       {% for s in stacks %}
       <tr>
@@ -136,6 +137,16 @@
   </table>
 </div>
 {{ pager(page, pages, page_url) }}
+{# Outside the table: the Tags column is hidden on narrow screens. #}
+{% call about_note("about-main", "A stack's main service") %}
+  <p>The service the rest of the stack is there for: the one no other service depends on (by <code>depends_on</code>), preferring one that binds a host port. It is named under each stack.</p>
+  <p>Switching the stack's tag moves the main service and its replicas. Images of the same app from the same publisher on the same tag move with it (immich-server and immich-machine-learning), so an app and its workers stay on one version. A database or a cache keeps its own tag, and when the main service follows <code>latest</code>, or is one of Docker Hub's official images, it moves alone.</p>
+  {% if operator %}<p>Pick another service in Switch tag{% if admin %}, or on an update policy,{% endif %} when drydock guesses wrong.</p>{% endif %}
+{% endcall %}
+{% call about_note("about-tags", "The tags a stack follows") %}
+  <p>Each tag its containers' images name: <code>1.27</code> in <code>nginx:1.27</code>, <code>latest</code> when an image names none. Updates bring the newest image of each container's own tag.</p>
+  <p><span class="font-semibold">Pinned</span>: a container made from a digest or an image ID, which never changes by itself.</p>
+{% endcall %}
 {% endif %}
 </div>
 {% endif %}

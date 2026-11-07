@@ -2,7 +2,8 @@
 {% from "_macros.html" import check_updates, host_picker, pager with context %}
 {% block title %}Images{% endblock %}
 {% block content %}
-<h1 class="mb-4 text-3xl font-bold">Images</h1>
+<h1 class="mb-1 text-3xl font-bold">Images</h1>
+<p class="mb-4 text-sm opacity-70">The images on each host and the containers that use them, read from Docker when the page opens. Images pile up as updates leave old versions behind{% if auth.user.role >= Role.admin %}: Prune images clears the ones nothing uses{% endif %}.</p>
 {% set admin = auth.user.role >= Role.admin %}
 {% set operator = auth.user.role >= Role.operator %}
 {# Read from each daemon when the page loads (routes/images.py). Tags and container names

@@ -102,10 +102,10 @@ function logOf(element: unknown): HTMLElement | null {
 document.addEventListener("htmx:config:request", (event) => {
   const ctx = event.detail.ctx;
   if (!isPoller(ctx.sourceElement)) return;
-  // Nobody is looking, a dialog in the region is open (the swap would close it), or the
-  // reader paused the log: skip this turn, the next tick polls.
+  // Nobody is looking, a dialog or an "about" note in the region is open (the swap would
+  // close it), or the reader paused the log: skip this turn, the next tick polls.
   const paused = ctx.sourceElement.closest("[data-paused]") !== null;
-  if (document.hidden || paused || ctx.sourceElement.querySelector("dialog[open]")) {
+  if (document.hidden || paused || ctx.sourceElement.querySelector("dialog[open], [popover]:popover-open")) {
     event.preventDefault();
     return;
   }
