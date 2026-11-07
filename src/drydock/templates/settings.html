@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% from "_macros.html" import alerts, submit %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<h1 class="mb-4 text-3xl font-bold">Settings</h1>
+<section class="card bg-base-100 shadow-sm">
+  <div class="card-body">
+    {{ alerts(errors) }}
+    <form method="post" action="/settings" hx-post="/settings" hx-nonce="{{ csp_nonce }}" class="flex flex-col items-start gap-1">
+      <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+      <label class="fieldset-legend" for="update-check-hours">Check for newer images</label>
+      <select id="update-check-hours" class="select" name="update_check_hours" aria-describedby="update-check-help">
+        {% for h in choices %}<option value="{{ h }}"{% if h == hours %} selected{% endif %}>{% if h == 0 %}Never (only when asked){% elif h == 1 %}Every hour{% else %}Every {{ h }} hours{% endif %}</option>{% endfor %}
+      </select>
+      <p id="update-check-help" class="label max-w-prose whitespace-normal">How often drydock asks the registries whether each host's containers have a newer image. Docker Hub counts these lookups against the host's pull allowance; one lookup answers every container of the same image and tag. A change applies within 5 minutes. Operators can always check a host at once from the containers, stacks and images pages.</p>
+      <div class="mt-2">{{ submit("Save") }}</div>
+    </form>
+  </div>
+</section>
+{% endblock %}

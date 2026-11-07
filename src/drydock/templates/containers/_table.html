@@ -92,7 +92,7 @@
   {% if admin %}<button type="button" class="btn btn-xs" commandfor="confirm-remove" command="show-modal" aria-haspopup="dialog">Remove</button>{% endif %}
 </form>
 {# Asks the registries now (routes/containers.py check_updates); otherwise drydock checks
-   every 6 hours. #}
+   as often as the settings page says. #}
 <form id="check-updates" method="post" action="/containers/check-updates" hx-post="/containers/check-updates" hx-nonce="{{ csp_nonce }}" class="mb-2 flex flex-wrap items-center gap-2 text-sm">
   <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
   <input type="hidden" name="host" value="{{ chosen.id }}">

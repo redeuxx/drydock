@@ -173,14 +173,20 @@ class Host(Base):
     alert_target_id: Mapped[int | None] = mapped_column(Integer, default=None)
 
 
+# The choices the settings page offers; 0: never by itself, only when asked.
+UPDATE_CHECK_HOURS = (0, 1, 3, 6, 12, 24)
+
+
 class Installation(Base):
-    """A single row made by migration 0002: the ID that labels this installation's helpers."""
+    """A single row made by migration 0002: the ID that labels this installation's helpers,
+    and the settings of the whole installation (the settings page)."""
 
     __tablename__ = "installation"
     __table_args__ = (CheckConstraint("id = 1", name="ck_installation_single_row"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     instance_id: Mapped[str] = mapped_column(String(32))
+    update_check_hours: Mapped[int] = mapped_column(Integer, default=6, server_default="6")
 
 
 # BACKUPS

@@ -68,6 +68,7 @@
           {% if auth.user.role >= Role.superadmin %}<li><a href="/users"{% if current.startswith("/users") %} class="menu-active" aria-current="page"{% endif %}>Users</a></li>{% endif %}
           {% if auth.user.role >= Role.admin %}
           <li><a href="/notifications"{% if current.startswith("/notifications") %} class="menu-active" aria-current="page"{% endif %}>Notification targets</a></li>
+          <li><a href="/settings"{% if current == "/settings" %} class="menu-active" aria-current="page"{% endif %}>Settings</a></li>
           <li><a href="/audit"{% if current.startswith("/audit") %} class="menu-active" aria-current="page"{% endif %}>Audit log</a></li>
           {% endif %}
           <li><a href="/about"{% if current == "/about" %} class="menu-active" aria-current="page"{% endif %}>About</a></li>

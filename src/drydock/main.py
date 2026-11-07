@@ -41,6 +41,7 @@ from drydock.restore import uploads
 from drydock.routes import (
     account,
     activity,
+    admin_settings,
     auth,
     backups,
     containers,
@@ -358,6 +359,7 @@ def create_app(settings: Settings) -> FastAPI:
         logs,
         activity,
         updates,
+        admin_settings,
     )
     for module in routers:
         app.include_router(module.router)

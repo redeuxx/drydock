@@ -8,10 +8,11 @@ that tag names now, and comparing it with the digests its image was pulled as
 image ID, and images built locally (no registry digest). A private registry answers
 "unauthorized" through the daemon's API, which drydock reports as an error.
 
-Hosts are checked every CHECK_EVERY seconds (the first time FIRST_CHECK after start), and
-on demand from the containers page, at most once per MIN_GAP per host. Registries limit
-lookups (Docker Hub counts them), so one lookup answers every container of the same image
-and reference, and is reused for CHECK_EVERY. Results live in memory, like the status.
+Hosts are checked every update_check_hours (the settings page; the first time FIRST_CHECK
+after start; never when 0), and on demand from the containers, stacks and images pages, at
+most once per MIN_GAP per host. Registries limit lookups (Docker Hub counts them), so one
+lookup answers every container of the same image and reference, and is reused until the
+next check is due. Results live in memory, like the status.
 """
 
 import asyncio
@@ -37,11 +38,11 @@ from drydock.engine.capture import distribution_digest
 from drydock.hosts import client
 from drydock.hosts.helper import is_helper
 from drydock.hosts.manager import HostManager, HostUnavailable
-from drydock.models import Host, utcnow
+from drydock.models import Host, Installation, utcnow
 
 log = logging.getLogger("drydock.updates")
 
-CHECK_EVERY = 6 * 3600
+CHECK_EVERY = 6 * 3600  # until the settings are read, and the lookups' reuse when off
 FIRST_CHECK = 120  # seconds after start: not in the way of startup recovery
 MIN_GAP = 60  # seconds between checks of a host asked for from the page
 LOOP_EVERY = 300
@@ -115,10 +116,14 @@ class Cached:
 
 
 def check(
-    api: Any, instance_id: str, cache: dict[tuple[str, str], Cached], now: float
+    api: Any,
+    instance_id: str,
+    cache: dict[tuple[str, str], Cached],
+    now: float,
+    max_age: float = CHECK_EVERY,
 ) -> dict[str, Verdict]:
     """Blocking. Container ID to verdict for every container but this installation's
-    helpers. cache maps (image ID, reference) to a verdict reused for CHECK_EVERY;
+    helpers. cache maps (image ID, reference) to a verdict reused for max_age seconds;
     errors are not kept, and entries no container uses any more are dropped."""
     verdicts: dict[str, Verdict] = {}
     digests: dict[str, list[str]] = {}
@@ -146,7 +151,7 @@ def check(
             key = (image_id, image)
             used.add(key)
             hit = cache.get(key)
-            if hit is not None and now - hit.at < CHECK_EVERY:
+            if hit is not None and now - hit.at < max_age:
                 verdicts[listed["Id"]] = hit.verdict
                 continue
             if image_id not in digests:
@@ -202,6 +207,7 @@ class UpdateChecker:
         self._asked: dict[int, float] = {}  # host: when a page last asked for a check
         self._busy: dict[int, asyncio.Task[HostChecks]] = {}
         self._task: asyncio.Task[None] | None = None
+        self._every = CHECK_EVERY  # seconds between checks; 0: never by itself
 
     @property
     def running(self) -> bool:
@@ -275,7 +281,13 @@ class UpdateChecker:
 
     def _read(self, url: str, cache: dict[tuple[str, str], Cached]) -> dict[str, Verdict]:
         with client.open_client(url, TIMEOUT) as handle:
-            return check(handle.client.api, self._hosts.instance_id, cache, time.monotonic())
+            return check(
+                handle.client.api,
+                self._hosts.instance_id,
+                cache,
+                time.monotonic(),
+                self._every or CHECK_EVERY,
+            )
 
     async def _run(self) -> None:
         await asyncio.sleep(FIRST_CHECK)
@@ -285,10 +297,10 @@ class UpdateChecker:
                 for gone in self._results.keys() - {h.id for h in hosts}:
                     self._results.pop(gone, None)
                     self._caches.pop(gone, None)
-                for host in hosts:
+                for host in hosts if self._every else []:  # 0: only when asked
                     done = self._results.get(host.id)
                     age = (utcnow() - done.checked_at).total_seconds() if done else None
-                    if age is None or age >= CHECK_EVERY or done.error is not None:
+                    if age is None or age >= self._every or done.error is not None:
                         with contextlib.suppress(Exception):
                             await self.check_host(host)
             except Exception:
@@ -296,5 +308,8 @@ class UpdateChecker:
             await asyncio.sleep(LOOP_EVERY)
 
     def _load_hosts(self) -> list[Host]:
+        """The enabled hosts; reads the interval too, so a change applies within a loop."""
         with self._sessions() as db:
+            hours = db.scalar(select(Installation.update_check_hours))
+            self._every = (hours if hours is not None else 6) * 3600
             return list(db.scalars(select(Host).where(Host.enabled).order_by(Host.id)))

@@ -4,7 +4,7 @@ Drydock can update a container to the image its tag names on the registry now: i
 
 ## Finding newer images
 
-See [Newer images](hosts.md#newer-images): drydock checks every 6 hours, and operators can check a host at once from the containers page. A container with a newer image is marked "update" there.
+See [Newer images](hosts.md#newer-images): drydock checks every 6 hours by default (**Settings**), and operators can check a host at once from the containers, stacks or images page. A container with a newer image is marked "update" there.
 
 ## Updating one container
 
