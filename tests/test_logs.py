@@ -201,6 +201,7 @@ async def test_runs_and_container_logs_share_the_logs_menu(admin: Browser) -> No
 
 async def test_containers_stacks_and_images_share_the_docker_menu(admin: Browser) -> None:
     await add_user(admin, "watcher", "viewer")
+    await add_user(admin, "runner", "operator")
     await admin.login("watcher")
     page = (await admin.get("/stacks")).text
     menu = nav_menu(page, "Docker")
@@ -208,6 +209,11 @@ async def test_containers_stacks_and_images_share_the_docker_menu(admin: Browser
     assert 'href="/stacks" class="menu-active" aria-current="page">Stacks<' in menu
     assert '<summary class="menu-active">Docker</summary>' in page
     assert 'href="/stacks"' not in nav_menu(page, "Backups")
+    assert 'href="/updates"' not in menu, "operators and up"
+    await admin.login("runner")
+    page = (await admin.get("/stacks")).text
+    assert 'href="/updates">Updates<' in nav_menu(page, "Docker")
+    assert 'href="/updates"' not in nav_menu(page, "Backups")
 
 
 def pollers(page: str) -> list[str]:
