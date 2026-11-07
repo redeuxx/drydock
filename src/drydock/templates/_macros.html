@@ -124,6 +124,12 @@
 </div>
 {%- endmacro %}
 
+{# Shown while the dialog's request is under way (frontend/app.ts marks the dialog
+   data-busy), or while its form's request is, with hx-indicator naming it. #}
+{% macro busy_note(text="", id=None) -%}
+<p{% if id %} id="{{ id }}"{% endif %} class="busy-note mt-3 text-sm" role="status"><span class="spinner align-middle" aria-hidden="true"></span> Working on it: the page updates when Docker is done.{% if text %} {{ text }}{% endif %}</p>
+{%- endmacro %}
+
 {# Previous and next for a Docker page's rows (routes/containers.py paginate); url ends in
    "page=". Nothing when they fit on one page. #}
 {% macro pager(page, pages, url) -%}

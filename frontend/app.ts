@@ -208,6 +208,31 @@ document.addEventListener("htmx:before:request", (event) => {
   }
 });
 
+// BUSY BUTTONS
+//
+// htmx marks the form that sends a request (or its hx-indicator), not the button that was
+// clicked. A button outside its form (form="...", as the containers table's row actions
+// and confirm dialogs are) then shows nothing while Docker works, which can take a stop
+// timeout or more. Mark the clicked button (its spinner shows, and it cannot be clicked
+// again) and its dialog (its "Working on it" note shows) until the request ends; a swap
+// of #main usually replaces both before that.
+
+document.addEventListener("htmx:before:request", (event) => {
+  const button = event.detail.ctx.request?.submitter;
+  if (!(button instanceof HTMLButtonElement)) return;
+  button.classList.add("htmx-request");
+  button.disabled = true;
+  button.closest("dialog")?.setAttribute("data-busy", "");
+});
+
+document.addEventListener("htmx:finally:request", (event) => {
+  const button = event.detail.ctx.request?.submitter;
+  if (!(button instanceof HTMLButtonElement)) return;
+  button.classList.remove("htmx-request");
+  button.disabled = false;
+  button.closest("dialog")?.removeAttribute("data-busy");
+});
+
 // MENUS
 //
 // The header's dropdowns are <details data-menu> elements: they open without script, and

@@ -39,6 +39,25 @@
   .htmx-request.spinner {
     @apply inline-block;
   }
+
+  /* "Working on it": while its dialog's request is under way (data-busy, frontend/app.ts)
+     or its form names it as the hx-indicator. */
+  .busy-note {
+    @apply hidden;
+  }
+
+  dialog[data-busy] .busy-note,
+  .busy-note.htmx-request {
+    @apply block;
+  }
+
+  span.busy-note.htmx-request {
+    @apply inline;
+  }
+
+  .busy-note .spinner {
+    @apply inline-block;
+  }
 }
 
 /* daisyUI's dark neutral is near black, so a soft neutral badge drew dark text on a dark

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import check_updates, host_picker, pager with context %}
+{% from "_macros.html" import busy_note, check_updates, host_picker, pager with context %}
 {% block title %}Images{% endblock %}
 {% block content %}
 <h1 class="mb-1 text-3xl font-bold">Images</h1>
@@ -40,10 +40,11 @@
     <h2 id="prune-title" class="mb-2 text-lg font-bold break-all">Prune images on {{ where }}</h2>
     <p class="mb-2 text-sm break-words"><span class="font-semibold">Untagged</span> removes the untagged images no container uses, as pulls and builds leave them behind.</p>
     <p class="text-sm break-words"><span class="font-semibold">Every unused</span> also removes tagged images that no container, running or stopped, uses. Images from a registry are pulled again when needed, drydock's helper image among them; images built on the host or loaded from an archive (a restore loads them) are gone for good. This cannot be undone. Refused while a backup, restore or update runs.</p>
+    {{ busy_note("A prune can take minutes on a host with many images.", "prune-busy") }}
     <div class="modal-action">
       <form method="dialog"><button class="btn btn-sm">Cancel</button></form>
       {# A prune can take minutes (PRUNE_TIMEOUT per host): longer than htmx's 60 s default. #}
-      <form method="post" action="/images/prune" hx-post="/images/prune" hx-config='{"timeout": 620000}' hx-nonce="{{ csp_nonce }}" class="flex gap-2">
+      <form method="post" action="/images/prune" hx-post="/images/prune" hx-config='{"timeout": 620000}' hx-indicator="#prune-busy" hx-nonce="{{ csp_nonce }}" class="flex gap-2">
         <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
         <input type="hidden" name="host" value="{{ host_value or 'all' }}">
         <button type="submit" name="mode" value="dangling" class="btn btn-sm btn-warning"><span class="spinner" aria-hidden="true"></span>Untagged</button>
@@ -74,6 +75,7 @@
             <div class="modal-box">
               <h2 id="img-{{ loop.index }}-title" class="mb-2 text-lg font-bold break-all">Remove {{ label }}{% if not chosen %} from {{ i.host.name }}{% endif %}</h2>
               <p class="text-sm break-words">Remove this image{% if i.tags|length > 1 %} and all {{ i.tags|length }} of its tags{% endif %}? Pulling it again brings it back.</p>
+              {{ busy_note() }}
               <div class="modal-action">
                 <form method="dialog"><button class="btn btn-sm">Cancel</button></form>
                 <form method="post" action="/images/remove" hx-post="/images/remove" hx-nonce="{{ csp_nonce }}">
@@ -82,7 +84,7 @@
                   <input type="hidden" name="view" value="{{ host_value or 'all' }}">
                   <input type="hidden" name="page" value="{{ page }}">
                   <input type="hidden" name="image" value="{{ i.id }}">
-                  <button type="submit" class="btn btn-sm btn-warning">Remove</button>
+                  <button type="submit" class="btn btn-sm btn-warning"><span class="spinner" aria-hidden="true"></span>Remove</button>
                 </form>
               </div>
             </div>

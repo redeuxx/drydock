@@ -1,6 +1,6 @@
 {% from "status/_host_bar.html" import host_bar %}
 {% from "_spark.html" import sparkline %}
-{% from "_macros.html" import about_button, about_note, pager, unread_hosts with context %}
+{% from "_macros.html" import about_button, about_note, busy_note, pager, unread_hosts with context %}
 {# One host's containers, or every enabled host's, from the status collector's cache
    (routes/containers.py), a page at a time. The
    region polls itself every 10 s with the toolbar's fields (data-poller, frontend/app.ts,
@@ -37,16 +37,17 @@
   <div class="modal-box">
     <h2 id="{{ id }}-title" class="mb-2 text-lg font-bold">{{ title }}</h2>
     <p class="text-sm break-words">{{ text }}</p>
+    {{ busy_note("Stopping waits for each container's stop timeout (10 seconds unless it sets its own).") }}
     <div class="modal-action">
       <form method="dialog"><button class="btn btn-sm">Cancel</button></form>
-      <button type="submit" form="container-actions" name="action" value="{{ value }}" class="btn btn-sm btn-warning">{{ title }}</button>
+      <button type="submit" form="container-actions" name="action" value="{{ value }}" class="btn btn-sm btn-warning"><span class="spinner" aria-hidden="true"></span>{{ title }}</button>
     </div>
   </div>
   <form method="dialog" class="modal-backdrop"><button>Close</button></form>
 </dialog>
 {%- endmacro %}
 {% macro act(r, verb, label) -%}
-<button type="submit" form="container-actions" name="action" value="{{ verb }}:{{ r.host.id }}:{{ r.c.id }}" class="btn btn-ghost btn-xs">{{ label }}<span class="sr-only"> {{ r.c.name }}</span></button>
+<button type="submit" form="container-actions" name="action" value="{{ verb }}:{{ r.host.id }}:{{ r.c.id }}" class="btn btn-ghost btn-xs"><span class="spinner" aria-hidden="true"></span>{{ label }}<span class="sr-only"> {{ r.c.name }}</span></button>
 {%- endmacro %}
 {% macro ask(n, c, verb, label) -%}
 <button type="button" class="btn btn-ghost btn-xs" commandfor="ctr-{{ n }}-{{ verb }}" command="show-modal" aria-haspopup="dialog">{{ label }}<span class="sr-only"> {{ c.name }}</span></button>
@@ -90,7 +91,7 @@
 {% if ready %}
 <p class="mb-2 text-sm opacity-70">{% if matched == total %}{{ total }} container{{ "" if total == 1 else "s" }}{% else %}{{ matched }} of {{ total }} containers{% endif %}</p>
 {% if operator %}
-<form id="container-actions" method="post" action="/containers/actions" hx-post="/containers/actions" hx-nonce="{{ csp_nonce }}" class="mb-2 flex flex-wrap items-center gap-1 text-sm">
+<form id="container-actions" method="post" action="/containers/actions" hx-post="/containers/actions" hx-indicator="#containers-busy" hx-nonce="{{ csp_nonce }}" class="mb-2 flex flex-wrap items-center gap-1 text-sm">
   <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
   <input type="hidden" name="host" value="{{ host_value }}">
   <input type="hidden" name="sort" value="{{ sort }}">
@@ -100,13 +101,15 @@
   <input type="hidden" name="q" value="{{ q }}">
   <input type="hidden" name="page" value="{{ page }}">
   <span class="mr-1 opacity-70">Selected:</span>
-  <button type="submit" name="action" value="start" class="btn btn-xs">Start</button>
+  <button type="submit" name="action" value="start" class="btn btn-xs"><span class="spinner" aria-hidden="true"></span>Start</button>
   <button type="button" class="btn btn-xs" commandfor="confirm-stop" command="show-modal" aria-haspopup="dialog">Stop</button>
   <button type="button" class="btn btn-xs" commandfor="confirm-restart" command="show-modal" aria-haspopup="dialog">Restart</button>
-  <button type="submit" name="action" value="pause" class="btn btn-xs">Pause</button>
-  <button type="submit" name="action" value="unpause" class="btn btn-xs">Unpause</button>
-  <button type="submit" name="action" value="acknowledge" class="btn btn-xs" title="Exited, unhealthy containers stop counting as unhealthy until they start again">Acknowledge</button>
+  <button type="submit" name="action" value="pause" class="btn btn-xs"><span class="spinner" aria-hidden="true"></span>Pause</button>
+  <button type="submit" name="action" value="unpause" class="btn btn-xs"><span class="spinner" aria-hidden="true"></span>Unpause</button>
+  <button type="submit" name="action" value="acknowledge" class="btn btn-xs" title="Exited, unhealthy containers stop counting as unhealthy until they start again"><span class="spinner" aria-hidden="true"></span>Acknowledge</button>
   {% if admin %}<button type="button" class="btn btn-xs" commandfor="confirm-remove" command="show-modal" aria-haspopup="dialog">Remove</button>{% endif %}
+  {# The form's own requests mark this, not the form, so only the clicked button spins. #}
+  <span id="containers-busy" class="busy-note ml-1 text-sm" role="status"><span class="spinner align-middle" aria-hidden="true"></span> Working on it: the table updates when Docker is done.</span>
 </form>
 {# Asks the registries now (routes/containers.py check_updates); otherwise drydock checks
    as often as the settings page says. One host at a time. #}
@@ -119,7 +122,7 @@
   <input type="hidden" name="status" value="{{ status }}">
   <input type="hidden" name="stack" value="{{ stack }}">
   <input type="hidden" name="q" value="{{ q }}">
-  <button type="submit" class="btn btn-xs">Check for updates</button>
+  <button type="submit" class="btn btn-xs"><span class="spinner" aria-hidden="true"></span>Check for updates</button>
   <span class="opacity-70">{% if checks %}{{ checks.count("update", snap.containers|map(attribute="id")) }} with a newer image, checked {{ checks.checked_at|ago }}{% if checks.error %} ({{ checks.error }}){% endif %}{% else %}Not checked yet{% endif %}</span>
 </form>
 {% endif %}
@@ -139,7 +142,7 @@
         <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
         <input type="hidden" name="host" value="{{ chosen.id }}">
         <input type="hidden" name="stack" value="{{ stack }}">
-        <button type="submit" class="btn btn-sm btn-warning">Update stack</button>
+        <button type="submit" class="btn btn-sm btn-warning"><span class="spinner" aria-hidden="true"></span>Update stack</button>
       </form>
     </div>
   </div>
@@ -290,7 +293,7 @@
         <input type="hidden" name="host" value="{{ r.host.id }}">
         <input type="hidden" name="view" value="{{ host_value or 'all' }}">
         <input type="hidden" name="container" value="{{ c.id }}">
-        <button type="submit" class="btn btn-sm btn-warning">Update</button>
+        <button type="submit" class="btn btn-sm btn-warning"><span class="spinner" aria-hidden="true"></span>Update</button>
       </form>
     </div>
   </div>

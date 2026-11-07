@@ -1081,10 +1081,11 @@ async def test_actions_refuse_bad_input_before_calling_docker(admin: Browser, mo
 async def test_remove_needs_an_admin_with_a_recent_password(admin: Browser, monkeypatch) -> None:
     _, host_id = await a_host_with_containers(admin, monkeypatch)
     remove = {"host": str(host_id), "action": f"remove:{'a' * 64}"}
-    assert (
-        f'value="remove:{host_id}:' + "a" * 64
-        in (await admin.get(f"/containers?host={host_id}")).text
-    )
+    page = (await admin.get(f"/containers?host={host_id}")).text
+    assert f'value="remove:{host_id}:' + "a" * 64 in page
+    # While Docker works, the clicked button spins and the dialog says so (frontend/app.ts).
+    assert 'hx-indicator="#containers-busy"' in page and 'id="containers-busy"' in page
+    assert page.count('class="busy-note') >= 2, "the toolbar's and each confirm dialog's"
     await add_user(admin, "runner", "operator")
     admin.sql("UPDATE sessions SET reauth_at = NULL")
     stale = await admin.post("/containers/actions", remove)

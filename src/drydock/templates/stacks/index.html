@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import about_button, about_note, check_updates, host_picker, pager, unread_hosts with context %}
+{% from "_macros.html" import about_button, about_note, busy_note, check_updates, host_picker, pager, unread_hosts with context %}
 {% block title %}Stacks{% endblock %}
 {% block content %}
 <h1 class="mb-1 text-3xl font-bold">Stacks</h1>
@@ -17,7 +17,7 @@
   <input type="hidden" name="page" value="{{ page }}">
   <input type="hidden" name="stack" value="{{ s.name }}">
   {% if verb %}<input type="hidden" name="action" value="{{ verb }}">{% endif %}
-  <button type="submit" class="{{ cls }}">{{ label }}<span class="sr-only"> {{ s.name }}</span></button>
+  <button type="submit" class="{{ cls }}"><span class="spinner" aria-hidden="true"></span>{{ label }}<span class="sr-only"> {{ s.name }}</span></button>
 </form>
 {%- endmacro %}
 {% macro ask(n, s, url, verb, label, text) -%}
@@ -26,6 +26,7 @@
   <div class="modal-box">
     <h2 id="stack-{{ n }}-{{ label|lower }}-title" class="mb-2 text-lg font-bold break-all">{{ label }} {{ s.name }}</h2>
     <p class="text-sm break-words">{{ text }}</p>
+    {{ busy_note() }}
     <div class="modal-action">
       <form method="dialog"><button class="btn btn-sm">Cancel</button></form>
       {{ stack_form(s, url, verb, label) }}
@@ -54,6 +55,7 @@
         <option value="{{ s.main }}">{{ s.main }} (found by drydock)</option>
         {% for service in s.services if service != s.main %}<option value="{{ service }}">{{ service }}</option>{% endfor %}
       </select>
+      {{ busy_note() }}
       <div class="modal-action">
         <button type="button" class="btn btn-sm" commandfor="stack-{{ n }}-switch" command="close">Cancel</button>
         <button type="submit" class="btn btn-sm btn-warning"><span class="spinner" aria-hidden="true"></span>Switch tag</button>
