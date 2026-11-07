@@ -103,7 +103,7 @@ EXPECTED_MIN_ROLE = [
     ({"POST"}, re.compile(r"^/containers/update-stack$"), Role.operator),
     ({"POST"}, re.compile(r"^/stacks/actions$"), Role.operator),
     ({"POST"}, re.compile(r"^/(stacks|images)/check-updates$"), Role.operator),
-    ({"POST"}, re.compile(r"^/images/remove$"), Role.admin),
+    ({"POST"}, re.compile(r"^/images/(remove|prune)$"), Role.admin),
     ({"GET"}, re.compile(r"^/containers/[^/]+/[^/]+/inspect$"), Role.admin),
     ({"GET"}, re.compile(r"^/logs"), Role.admin),
     ({"POST"}, re.compile(r"^/activity/clear$"), Role.admin),
@@ -135,6 +135,7 @@ INVENTORY = {
     ("POST", "/images/check-updates"),
     ("GET", "/images"),
     ("POST", "/images/remove"),
+    ("POST", "/images/prune"),
     ("POST", "/containers/actions"),
     ("POST", "/containers/check-updates"),
     ("POST", "/containers/update"),
@@ -715,6 +716,8 @@ AUDITED_SUCCESS = [
     ("/stacks/actions", {"host": "{host_id}", "stack": "app", "action": "stop"}, "stack.stop", 303),
     # Docker's side faked (images.remove_image).
     ("/images/remove", {"host": "{host_id}", "image": "sha256:" + "b" * 64}, "image.remove", 303),
+    # Docker's side faked (images.prune_host).
+    ("/images/prune", {"host": "{host_id}", "mode": "dangling"}, "image.prune", 303),
     (
         "/storage",
         {"name": "backups", "path": "{storage_root}", "enabled": "1"},
@@ -944,6 +947,7 @@ async def test_every_unsafe_route_audits_its_success(fresh: Browser, monkeypatch
     monkeypatch.setattr(
         images_routes, "remove_image", lambda request, host, image: ("busybox:1.37", None)
     )
+    monkeypatch.setattr(images_routes, "prune_host", lambda request, host, mode: (2, 10, None))
 
     async def nothing_newer(host) -> HostChecks:
         return HostChecks(utcnow())

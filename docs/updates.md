@@ -14,7 +14,7 @@ Operators click **Update** on that container's row (it asks first). This starts 
 2. The tag moves to the new image. The container is stopped with its own stop timeout, its restart policy is turned off for the moment, and it is renamed `<name>-drydock-old`.
 3. A new container with the original's name and full configuration (command, environment, mounts, networks and addresses, ports, labels, restart policy) is created from the tag and started, if the original was running.
 4. Drydock checks the new container. One with a healthcheck must become healthy within the time its own healthcheck allows (its start period, then its retries; at least 2 minutes, at most 15); one without must keep running, without restarting, for 15 seconds.
-5. If it passes, the old container is removed. Its image stays on the host until you prune it.
+5. If it passes, the old container is removed. Its image stays on the host until you prune it (**Prune images** on the Images page).
 
 If anything fails, or the check does not pass, everything is put back: the new container is removed, the old one gets its name, restart policy and state back, and the tag names the old image again. The run fails and its log says why. If drydock itself stops during an update, it puts things back the same way when it starts again.
 

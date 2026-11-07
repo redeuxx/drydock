@@ -17,7 +17,7 @@ from drydock.hosts import client, status
 from drydock.hosts.helper import helper_labels
 from drydock.hosts.manager import HostUnavailable
 from drydock.hosts.status import Reading, Sample, StatusCollector
-from drydock.models import Host, Job, JobTarget, StorageTarget, UpdatePolicy, UserSession
+from drydock.models import Host, Job, JobTarget, Run, StorageTarget, UpdatePolicy, UserSession
 from drydock.routes import containers
 from drydock.routes import images as images_routes
 from drydock.updates.check import HostChecks, Verdict, followed_tag
@@ -1488,6 +1488,79 @@ async def test_every_hosts_images(admin: Browser, monkeypatch) -> None:
     assert "vega</span>: cannot read the images: Cannot reach the Docker daemon." in page
     assert f'name="host" value="{rigel}"' in page and 'name="view" value="all"' in page
     assert "Check for updates" not in page
+
+
+async def test_prune_images_on_one_host_or_every_host(admin: Browser, monkeypatch) -> None:
+    await cached(admin, monkeypatch)
+    rigel, vega = two_hosts(admin)
+    add_host(admin, name="off", enabled=False)
+    monkeypatch.setattr(images_routes, "read_images", lambda request, host, behind: ([], None))
+    pruned = []
+
+    def prune_host(request, host, mode):
+        pruned.append((host.name, mode))
+        return (3, 2048, None) if host.name == "rigel" else (0, 0, "Docker is pruning already.")
+
+    monkeypatch.setattr(images_routes, "prune_host", prune_host)
+    assert 'commandfor="prune"' in (await admin.get("/images")).text
+    htmx = {"HX-Request": "true"}
+    for data, code in [
+        ({"host": str(rigel), "mode": "everything"}, 422),
+        ({"host": "999999", "mode": "dangling"}, 404),
+    ]:
+        assert (await admin.post("/images/prune", data, headers=htmx)).status_code == code
+    one = await admin.post("/images/prune", {"host": str(rigel), "mode": "unused"}, headers=htmx)
+    assert "rigel: 3 unused images removed, 2.0 KiB reclaimed." in one.text, one.text
+    assert one.headers["HX-Replace-Url"] == f"/images?host={rigel}"
+    every = await admin.post("/images/prune", {"host": "all", "mode": "dangling"}, headers=htmx)
+    assert pruned == [("rigel", "unused"), ("rigel", "dangling"), ("vega", "dangling")]
+    assert "vega: Docker is pruning already." in every.text, "disabled hosts are left out"
+    assert every.headers["HX-Replace-Url"] == "/images"
+    assert admin.sql(
+        "SELECT target, outcome FROM audit_events WHERE action = 'image.prune' ORDER BY id"
+    ) == [(f"host:{rigel}", "success"), (f"host:{rigel}", "success"), (f"host:{vega}", "failure")]
+
+    with admin.app.state.sessionmaker() as db, db.begin():
+        db.add(Run(kind="restore", status="running"))
+    busy = await admin.post("/images/prune", {"host": "all", "mode": "unused"}, headers=htmx)
+    assert "A backup, restore or update is running." in busy.text and len(pruned) == 3
+    admin.sql("UPDATE hosts SET enabled = 0")
+    assert 'commandfor="prune"' not in (await admin.get("/images")).text
+    nothing = await admin.post("/images/prune", {"host": "all", "mode": "unused"}, headers=htmx)
+    assert "No enabled host to prune." in nothing.text and len(pruned) == 3
+
+    await add_user(admin, "runner", "operator")
+    admin.sql("UPDATE sessions SET reauth_at = NULL")
+    stale = await admin.post("/images/prune", {"host": "all", "mode": "unused"})
+    assert stale.status_code == 403 and "Re-enter your password" in stale.text
+    await admin.login("runner")
+    assert 'commandfor="prune"' not in (await admin.get("/images")).text
+    assert (await admin.post("/images/prune", {"host": "all", "mode": "unused"})).status_code == 403
+
+
+def test_prune_host_counts_what_docker_removed(monkeypatch) -> None:
+    asked = []
+    left = ["sha256:a", "sha256:b", "sha256:c"]
+
+    class Api:
+        def images(self) -> list[dict]:
+            return [{"Id": i} for i in left]
+
+        def prune_images(self, filters: dict) -> dict:
+            asked.append(filters)
+            del left[1:]
+            layers = [{"Deleted": "sha256:b"}, {"Deleted": "sha256:c"}, {"Deleted": "sha256:d"}]
+            return {"ImagesDeleted": [{"Untagged": "x:1"}, *layers], "SpaceReclaimed": 4096}
+
+    class Handle:
+        client = type("C", (), {"api": Api()})
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(images_routes, "open_host", lambda request, host, timeout: Handle())
+    assert images_routes.prune_host(None, None, "unused") == (2, 4096, None)  # type: ignore[arg-type]
+    assert asked == [{"dangling": False}]
 
 
 def test_an_image_used_by_a_container_with_a_newer_image_is_marked(monkeypatch) -> None:

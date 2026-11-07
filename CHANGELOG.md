@@ -21,6 +21,7 @@ Notable changes to drydock. Versions follow [semantic versioning](https://semver
 - Starting an update of a container or a stack no longer fails with HTTP 500 ("database is locked") after 5 seconds.
 - The Containers, Stacks and Images pages show every enabled host at once (All hosts, now the default in the host picker), with a Host column, and show 100 rows a page. Selected containers on several hosts are acted on together.
 - The containers and stacks pages show the tag each container follows (`latest`, `v1.0`), or that it is pinned by digest.
+- Admins prune a host's images, or every host's, from the Images page: untagged ones only, or every image no container uses. Refused while a run is active.
 - The containers table gives every column a width and scrolls sideways when they do not fit, so headers no longer overlap and the actions column is never cut off.
 
 ## 0.3.0 (2026-11-05)

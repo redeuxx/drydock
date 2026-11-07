@@ -7,8 +7,14 @@ goes in one click; the last tag takes the image with it. One without tags is rem
 ID. An image any container uses, stopped ones included, is refused before anything is
 untagged; nothing is ever forced.
 
+Admins also prune a host's images, or every enabled host's: the untagged ones no
+container uses (`docker image prune`), or every image no container uses, stopped ones
+included (`docker image prune -a`). A prune is refused while any run is active: an update
+or restore may have pulled an image that no container uses yet.
+
 ponytail: no lock against a restore that loads the same image meanwhile; the daemon
 refuses to remove an image a new container already uses. Add a dispatcher key if needed.
+A run that starts while a prune is under way is not waited for either.
 """
 
 import re
@@ -27,14 +33,15 @@ from sqlalchemy.orm import Session
 
 from drydock import audit
 from drydock.db import get_db
-from drydock.models import Host
+from drydock.jobs.dispatcher import ACTIVE_STATUSES
+from drydock.models import Host, Run
 from drydock.routes import containers as container_routes
 from drydock.routes.auth import client_ip
 from drydock.routes.containers import ACTION_ERRORS
 from drydock.routes.hosts import DOCKER_ERRORS, open_host, release
 from drydock.security.rbac import Role, require_recent_auth, require_role
 from drydock.security.sessions import Auth
-from drydock.templating import is_htmx, render, see_other
+from drydock.templating import filesize, is_htmx, render, see_other
 
 router = APIRouter()
 
@@ -44,6 +51,12 @@ Admin = Annotated[Auth, Depends(require_role(Role.admin))]
 
 IMAGE_ID_RE = re.compile(r"sha256:[0-9a-f]{64}")
 IMAGE_TIMEOUT = 30
+PRUNE_TIMEOUT = 300  # a daemon with many images takes a while
+# Mode: (what the outcome calls the images, Docker's prune filters).
+PRUNES: dict[str, tuple[str, dict[str, Any]]] = {
+    "dangling": ("untagged", {"dangling": True}),
+    "unused": ("unused", {"dangling": False}),
+}
 READERS = 8  # hosts read at the same time on every host's page
 NO_TAG = "<none>:<none>"
 
@@ -131,6 +144,30 @@ def remove_image(request: Request, host: Host, image_id: str) -> tuple[str, str 
         return image_id[:19], image_error(exc)
     finally:
         handle.close()
+
+
+def prune_host(request: Request, host: Host, mode: str) -> tuple[int, int, str | None]:
+    """Blocking. (images removed, bytes reclaimed, an error that is safe to show or None)."""
+    try:
+        handle = open_host(request, host, PRUNE_TIMEOUT)
+    except DOCKER_ERRORS as exc:
+        return 0, 0, str(exc)
+    try:
+        api = handle.client.api
+        # Docker lists layers among what it deleted: count the images instead.
+        before = {str(i.get("Id")) for i in api.images()}
+        found = api.prune_images(filters=PRUNES[mode][1])
+        after = {str(i.get("Id")) for i in api.images()}
+    except docker.errors.APIError as exc:
+        if exc.status_code == 409:
+            return 0, 0, "Docker is pruning already."
+        return 0, 0, image_error(exc)
+    except ACTION_ERRORS as exc:
+        return 0, 0, image_error(exc)
+    finally:
+        handle.close()
+    reclaimed = found.get("SpaceReclaimed") if isinstance(found, dict) else None
+    return len(before - after), reclaimed if isinstance(reclaimed, int) else 0, None
 
 
 def page(
@@ -262,5 +299,68 @@ def remove(
     where = "" if back.isdigit() else f" on {target_host.name}"
     notice = (f"{label}{where}: {error or 'removed'}", not error)
     response = page(request, auth, db, back, shown_page, notice=notice)
+    response.headers["HX-Replace-Url"] = url
+    return response
+
+
+@router.post("/images/prune")
+def prune(
+    request: Request,
+    auth: Admin,
+    host: Annotated[str, Form()],
+    mode: Annotated[str, Form()],
+    db: Session = Depends(get_db),
+) -> Response:
+    """Prunes the host's images, or every enabled host's for host "all" (mode: PRUNES).
+    Audited per host, pruned or not, once the request itself is valid."""
+    require_recent_auth(auth)
+    if mode not in PRUNES:
+        raise HTTPException(status_code=422)
+    hosts = list(db.scalars(select(Host).order_by(Host.name)))
+    chosen = container_routes.pick_host(hosts, host)
+    if chosen is None and host != "all":
+        raise HTTPException(status_code=404)
+    targets = container_routes.shown_hosts(hosts, chosen)
+    busy = db.scalar(select(Run.id).where(Run.status.in_(ACTIVE_STATUSES)).limit(1))
+    for h in hosts:
+        release(db, h)
+
+    def one(h: Host) -> tuple[int, int, str | None]:
+        if not h.enabled:
+            return 0, 0, "The host is disabled."
+        if busy is not None:
+            return 0, 0, "A backup, restore or update is running. Prune when it ends."
+        return prune_host(request, h, mode)
+
+    # ponytail: the request waits for every host's prune, READERS at a time.
+    with ThreadPoolExecutor(max_workers=READERS) as pool:
+        results = list(pool.map(one, targets))
+    lines = []
+    for h, (removed, reclaimed, error) in zip(targets, results, strict=True):
+        audit.record(
+            db,
+            actor=auth.user.username,
+            action="image.prune",
+            target=f"host:{h.id}",
+            outcome="success" if error is None else "failure",
+            ip=client_ip(request),
+            details={"host": h.name, "mode": mode}
+            | ({"error": error} if error else {"removed": removed, "reclaimed": reclaimed}),
+        )
+        noun = PRUNES[mode][0]
+        lines.append(
+            f"{h.name}: {error}"
+            if error
+            else f"{h.name}: {removed} {noun} image{'' if removed == 1 else 's'} removed, "
+            f"{filesize(reclaimed) or '0 bytes'} reclaimed."
+        )
+    db.commit()
+    back = "all" if chosen is None else str(chosen.id)
+    url = "/images" if chosen is None else f"/images?host={chosen.id}"
+    if not is_htmx(request):
+        return see_other(request, url)
+    failed = any(error for _, _, error in results)
+    notice = (" ".join(lines), not failed) if lines else ("No enabled host to prune.", False)
+    response = page(request, auth, db, back, notice=notice)
     response.headers["HX-Replace-Url"] = url
     return response

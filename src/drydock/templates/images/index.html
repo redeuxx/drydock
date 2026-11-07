@@ -27,7 +27,32 @@
 </div>
 {% endif %}
 {% if operator and chosen %}{{ check_updates("/images/check-updates", checks, newer, "image") }}{% endif %}
-<p class="mb-2 text-sm opacity-70">{{ count }} image{{ "" if count == 1 else "s" }}, {{ size|filesize or "0 bytes" }}</p>
+<div class="mb-2 flex flex-wrap items-center gap-2 text-sm">
+  <span class="opacity-70">{{ count }} image{{ "" if count == 1 else "s" }}, {{ size|filesize or "0 bytes" }}</span>
+  {% set prunable = chosen.enabled if chosen else hosts|selectattr("enabled")|list|length > 0 %}
+  {% if admin and prunable %}<button type="button" class="btn btn-xs" commandfor="prune" command="show-modal" aria-haspopup="dialog">Prune images</button>{% endif %}
+</div>
+{% if admin and prunable %}
+{% set where = chosen.name if chosen else "every enabled host" %}
+<dialog id="prune" class="modal" aria-labelledby="prune-title">
+  <div class="modal-box">
+    <h2 id="prune-title" class="mb-2 text-lg font-bold break-all">Prune images on {{ where }}</h2>
+    <p class="mb-2 text-sm break-words"><span class="font-semibold">Untagged</span> removes the untagged images no container uses, as pulls and builds leave them behind.</p>
+    <p class="text-sm break-words"><span class="font-semibold">Every unused</span> also removes tagged images that no container, running or stopped, uses. Images from a registry are pulled again when needed, drydock's helper image among them; images built on the host or loaded from an archive (a restore loads them) are gone for good. This cannot be undone. Refused while a backup, restore or update runs.</p>
+    <div class="modal-action">
+      <form method="dialog"><button class="btn btn-sm">Cancel</button></form>
+      {# A prune can take minutes (PRUNE_TIMEOUT per host): longer than htmx's 60 s default. #}
+      <form method="post" action="/images/prune" hx-post="/images/prune" hx-config='{"timeout": 620000}' hx-nonce="{{ csp_nonce }}" class="flex gap-2">
+        <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+        <input type="hidden" name="host" value="{{ host_value or 'all' }}">
+        <button type="submit" name="mode" value="dangling" class="btn btn-sm btn-warning"><span class="spinner" aria-hidden="true"></span>Untagged</button>
+        <button type="submit" name="mode" value="unused" class="btn btn-sm btn-error"><span class="spinner" aria-hidden="true"></span>Every unused</button>
+      </form>
+    </div>
+  </div>
+  <form method="dialog" class="modal-backdrop"><button>Close</button></form>
+</dialog>
+{% endif %}
 <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
   <table class="table table-zebra table-sm">
     <thead><tr><th scope="col">Tags</th>{% if not chosen %}<th scope="col">Host</th>{% endif %}<th scope="col" class="max-md:hidden">ID</th><th scope="col">Size</th><th scope="col" class="max-sm:hidden">Created</th><th scope="col">Used by</th>{% if admin %}<th scope="col"><span class="sr-only">Actions</span></th>{% endif %}</tr></thead>
