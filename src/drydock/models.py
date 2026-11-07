@@ -368,6 +368,10 @@ class UpdatePolicy(Base):
         ForeignKey("notification_targets.id", ondelete="SET NULL"), default=None
     )
     notify_success: Mapped[bool] = mapped_column(default=False)  # failures always tell
+    # Switch to this tag (updates/switch.py); None: follow the tag it has.
+    tag: Mapped[str | None] = mapped_column(String(128), default=None)
+    # A stack's: the service the tag is for; None: the one updates/switch.py finds.
+    main_service: Mapped[str | None] = mapped_column(String(255), default=None)
     enabled: Mapped[bool] = mapped_column(default=True)
     last_fired_at: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)

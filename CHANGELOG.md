@@ -4,7 +4,7 @@ Notable changes to drydock. Versions follow [semantic versioning](https://semver
 
 ## Unreleased
 
-**Upgrading:** this version adds a column to the users table, a table of health acknowledgements and a setting to the installation table, so copy the `drydock-data` volume first ([Upgrading](docs/operations.md#upgrading)).
+**Upgrading:** this version adds a column to the users table, a table of health acknowledgements, a setting to the installation table and two columns to the update policies table, so copy the `drydock-data` volume first ([Upgrading](docs/operations.md#upgrading)).
 
 - Stacks page under Docker: each Compose stack on a host with its running containers, newer images and backup jobs. Operators update, start, stop and restart a whole stack; admins remove one (containers only, volumes and networks kept). It lists each stack's update policies, and admins schedule automatic updates of a stack from there.
 - Images page under Docker: a host's images with the containers that use each one. Admins remove unused images.
@@ -21,6 +21,7 @@ Notable changes to drydock. Versions follow [semantic versioning](https://semver
 - Starting an update of a container or a stack no longer fails with HTTP 500 ("database is locked") after 5 seconds.
 - The Containers, Stacks and Images pages show every enabled host at once (All hosts, now the default in the host picker), with a Host column, and show 100 rows a page. Selected containers on several hosts are acted on together.
 - The containers and stacks pages show the tag each container follows (`latest`, `v1.0`), or that it is pinned by digest.
+- Switch tag: operators move a container, or a whole stack, to another tag of its image (say `1.28`, or `latest`), as an update that is put back if the new one fails. A stack switches its main service (the one no other service depends on, preferring one with ports) and the services from the same publisher on the same tag; databases and caches keep theirs. Update policies can name a tag to follow and a stack's main service.
 - Admins prune a host's images, or every host's, from the Images page: untagged ones only, or every image no container uses. Refused while a run is active.
 - The containers table gives every column a width and scrolls sideways when they do not fit, so headers no longer overlap and the actions column is never cut off.
 

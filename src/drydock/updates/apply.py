@@ -16,6 +16,10 @@ originals get their names, restart policies and state back, and the tags name th
 images again. After the commit the originals are removed; their images stay (a later
 `docker image prune` removes them).
 
+A switch (updates/switch.py) is the same update to another tag of the container's
+repository: the new tag is pulled by digest and the container is made from it, even when
+it names the image the old tag did.
+
 Not updated, and said so: containers pinned by digest or created from an image ID, images
 with no registry digest (built on the host), drydock's own containers and helpers, and
 containers whose image is already the newest. Compose files are never edited, and the
@@ -48,6 +52,7 @@ from drydock.restore.plan import (
     RestorePlan,
     container_body,
 )
+from drydock.updates import switch as tag_switch
 from drydock.updates.check import lookup_error, reference
 
 HEALTH_WAIT = stacks.HEALTH_WAIT  # seconds a container with a healthcheck may take, at least
@@ -208,6 +213,7 @@ def plan_update(
     healthy_first: Mapping[str, Iterable[str]] | None = None,
     *,
     stack: bool = False,
+    switch: Mapping[str, str] | None = None,
 ) -> Planned:
     """Blocking. The plan that updates the containers that have a newer image, in the
     order given (a stack's: dependencies first). healthy_first maps a container ID to the
@@ -222,7 +228,11 @@ def plan_update(
 
     One container (stack False) that cannot be updated raises UpdateError. In a stack,
     drydock's own containers, helpers and members whose registry cannot be asked are left
-    alone with a note; the rest of the stack is still updated."""
+    alone with a note; the rest of the stack is still updated.
+
+    switch maps a container ID to the repository:tag it moves to (updates/switch.py). A
+    switch that cannot be made (the registry does not know the tag) raises UpdateError,
+    in a stack too: nothing moves then."""
     waits = healthy_first or {}
     planned: dict[str, str] = {}  # container ID: name, of those this plan makes again
     images: list[ImageStep] = []
@@ -262,8 +272,20 @@ def plan_update(
             n for cid, n in planned.items() if cid in refs or cid[:12] in refs or n in refs
         )
         ref = reference(str((info.get("Config") or {}).get("Image") or ""))
+        moving_to = (switch or {}).get(info["Id"])
+        moving_to = moving_to if moving_to != ref else None
         latest = None
-        if ref is None:
+        if moving_to is not None:
+            try:
+                latest = distribution_digest(api, moving_to)
+            except (docker.errors.DockerException, requests.RequestException) as exc:
+                raise UpdateError(f"{name}: {moving_to}: {lookup_error(exc)}") from None
+            except ValueError, KeyError, TypeError:
+                raise UpdateError(f"{name}: the registry answer was not understood.") from None
+            why = ""
+            notes.append(f"{name}: switching from {ref or 'its image'} to {moving_to}.")
+            ref = moving_to
+        elif ref is None:
             why = "pinned by digest or image ID, so not updated."
         else:
             try:
@@ -331,6 +353,8 @@ def plan_update(
             raise UpdateError(f"{name}: {exc}") from None
         if latest is not None:
             body = without_image_defaults(body, old_image)
+        if moving_to is not None:
+            body["Image"] = moving_to
         planned[info["Id"]] = name
         steps.append(
             ContainerStep(
@@ -381,12 +405,67 @@ def plan_update(
     return Planned(plan, tuple(notes), tuple(changes))
 
 
+def plan_containers(
+    api: Any,
+    host_id: int,
+    container_ids: list[str],
+    own: frozenset[str],
+    api_version: str,
+    *,
+    tag: str | None = None,
+) -> Planned:
+    """Blocking. plan_update for the containers; with tag, each switches to it
+    (updates/switch.py). One made from an image ID has no repository: UpdateError."""
+    moves: dict[str, str] = {}
+    for container_id in container_ids if tag is not None else ():
+        try:
+            info = api.inspect_container(container_id)
+        except docker.errors.NotFound:
+            raise UpdateError(f"Container {container_id[:12]} no longer exists.") from None
+        name = str(info.get("Name", "")).lstrip("/")
+        moving_to = tag_switch.switched_ref(str((info.get("Config") or {}).get("Image") or ""), tag)
+        if moving_to is None:
+            raise UpdateError(f"{name}: made from an image ID, it has no repository to follow.")
+        moves[str(info["Id"])] = moving_to
+    return plan_update(api, host_id, container_ids, own, api_version, switch=moves)
+
+
 def plan_stack(
-    api: Any, host_id: int, project: str, instance_id: str, own: frozenset[str], api_version: str
+    api: Any,
+    host_id: int,
+    project: str,
+    instance_id: str,
+    own: frozenset[str],
+    api_version: str,
+    *,
+    tag: str | None = None,
+    main: str | None = None,
 ) -> Planned:
     """Blocking. plan_update for the Compose project's containers on this daemon, found
-    now and put in dependency order."""
+    now and put in dependency order. With tag, the stack's main service (main, or the one
+    updates/switch.py finds) switches to it, and the members that follow it too."""
     members = stack_order(api, project, instance_id)
+    moves: dict[str, str] = {}
+    notes: list[str] = [f"Stack {project}: {', '.join(m.name for m in members)}."]
+    if tag is not None:
+        try:
+            parts = tag_switch.from_inspect(api.inspect_container(m.id) for m in members)
+        except docker.errors.NotFound:
+            raise UpdateError(f"A container of stack {project} went away; try again.") from None
+        if main is not None:
+            chosen = next((p for p in parts if p.service == main), None)
+            if chosen is None:
+                raise UpdateError(f"Stack {project} has no service {main}.")
+        else:
+            chosen = tag_switch.main_service(parts)
+        if chosen is None or tag_switch.repository(chosen.image) is None:
+            raise UpdateError(f"Stack {project}: its main service names no repository.")
+        moves = tag_switch.followers(parts, chosen, tag)
+        names = {m.id: m.name for m in members}
+        notes.append(
+            f"Main service {chosen.service or names[chosen.id]}: "
+            f"{', '.join(names[i] for i in moves)} follow tag {tag}."
+        )
     planned = plan_update(
         api,
         host_id,
@@ -395,9 +474,9 @@ def plan_stack(
         api_version,
         {m.id: m.healthy for m in members},
         stack=True,
+        switch=moves,
     )
-    order = f"Stack {project}: {', '.join(m.name for m in members)}."
-    return Planned(planned.plan, (order, *planned.notes), planned.changes)
+    return Planned(planned.plan, (*notes, *planned.notes), planned.changes)
 
 
 def stack_names(api: Any, own: frozenset[str]) -> list[str]:

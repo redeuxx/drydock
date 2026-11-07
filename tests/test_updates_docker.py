@@ -61,19 +61,19 @@ def start_registry(client):
     raise AssertionError("unreachable")
 
 
-def push(api, repository: str, source: str) -> None:
-    """Blocking. Tags source as repository:latest, pushes it (trying again while the
+def push(api, repository: str, source: str, tag: str = "latest") -> None:
+    """Blocking. Tags source as repository:tag, pushes it (trying again while the
     registry is still starting) and pulls it back."""
-    api.tag(source, repository, "latest")
+    api.tag(source, repository, tag)
     for attempt in range(10):
         failed = None
-        for line in api.push(repository, tag="latest", stream=True, decode=True):
+        for line in api.push(repository, tag=tag, stream=True, decode=True):
             if isinstance(line, dict) and line.get("error"):
                 failed = line["error"]
         if failed is None:
             # Pulled back, as a host gets its images: RepoDigests then holds the digest
             # the registry serves (a push of one platform of an index makes a new one).
-            api.pull(repository, tag="latest")
+            api.pull(repository, tag=tag)
             return
         if attempt == 9:
             raise AssertionError(f"push failed: {failed}")
@@ -313,4 +313,67 @@ async def test_a_stack_update_is_all_or_nothing(admin: Browser) -> None:
         if repository:
             with contextlib.suppress(docker.errors.APIError):
                 await docker_client.run_blocking(api.remove_image, f"{repository}:latest")
+        handle.close()
+
+
+@needs_docker
+async def test_a_switch_makes_the_container_from_another_tag(admin: Browser) -> None:
+    handle = await docker_client.run_blocking(host_docker)
+    client = handle.client
+    api = client.api
+    made: list = []
+    name = f"drydock-test-switch-{uuid.uuid4().hex[:8]}"
+    repository = ""
+    try:
+        for image in (REGISTRY_IMAGE, IMAGE):
+            await docker_client.run_blocking(helper.ensure_image, client, image)
+        registry, port = await docker_client.run_blocking(start_registry, client)
+        made.append(registry)
+        repository = f"127.0.0.1:{port}/drydock-test-{uuid.uuid4().hex[:8]}"
+        await docker_client.run_blocking(push, api, repository, IMAGE)
+        await docker_client.run_blocking(push, api, repository, REGISTRY_IMAGE, "v2")
+        app = await docker_client.run_blocking(
+            functools.partial(
+                client.containers.run,
+                f"{repository}:latest",
+                ["sh", "-c", "sleep 3600"],
+                name=name,
+                detach=True,
+                init=True,
+                labels={TEST_LABEL: "1"},
+                network_mode="none",
+            )
+        )
+        host = Host(name="local", kind="local", docker_url=DOCKER_URL, enabled=True)
+        host_id = await docker_client.run_blocking(insert_host, admin, host)
+        v2 = (await docker_client.run_blocking(api.inspect_image, f"{repository}:v2"))["Id"]
+        dispatcher = admin.app.state.dispatcher
+
+        run_id = await dispatcher.submit_update(host_id, [app.id], "tester", name, tag="v2")
+        await dispatcher.wait(run_id)
+        assert admin.sql("SELECT status, error FROM runs WHERE id = ?", (run_id,)) == [
+            ("done", None)
+        ]
+        now = await docker_client.run_blocking(by_name, api, name)
+        assert now["Config"]["Image"] == f"{repository}:v2" and now["Image"] == v2
+        assert now["Config"]["Cmd"] == ["sh", "-c", "sleep 3600"] and now["State"]["Running"]
+
+        # A tag the registry does not have: refused before anything moves.
+        run_id = await dispatcher.submit_update(host_id, [now["Id"]], "tester", name, tag="nope")
+        await dispatcher.wait(run_id)
+        ((status, error),) = admin.sql("SELECT status, error FROM runs WHERE id = ?", (run_id,))
+        assert status == "failed" and "nope" in error, error
+        assert (await docker_client.run_blocking(by_name, api, name))["Id"] == now["Id"]
+    finally:
+        with contextlib.suppress(docker.errors.NotFound):
+            await docker_client.run_blocking(
+                functools.partial(api.remove_container, name, force=True)
+            )
+        for container in made:
+            with contextlib.suppress(docker.errors.NotFound):
+                await docker_client.run_blocking(functools.partial(container.remove, force=True))
+        for tag in ("latest", "v2"):
+            if repository:
+                with contextlib.suppress(docker.errors.APIError):
+                    await docker_client.run_blocking(api.remove_image, f"{repository}:{tag}")
         handle.close()

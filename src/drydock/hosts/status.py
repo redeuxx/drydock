@@ -110,6 +110,8 @@ class ContainerStatus:
     ips: tuple[tuple[str, str], ...]  # (network, address)
     ports: tuple[Port, ...]
     labels: tuple[tuple[str, str], ...] = ()
+    # It binds a host port (HostConfig.PortBindings), running or not, as last inspected.
+    bound: bool = False
 
     @property
     def status_text(self) -> str:
@@ -184,6 +186,8 @@ class Inspected:
     restarts: int
     started_at: datetime | None
     health: str | None = None  # State.Health.Status, which Docker keeps after an exit
+    image: str = ""  # Config.Image: the list names the image ID once its tag has moved
+    bound: bool = False  # HostConfig.PortBindings binds a host port
 
 
 @dataclass(frozen=True)
@@ -196,6 +200,8 @@ class Reading:
     networks: int
     started: dict[str, datetime | None] = field(default_factory=dict)
     health: dict[str, str | None] = field(default_factory=dict)  # from the last inspect
+    images: dict[str, str] = field(default_factory=dict)  # Config.Image, from it too
+    bound: dict[str, bool] = field(default_factory=dict)  # binds a host port, from it too
 
 
 def health_in(inspect: dict[str, Any]) -> str | None:
@@ -227,6 +233,8 @@ def read(api, instance_id: str, inspected: dict[str, Inspected], now: float) -> 
     restarts: dict[str, int] = {}
     started: dict[str, datetime | None] = {}
     health: dict[str, str | None] = {}
+    images: dict[str, str] = {}
+    bound: dict[str, bool] = {}
     # ponytail: one request per container, one after another. Fine for tens of containers
     # per host; send them concurrently (bounded by the collector's threads) if a host's
     # poll ever takes close to INTERVAL.
@@ -247,12 +255,22 @@ def read(api, instance_id: str, inspected: dict[str, Inspected], now: float) -> 
             except CONTAINER_ERRORS:
                 continue
             count = details.get("RestartCount")
+            image = (details.get("Config") or {}).get("Image")
+            bindings = (details.get("HostConfig") or {}).get("PortBindings")
             seen = inspected[cid] = Inspected(
-                now, state, count if is_int(count) else 0, started_of(details), health_in(details)
+                now,
+                state,
+                count if is_int(count) else 0,
+                started_of(details),
+                health_in(details),
+                image if isinstance(image, str) else "",
+                isinstance(bindings, dict) and any(bindings.values()),
             )
         restarts[cid] = seen.restarts
         started[cid] = seen.started_at
         health[cid] = seen.health
+        images[cid] = seen.image
+        bound[cid] = seen.bound
     for gone in inspected.keys() - {c["Id"] for c in containers}:
         del inspected[gone]
     return Reading(
@@ -264,6 +282,8 @@ def read(api, instance_id: str, inspected: dict[str, Inspected], now: float) -> 
         networks=len(api.networks()),
         started=started,
         health=health,
+        images=images,
+        bound=bound,
     )
 
 
@@ -398,7 +418,9 @@ def summarize(
             ContainerStatus(
                 id=cid,
                 name=names[0].lstrip("/") if names else cid[:12],
-                image=str(c.get("Image", "")),
+                # The reference it was made from; the list's Image is the image ID once
+                # its tag names another image (after a pull).
+                image=reading.images.get(cid) or str(c.get("Image", "")),
                 state=str(c.get("State", "")),
                 status=str(c.get("Status", "")),
                 # An exited container keeps its last health, also on daemons whose list
@@ -419,6 +441,7 @@ def summarize(
                 ips=ips_of(c),
                 ports=ports_of(c),
                 labels=tuple(sorted((str(k), str(v)) for k, v in labels.items())),
+                bound=reading.bound.get(cid, False),
             )
         )
     # ponytail: host CPU sums the containers with two samples, so for one poll it leaves

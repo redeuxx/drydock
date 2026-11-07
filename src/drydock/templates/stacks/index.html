@@ -33,6 +33,35 @@
   <form method="dialog" class="modal-backdrop"><button>Close</button></form>
 </dialog>
 {%- endmacro %}
+{# Switch tag: an update of the stack to another tag of its main service
+   (routes/containers.py update_stack, updates/switch.py). #}
+{% macro switch_tag(n, s) -%}
+<button type="button" class="btn btn-ghost btn-xs" commandfor="stack-{{ n }}-switch" command="show-modal" aria-haspopup="dialog">Switch tag<span class="sr-only"> of {{ s.name }}</span></button>
+<dialog id="stack-{{ n }}-switch" class="modal" aria-labelledby="stack-{{ n }}-switch-title">
+  <div class="modal-box">
+    <h2 id="stack-{{ n }}-switch-title" class="mb-2 text-lg font-bold break-all">Switch the tag of {{ s.name }}</h2>
+    <p class="mb-2 text-sm break-words">The main service, {{ s.main }}, follows {% if s.main_tag %}<code>{{ s.main_tag }}</code>{% else %}a pinned image{% endif %}. {% if s.follow %}{{ s.follow|join(", ") }} {{ "moves" if s.follow|length == 1 else "move" }} with it (the same app, on the same tag); the{% else %}It moves alone; the{% endif %} other services keep their tags and get the newest image of them. Picking another main service changes who moves with it; the run page lists them.</p>
+    <p class="mb-3 text-sm break-words">The containers are stopped and made again from their new images, keeping their configuration, in dependency order and all or nothing: if one does not start or become healthy, every one is put back. That does not undo what a new version did to its data, so back the stack up first for a major version or an older tag. The Compose file still names the old tags, so <code>docker compose up</code> brings those back.</p>
+    <form method="post" action="/containers/update-stack" hx-post="/containers/update-stack" hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-2">
+      <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+      <input type="hidden" name="host" value="{{ s.host.id }}">
+      <input type="hidden" name="stack" value="{{ s.name }}">
+      <label class="text-sm font-semibold" for="stack-{{ n }}-tag">New tag</label>
+      <input id="stack-{{ n }}-tag" class="input input-sm w-full font-mono" name="tag" required maxlength="128" pattern="[A-Za-z0-9_][A-Za-z0-9_.\-]{0,127}" placeholder="{{ s.main_tag or 'latest' }}" autocomplete="off">
+      <label class="text-sm font-semibold" for="stack-{{ n }}-main">Main service</label>
+      <select id="stack-{{ n }}-main" class="select select-sm w-full" name="main">
+        <option value="{{ s.main }}">{{ s.main }} (found by drydock)</option>
+        {% for service in s.services if service != s.main %}<option value="{{ service }}">{{ service }}</option>{% endfor %}
+      </select>
+      <div class="modal-action">
+        <button type="button" class="btn btn-sm" commandfor="stack-{{ n }}-switch" command="close">Cancel</button>
+        <button type="submit" class="btn btn-sm btn-warning"><span class="spinner" aria-hidden="true"></span>Switch tag</button>
+      </div>
+    </form>
+  </div>
+  <form method="dialog" class="modal-backdrop"><button>Close</button></form>
+</dialog>
+{%- endmacro %}
 {% if not hosts %}
 <p class="text-sm opacity-70">No host is set up yet.{% if admin %} <a class="link" href="/hosts/new?kind=local">Add the local host</a> or <a class="link" href="/hosts/new?kind=ssh">an SSH host</a>.{% endif %}</p>
 {% else %}
@@ -76,11 +105,11 @@
 {% endif %}
 <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
   <table class="table table-zebra table-sm">
-    <thead><tr><th scope="col">Stack</th>{% if not chosen %}<th scope="col">Host</th>{% endif %}<th scope="col">Running</th><th scope="col" class="max-sm:hidden">Tags</th><th scope="col">Updates</th><th scope="col" class="max-md:hidden">Backup jobs</th><th scope="col" class="max-lg:hidden">Auto-update</th>{% if operator %}<th scope="col">Actions</th>{% endif %}</tr></thead>
+    <thead><tr><th scope="col" abbr="Stack">Stack</th>{% if not chosen %}<th scope="col">Host</th>{% endif %}<th scope="col">Running</th><th scope="col" abbr="Tags" class="max-sm:hidden">Tags</th><th scope="col">Updates</th><th scope="col" class="max-md:hidden">Backup jobs</th><th scope="col" class="max-lg:hidden">Auto-update</th>{% if operator %}<th scope="col">Actions</th>{% endif %}</tr></thead>
     <tbody>
       {% for s in stacks %}
       <tr>
-        <td class="font-semibold"><a class="link link-hover" href="/containers?{{ {'host': s.host.id, 'stack': s.name}|urlencode }}">{{ s.name }}</a></td>
+        <td class="font-semibold"><a class="link link-hover" href="/containers?{{ {'host': s.host.id, 'stack': s.name}|urlencode }}">{{ s.name }}</a>{% if s.main and s.total > 1 %}<div class="text-xs font-normal opacity-70">main: {{ s.main }}</div>{% endif %}</td>
         {% if not chosen %}<td>{{ s.host.name }}</td>{% endif %}
         <td>{{ s.running }} of {{ s.total }}</td>
         <td class="max-sm:hidden">{% for t in s.tags %}<span class="badge badge-soft badge-neutral badge-sm mr-1">{{ t }}</span>{% endfor %}</td>
@@ -95,6 +124,7 @@
           {%- if s.newer %}{{ ask(loop.index, s, "/containers/update-stack", None, "Update", "Pull the newer images of " ~ s.name ~ " first, then make its containers that have one again in dependency order, waiting for each one's healthy dependencies. If any of them does not start or become healthy, all of them are put back. Containers without a newer image are left alone.") }}{% endif %}
           {%- if s.running < s.total %}{{ stack_form(s, "/stacks/actions", "start", "Start", "btn btn-ghost btn-xs") }}{% endif %}
           {%- if s.running %}{{ ask(loop.index, s, "/stacks/actions", "restart", "Restart", "Restart every container of " ~ s.name ~ "?") }}{{ ask(loop.index, s, "/stacks/actions", "stop", "Stop", "Stop every container of " ~ s.name ~ "? Each gets its own stop timeout to shut down.") }}{% endif %}
+          {%- if s.main %}{{ switch_tag(loop.index, s) }}{% endif %}
           {%- if admin %}{{ ask(loop.index, s, "/stacks/actions", "remove", "Remove", "Remove every container of " ~ s.name ~ "? Each is stopped first, then deleted. Volumes and networks are kept, but drydock cannot make the stack again: run docker compose up on the host for that. This cannot be undone.") }}{% endif %}
         </div></td>
         {% endif %}

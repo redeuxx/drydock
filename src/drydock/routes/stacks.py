@@ -34,6 +34,7 @@ from drydock.routes.hosts import release
 from drydock.security.rbac import Role, require_role
 from drydock.security.sessions import Auth
 from drydock.templating import is_htmx, render, see_other
+from drydock.updates import switch as tag_switch
 from drydock.updates.check import followed_tag
 
 router = APIRouter()
@@ -52,6 +53,10 @@ class Stack:
     running: int
     newer: int  # members with a newer image, as the update checker last saw
     tags: list[str]  # the tags its members follow; "pinned" for a digest or image ID
+    main: str | None  # its main service (updates/switch.py), as the cache shows it
+    main_tag: str | None  # the tag main follows; None when pinned
+    follow: list[str]  # the other members that switch tags with main
+    services: list[str]
     jobs: list[Job]
     policies: list[tuple[UpdatePolicy, datetime | None]]  # its update policies, next run
 
@@ -102,19 +107,28 @@ def page(
             facts[h.id] = (container_routes.covering_jobs(db, h.id), policies)
         return facts[h.id]
 
-    stacks = [
-        Stack(
-            h,
-            name,
-            len(members),
-            sum(c.state == "running" for c in members),
-            sum(container_routes.is_newer(verdicts, c) for c in members),
-            sorted({followed_tag(c.image) or "pinned" for c in members}),
-            of(h)[0][("stack", name)],
-            of(h)[1][name] + of(h)[1][EVERY_STACK],
+    stacks = []
+    for h, name, members, verdicts in shown:
+        parts = tag_switch.from_cache(members)
+        main = tag_switch.main_service(parts)
+        moving = tag_switch.followers(parts, main, "next") if main is not None else {}
+        names = {c.id: c.name for c in members}
+        stacks.append(
+            Stack(
+                h,
+                name,
+                len(members),
+                sum(c.state == "running" for c in members),
+                sum(container_routes.is_newer(verdicts, c) for c in members),
+                sorted({followed_tag(c.image) or "pinned" for c in members}),
+                (main.service or names[main.id]) if main is not None else None,
+                followed_tag(main.image) if main is not None else None,
+                sorted(names[i] for i in moving if main is not None and i != main.id),
+                sorted({c.service for c in members if c.service}),
+                of(h)[0][("stack", name)],
+                of(h)[1][name] + of(h)[1][EVERY_STACK],
+            )
         )
-        for h, name, members, verdicts in shown
-    ]
     host_value = str(chosen.id) if chosen is not None else ""
     single = chosen is not None and chosen.enabled
     return render(

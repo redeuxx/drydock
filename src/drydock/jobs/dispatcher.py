@@ -700,14 +700,24 @@ class Dispatcher:
         label: str,
         *,
         project: str | None = None,
+        tag: str | None = None,
+        main: str | None = None,
     ) -> int:
         """Queues an update of the containers, or of every container of the Compose
         project (found and put in dependency order when the run starts), to what their
         tags name on the registry now, and returns the run's ID. label names them on the
-        run pages. Raises DispatchError."""
+        run pages. With tag, the containers, or the project's main service (main, or the
+        one updates/switch.py finds) and its followers, switch to that tag. Raises
+        DispatchError."""
         self._check_open()
         run_id = await run_blocking(
-            self._create_update_run, host_id, container_ids, triggered_by, label, project
+            self._create_update_run,
+            host_id,
+            container_ids,
+            triggered_by,
+            label,
+            project,
+            {"tag": tag, "main": main},
         )
         active = ActiveRun(run_id, None)
         self._active[run_id] = active
@@ -1877,6 +1887,8 @@ class Dispatcher:
                         raise DispatchError(f"Container {doc['name']} is not on the host.")
                     container_ids = [str(found["Id"])]
                 # A stack's members are found again after the locks, like everything else.
+                tag = doc.get("tag") if isinstance(doc.get("tag"), str) else None
+                main = doc.get("main") if isinstance(doc.get("main"), str) else None
                 if project is not None:
                     plan_now = functools.partial(
                         update_apply.plan_stack,
@@ -1886,15 +1898,18 @@ class Dispatcher:
                         self._hosts.instance_id,
                         own,
                         handle.api_version,
+                        tag=tag,
+                        main=main,
                     )
                 else:
                     plan_now = functools.partial(
-                        update_apply.plan_update,
+                        update_apply.plan_containers,
                         api,
                         host.id,
                         container_ids,
                         own,
                         handle.api_version,
+                        tag=tag,
                     )
                 planned = await run_blocking(plan_now)
                 if planned.plan is not None:
@@ -2857,6 +2872,7 @@ class Dispatcher:
         triggered_by: str | None,
         label: str,
         project: str | None,
+        switch: dict[str, str | None],
     ) -> int:
         with self._sessions() as db, db.begin():
             if db.get(Host, host_id) is None:
@@ -2871,6 +2887,7 @@ class Dispatcher:
                     {
                         "update": {"host_id": host_id, "containers": container_ids}
                         | ({"project": project} if project is not None else {})
+                        | {k: v for k, v in switch.items() if v is not None}
                     }
                 ),
             )
@@ -2897,6 +2914,10 @@ class Dispatcher:
                 label = policy.target
             if policy.backup_job_id is not None:
                 update["backup_job_id"] = policy.backup_job_id
+            if policy.tag:
+                update["tag"] = policy.tag
+                if policy.target_type == "stack" and policy.main_service:
+                    update["main"] = policy.main_service
             run = Run(
                 job_id=None,
                 kind="update",

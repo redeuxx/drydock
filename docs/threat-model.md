@@ -645,7 +645,7 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 ### T45. Updates replacing containers they should not, or leaving them broken
 
 **Threat:** a viewer or a forged request updates containers; an update replaces drydock itself, a helper, or a container a backup or restore is using; a bad new image leaves a service down; or an update pulls something other than what was checked.
-**Defence:** updates need an operator and a CSRF token and are audited. Drydock refuses its own containers and helpers, takes the same locks as a backup or restore of the container, pulls exactly the digest the registry named, and runs the update through the restore engine's journal: if the new container does not stay up or become healthy, or drydock stops midway, the original is put back with its name, restart policy and state. The registry's content under a tag is trusted, as the docs say.
+**Defence:** updates need an operator and a CSRF token and are audited. Drydock refuses its own containers and helpers, takes the same locks as a backup or restore of the container, pulls exactly the digest the registry named, and runs the update through the restore engine's journal: if the new container does not stay up or become healthy, or drydock stops midway, the original is put back with its name, restart policy and state. The registry's content under a tag is trusted, as the docs say. Switching a tag moves a container only to another tag of the same repository it was made from (a stack's followers: of the same registry namespace), checked against Docker's tag grammar, pulled by the digest the registry names and audited with the tag; it is an update in every other way.
 **Tests:**
 - `tests/test_update_apply.py::test_update_is_for_operators_audited_and_opens_its_run`
 - `tests/test_update_apply.py::test_what_is_left_alone_and_what_is_refused`
@@ -654,6 +654,8 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 - `tests/test_updates_docker.py::test_an_update_replaces_a_container_or_puts_it_back`
 - `tests/test_restore_dispatch.py::test_startup_recovery_rolls_back_an_interrupted_update`
 - `tests/test_updates_docker.py::test_a_stack_update_is_all_or_nothing`
+- `tests/test_update_switch.py::test_a_switch_pulls_the_new_tag_and_makes_the_container_from_it`
+- `tests/test_update_switch.py::test_switching_from_the_containers_and_stacks_pages`
 
 ### T46. Update policies as a way to change containers unattended
 

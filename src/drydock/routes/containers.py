@@ -42,6 +42,8 @@ from drydock.routes.hosts import DOCKER_ERRORS, open_host, release, target
 from drydock.security.rbac import Role, require_recent_auth, require_role
 from drydock.security.sessions import Auth
 from drydock.templating import is_htmx, render, see_other
+from drydock.updates import switch as tag_switch
+from drydock.updates.switch import TAG_ERROR, TAG_RE
 
 router = APIRouter()
 
@@ -734,10 +736,12 @@ def update_container(
     container: Annotated[str, Form()],
     db: Session = Depends(get_db),
     shown: Annotated[str | None, Form(alias="view")] = None,
+    tag: Annotated[str, Form()] = "",
 ) -> Response:
     """Starts an update run of one container to what its tag names on the registry now
-    (updates/apply.py) and opens its run page. Audited. A refusal shows view, the host the
-    page showed ("all" for every host), or else the container's host."""
+    (updates/apply.py), or with tag a switch to that tag (updates/switch.py), and opens its
+    run page. Audited. A refusal shows view, the host the page showed ("all" for every
+    host), or else the container's host."""
     if not CONTAINER_ID_RE.fullmatch(container):
         raise HTTPException(status_code=422)
     target_host = db.get(Host, host)
@@ -745,20 +749,28 @@ def update_container(
         raise HTTPException(status_code=404)
     release(db, target_host)
     snap = request.app.state.status.snapshot(target_host.id)
-    name = next((c.name for c in snap.containers if c.id == container), None) if snap else None
-    label = name or container[:12]
+    found = next((c for c in snap.containers if c.id == container), None) if snap else None
+    label = found.name if found else container[:12]
+    tag = tag.strip()[:129]  # longer is no tag; audited as given, up to here
     error = None
     run_id = None
     if not target_host.enabled:
         error = "The host is disabled."
+    elif tag and not TAG_RE.fullmatch(tag):
+        error = TAG_ERROR
+    elif tag and found is not None and tag_switch.switched_ref(found.image, tag) is None:
+        error = "It was made from an image ID, so it has no repository to switch the tag of."
     else:
         try:
             run_id = anyio.from_thread.run(
-                request.app.state.dispatcher.submit_update,
-                target_host.id,
-                [container],
-                auth.user.username,
-                label,
+                functools.partial(
+                    request.app.state.dispatcher.submit_update,
+                    target_host.id,
+                    [container],
+                    auth.user.username,
+                    f"{label} to tag {tag}" if tag else label,
+                    **({"tag": tag} if tag else {}),
+                )
             )
         except DispatchError as exc:
             error = str(exc)
@@ -770,6 +782,7 @@ def update_container(
         outcome="success" if error is None else "failure",
         ip=client_ip(request),
         details={"host": target_host.name}
+        | ({"tag": tag} if tag else {})
         | ({"run_id": run_id} if run_id else {})
         | ({"error": error} if error else {}),
     )
@@ -792,20 +805,30 @@ def update_stack(
     host: Annotated[int, Form()],
     stack: Annotated[str, Form()],
     db: Session = Depends(get_db),
+    tag: Annotated[str, Form()] = "",
+    main: Annotated[str, Form()] = "",
 ) -> Response:
     """Starts an update run of a Compose project's containers that have a newer image, in
-    dependency order and all or nothing (updates/apply.py), and opens its run page.
-    Audited."""
+    dependency order and all or nothing (updates/apply.py), and opens its run page. With
+    tag, its main service (main, or the one updates/switch.py finds) and the members that
+    follow it switch to that tag. Audited."""
     target_host = db.get(Host, host)
     snap = request.app.state.status.snapshot(host)
     known = {c.project for c in snap.containers if c.project} if snap is not None else set()
     if target_host is None or stack not in known:
         raise HTTPException(status_code=404)
     release(db, target_host)
+    services = {c.service for c in snap.containers if c.project == stack} if snap else set()
+    tag, main = tag.strip()[:129], main.strip()[:64]  # longer is no tag or service
     error = None
     run_id = None
     if not target_host.enabled:
         error = "The host is disabled."
+    elif tag and not TAG_RE.fullmatch(tag):
+        error = TAG_ERROR
+    elif main and (not tag or main not in services):
+        listed = ", ".join(sorted(str(n) for n in services if n))
+        error = f"Choose a tag and one of the stack's services ({listed})."
     else:
         try:
             run_id = anyio.from_thread.run(
@@ -814,8 +837,9 @@ def update_stack(
                     target_host.id,
                     [],
                     auth.user.username,
-                    f"stack {stack}",
+                    f"stack {stack} to tag {tag}" if tag else f"stack {stack}",
                     project=stack,
+                    **({"tag": tag, "main": main or None} if tag else {}),
                 )
             )
         except DispatchError as exc:
@@ -828,6 +852,8 @@ def update_stack(
         outcome="success" if error is None else "failure",
         ip=client_ip(request),
         details={"host": target_host.name}
+        | ({"tag": tag} if tag else {})
+        | ({"main": main} if main else {})
         | ({"run_id": run_id} if run_id else {})
         | ({"error": error} if error else {}),
     )

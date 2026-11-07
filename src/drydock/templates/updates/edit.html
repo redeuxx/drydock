@@ -28,6 +28,15 @@
         <input id="policy-target" class="input w-full" name="target" value="{{ form.target }}" maxlength="255" required aria-describedby="policy-target-help">
         <p id="policy-target-help" class="label whitespace-normal">For a stack, <code>*</code> updates every Compose stack on the host (drydock's own left out), one after another, each in its own run. Such a policy cannot back up first.</p>
       </fieldset>
+      <fieldset class="fieldset">
+        <legend class="fieldset-legend">Tag to follow</legend>
+        <label class="label text-sm" for="policy-tag">Tag (optional)</label>
+        <input id="policy-tag" class="input w-full font-mono" name="tag" value="{{ form.tag }}" maxlength="128" pattern="[A-Za-z0-9_][A-Za-z0-9_.\-]{0,127}" placeholder="Keep the tag it follows now" autocomplete="off" aria-describedby="policy-tag-help">
+        <p id="policy-tag-help" class="label whitespace-normal">Empty: each run brings the newest image of the tag the container already follows. A tag such as <code>1.28</code> or <code>latest</code>: the next run switches to it, and later runs keep it up to date. For a stack, the tag is for its main service and its replicas; images of the same app from the same publisher on the same tag move with it, the others keep theirs (Docker Hub's official images, and a main service on <code>latest</code>, move alone). The Compose file is not edited, so <code>docker compose up</code> brings its tags back.</p>
+        <label class="label text-sm" for="policy-main">Main service (stacks, optional)</label>
+        <input id="policy-main" class="input w-full" name="main_service" value="{{ form.main_service }}" maxlength="63" placeholder="Found by drydock" autocomplete="off" aria-describedby="policy-main-help">
+        <p id="policy-main-help" class="label whitespace-normal">The service the rest of the stack is there for, as its Compose file names it. Drydock picks the one no other service depends on (by <code>depends_on</code>), preferring one that binds a host port, when each run starts; the Stacks page names the one it would pick now.</p>
+      </fieldset>
       <div class="fieldset" data-schedule>
         <label class="fieldset-legend" for="policy-cron-preset">Schedule</label>
         <select id="policy-cron-preset" class="select w-full" name="cron_preset" data-cron-preset>

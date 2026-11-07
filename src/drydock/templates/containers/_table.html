@@ -157,7 +157,7 @@
       <tr>
         {% if operator %}<th scope="col" class="w-8"><input type="checkbox" class="checkbox checkbox-xs" data-select-all aria-label="Select all shown"></th>{% endif %}
         {% for key, label, width in columns %}
-        <th scope="col" class="truncate {{ width }}"{% if key and key == sort %} aria-sort="{{ 'descending' if order == 'desc' else 'ascending' }}"{% endif %}>
+        <th scope="col" abbr="{{ label }}" class="truncate {{ width }}"{% if key and key == sort %} aria-sort="{{ 'descending' if order == 'desc' else 'ascending' }}"{% endif %}>
           {%- if key -%}
           <a class="link link-hover" href="/containers?{{ {'host': host_value, 'sort': key, 'order': 'desc' if key == sort and order == 'asc' else 'asc', 'status': status, 'stack': stack, 'q': q}|urlencode }}">{{ label }}{% if key == sort %}<span aria-hidden="true">{{ " ▼" if order == "desc" else " ▲" }}</span>{% endif %}</a>
           {%- else %}{{ label }}{% endif -%}
@@ -239,6 +239,21 @@
       {% set found = r.policies %}
       <dt class="font-semibold">Auto-update</dt><dd>{% for policy, when in found %}{{ policy.name }}{% if when %}, next {{ when|stamp(False) }}{% elif not policy.enabled %} (disabled){% endif %}{% if not loop.last %}<br>{% endif %}{% else %}None{% endfor %}</dd>
     </dl>
+    {% if operator and c.image|repository %}
+    {# A switch is an update to another tag (routes/containers.py update_container). #}
+    <form method="post" action="/containers/update" hx-post="/containers/update" hx-nonce="{{ csp_nonce }}" class="mt-4 rounded-box border border-base-300 p-3">
+      <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+      <input type="hidden" name="host" value="{{ r.host.id }}">
+      <input type="hidden" name="view" value="{{ host_value or 'all' }}">
+      <input type="hidden" name="container" value="{{ c.id }}">
+      <label class="text-sm font-semibold" for="switch-{{ loop.index }}">Switch tag</label>
+      <p id="switch-{{ loop.index }}-help" class="mb-2 text-xs opacity-70">Make {{ c.name }} again from <span class="break-all">{{ c.image|repository }}</span> at another tag, keeping its configuration. It is stopped meanwhile and, like an update, put back if the new one does not start or become healthy. Putting it back does not undo what the new version did to its data, so back it up first for a major version or an older tag. A Compose file still names the old tag, so <code>docker compose up</code> brings that back.</p>
+      <div class="join w-full">
+        <input id="switch-{{ loop.index }}" class="input input-sm join-item w-full font-mono" name="tag" required maxlength="128" pattern="[A-Za-z0-9_][A-Za-z0-9_.\-]{0,127}" placeholder="{{ c.image|tag or 'latest' }}" autocomplete="off" aria-describedby="switch-{{ loop.index }}-help">
+        <button type="submit" class="btn btn-sm btn-warning join-item"><span class="spinner" aria-hidden="true"></span>Switch</button>
+      </div>
+    </form>
+    {% endif %}
     {% if admin %}
     {# Loaded on demand: it calls Docker. Environment values and secret-looking labels are
        hidden (routes/containers.py redacted). #}

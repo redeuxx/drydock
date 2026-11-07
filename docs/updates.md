@@ -32,9 +32,19 @@ It is all or nothing: if any member fails, every member already made again is pu
 
 A container that another container joins the network of (`network_mode: service:vpn`, as with a VPN gateway) is not updated without that other one, since it would lose its network: update their stack instead, or both stacks together.
 
+## Switching tags
+
+A container follows the tag its image names: `1.27` in `nginx:1.27`, or `latest` when it names none. The containers page shows it in a **Tag** column (**Tags** on the stacks page), and an "i" beside it explains it in place. To move to another tag, an operator opens the container's row and uses **Switch tag**: drydock makes the container again from the same repository at the new tag, exactly as an update does (pulled by digest first, the configuration kept, put back if the new one does not start or become healthy). It works for a container pinned by digest too, which then follows the tag; not for one made from an image ID, which names no repository.
+
+A stack switches as a whole from its **Switch tag** on the Stacks page. The tag is for its **main service**: the one the rest of the stack is there for. Drydock picks the service no other service depends on (by `depends_on`), preferring one that binds a host port, then the first by name, and names it under the stack; the dialog lets you pick another. The main service's replicas move with it, and so do images of the same app: from the same publisher (registry and path, say `ghcr.io/immich-app`), whose names start like the main's (`immich-server`, `immich-machine-learning`), on the main's tag or that tag with a suffix (`v1.120-cuda` becomes `v1.121-cuda`). So an app and its workers stay on one version. The others, a database or a cache, keep their tags and get the newest image of them, as in a stack update. Docker Hub's official images (`nextcloud`, `mariadb`, `redis`) come from many publishers, and every image has a `latest`, so a main service that is one of them, or follows `latest`, moves alone. It is all or nothing, in dependency order, and each container is stopped meanwhile; putting it back does not undo what a new version did to its data, so back up first for a major version or an older tag.
+
+Drydock does not edit Compose files: the file still names the old tags, so `docker compose up` on the host brings them back. Change the file too when the switch should last. An update policy can also follow a tag (below), which keeps the container on it at every run.
+
 ## Scheduled updates
 
 **Docker > Updates** lists update policies; admins create and edit them, operators can run one now. A policy names a host, a container (by name) or a Compose stack, and a schedule (a preset or a cron expression, in drydock's time zone or its own). When it fires, drydock starts an update run as above, for the container or for every member of the stack with a newer image.
+
+A policy may name a **Tag to follow**: its next run switches the container, or the stack's main service and the services that follow it, to that tag (Switching tags, above), and later runs keep them on its newest image. For a stack it may also name the **Main service** when drydock's choice is not the one. Without a tag, a policy follows whatever tag each container has.
 
 A stack policy whose target is `*` updates every Compose stack on its host, drydock's own left out, so stacks added later are covered too. When it fires, drydock lists the stacks and checks each one; every stack with something to update gets its own stack update run as above, one after another, so a failed stack is put back without touching the others. The policy's run lists them and fails if any of them did, and only it tells the notification target. It cannot back up first (no single job covers every stack): pair it with backup jobs on their own schedule. On the **Stacks** page, each stack lists the policies that update it, and admins can schedule one stack or every stack from there.
 

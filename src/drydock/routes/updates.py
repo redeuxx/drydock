@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from drydock import audit
 from drydock.db import get_db
+from drydock.engine.stacks import SERVICE_RE
 from drydock.jobs import scheduler
 from drydock.jobs import targets as job_targets
 from drydock.jobs.dispatcher import DispatchError
@@ -34,6 +35,7 @@ from drydock.routes.jobs import (
 from drydock.security.rbac import Role, require_role
 from drydock.security.sessions import Auth
 from drydock.templating import render, see_other
+from drydock.updates.switch import TAG_ERROR, TAG_RE
 
 router = APIRouter(prefix="/updates")
 
@@ -58,6 +60,8 @@ class PolicyForm:
     stop_on_failed_backup: bool = True
     notify_target_id: str = ""
     notify_success: bool = False
+    tag: str = ""
+    main_service: str = ""
     enabled: bool = True
 
     @classmethod
@@ -74,6 +78,8 @@ class PolicyForm:
             stop_on_failed_backup=policy.stop_on_failed_backup,
             notify_target_id=str(policy.notify_target_id or ""),
             notify_success=policy.notify_success,
+            tag=policy.tag or "",
+            main_service=policy.main_service or "",
             enabled=policy.enabled,
         )
 
@@ -103,6 +109,8 @@ class PolicyForm:
             stop_on_failed_backup=form.get("stop_on_failed_backup") == "1",
             notify_target_id=text("notify_target_id"),
             notify_success=form.get("notify_success") == "1",
+            tag=text("tag"),
+            main_service=text("main_service"),
             enabled=form.get("enabled") == "1",
         )
 
@@ -146,6 +154,18 @@ def validate(db: Session, form: PolicyForm, default_tz: str, policy_id: int | No
             (t.target_type, t.target) for t in job_targets.of(db, job)
         }:
             errors.append("The backup job must back up this container or stack on this host.")
+    if form.tag:
+        if not TAG_RE.fullmatch(form.tag):
+            errors.append(TAG_ERROR)
+        elif every_stack:
+            errors.append("A policy for every stack follows each stack's own tags.")
+    if form.main_service:
+        if form.target_type != "stack" or every_stack:
+            errors.append("Only a policy for one stack has a main service.")
+        elif not form.tag:
+            errors.append("Enter the tag the main service should follow.")
+        elif not SERVICE_RE.fullmatch(form.main_service):
+            errors.append("Enter the main service's name as its Compose file names it.")
     if (
         form.notify_target_id
         and db.get(NotificationTarget, as_id(form.notify_target_id) or 0) is None
@@ -165,20 +185,26 @@ def apply_form(policy: UpdatePolicy, form: PolicyForm) -> None:
     policy.stop_on_failed_backup = form.stop_on_failed_backup
     policy.notify_target_id = as_id(form.notify_target_id) if form.notify_target_id else None
     policy.notify_success = form.notify_success
+    policy.tag = form.tag or None
+    policy.main_service = (form.main_service or None) if form.target_type == "stack" else None
     policy.enabled = form.enabled
     policy.updated_at = utcnow()
 
 
 def summary(policy: UpdatePolicy) -> dict[str, Any]:
-    return {
-        "name": policy.name,
-        "host_id": policy.host_id,
-        "target": f"{policy.target_type}:{policy.target}",
-        "cron": policy.cron,
-        "timezone": policy.timezone,
-        "backup_job_id": policy.backup_job_id,
-        "enabled": policy.enabled,
-    }
+    return (
+        {
+            "name": policy.name,
+            "host_id": policy.host_id,
+            "target": f"{policy.target_type}:{policy.target}",
+            "cron": policy.cron,
+            "timezone": policy.timezone,
+            "backup_job_id": policy.backup_job_id,
+            "enabled": policy.enabled,
+        }
+        | ({"tag": policy.tag} if policy.tag else {})
+        | ({"main_service": policy.main_service} if policy.main_service else {})
+    )
 
 
 def get_policy(db: Session, policy_id: int) -> UpdatePolicy:
