@@ -42,7 +42,7 @@ Drydock does not edit Compose files: the file still names the old tags, so `dock
 
 ## Scheduled updates
 
-**Docker > Updates** lists update policies; admins create and edit them, operators can run one now. A policy names a host, a container (by name) or a Compose stack, and a schedule (a preset or a cron expression, in drydock's time zone or its own). When it fires, drydock starts an update run as above, for the container or for every member of the stack with a newer image.
+**Docker > Update policies** lists them; admins create and edit them, operators can run one now. A policy names a host, a container (by name) or a Compose stack, and a schedule (a preset or a cron expression, in drydock's time zone or its own). When it fires, drydock starts an update run as above, for the container or for every member of the stack with a newer image.
 
 A policy may name a **Tag to follow**: its next run switches the container, or the stack's main service and the services that follow it, to that tag (Switching tags, above), and later runs keep them on its newest image. For a stack it may also name the **Main service** when drydock's choice is not the one. Without a tag, a policy follows whatever tag each container has.
 

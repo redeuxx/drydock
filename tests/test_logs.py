@@ -212,7 +212,7 @@ async def test_containers_stacks_and_images_share_the_docker_menu(admin: Browser
     assert 'href="/updates"' not in menu, "operators and up"
     await admin.login("runner")
     page = (await admin.get("/stacks")).text
-    assert 'href="/updates">Updates<' in nav_menu(page, "Docker")
+    assert 'href="/updates">Update policies<' in nav_menu(page, "Docker")
     assert 'href="/updates"' not in nav_menu(page, "Backups")
 
 
