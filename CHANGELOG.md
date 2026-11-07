@@ -20,6 +20,7 @@ Notable changes to drydock. Versions follow [semantic versioning](https://semver
 - Containers, Stacks, Images and Updates share a Docker menu in the navigation bar, and the Manage menu is now Backups.
 - Starting an update of a container or a stack no longer fails with HTTP 500 ("database is locked") after 5 seconds.
 - The Containers, Stacks and Images pages show every enabled host at once (All hosts, now the default in the host picker), with a Host column, and show 100 rows a page. Selected containers on several hosts are acted on together.
+- The containers and stacks pages show the tag each container follows (`latest`, `v1.0`), or that it is pinned by digest.
 - The containers table gives every column a width and scrolls sideways when they do not fit, so headers no longer overlap and the actions column is never cut off.
 
 ## 0.3.0 (2026-11-05)

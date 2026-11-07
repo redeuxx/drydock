@@ -13,6 +13,7 @@
 {% set columns = [
   ("name", "Name", "w-48"),
   ("image", "Image", "w-56 max-md:hidden"),
+  (None, "Tag", "w-24 max-md:hidden"),
   ("state", "State", "w-32"),
   ("uptime", "Uptime", "w-36 max-sm:hidden"),
   ("restarts", "Restarts", "w-20 max-lg:hidden"),
@@ -49,6 +50,10 @@
 {%- endmacro %}
 {% macro ask(n, c, verb, label) -%}
 <button type="button" class="btn btn-ghost btn-xs" commandfor="ctr-{{ n }}-{{ verb }}" command="show-modal" aria-haspopup="dialog">{{ label }}<span class="sr-only"> {{ c.name }}</span></button>
+{%- endmacro %}
+{# The tag the container follows (updates/check.py followed_tag), or that it is pinned. #}
+{% macro tag_badge(image) -%}
+{% set t = image|tag %}{% if t %}<span class="badge badge-soft badge-neutral badge-sm" title="Follows {{ t }}">{{ t }}</span>{% else %}<span class="opacity-50" title="Pinned by digest or image ID">pinned</span>{% endif %}
 {%- endmacro %}
 {% macro pair(a, b) %}{% if a is none and b is none %}<span class="opacity-50">n/a</span>{% else %}{{ a|filesize or "0 bytes" }} / {{ b|filesize or "0 bytes" }}{% endif %}{% endmacro %}
 {% macro port_list(ports, linked) -%}
@@ -170,6 +175,7 @@
         {% if not chosen %}<td class="truncate" title="{{ r.host.name }}">{{ r.host.name }}</td>{% endif %}
         {% set v = r.verdict %}
         <td class="truncate max-md:hidden" title="{{ c.image }}">{% if v and v.state == "update" %}<span class="badge badge-soft badge-info badge-xs mr-1" title="{{ v.reason }}">update</span>{% endif %}{{ c.image }}</td>
+        <td class="truncate max-md:hidden">{{ tag_badge(c.image) }}</td>
         <td class="truncate">
           <span class="badge badge-soft badge-sm {{ state_tones.get(c.state, 'badge-neutral') }}">{{ c.state }}</span>
           {% if c.health %}<span class="ml-1 inline-block size-2 rounded-full {{ health_tones[c.health] }}" title="{{ c.health }}"></span><span class="sr-only">, {{ c.health }}</span>{% endif %}
@@ -215,6 +221,7 @@
       <dt class="font-semibold">Host</dt><dd class="break-all">{{ r.host.name }}</dd>
       <dt class="font-semibold">ID</dt><dd class="font-mono text-xs break-all">{{ c.id }}</dd>
       <dt class="font-semibold">Image</dt><dd class="break-all">{{ c.image }}</dd>
+      <dt class="font-semibold">Tag</dt><dd>{{ tag_badge(c.image) }}</dd>
       {% set v = r.verdict %}
       <dt class="font-semibold">Updates</dt><dd>{% if v %}{{ v.reason }}{% if v.latest %} <span class="font-mono text-xs opacity-70">({{ v.latest[7:19] }})</span>{% endif %}{% else %}Not checked yet.{% endif %}</dd>
       <dt class="font-semibold">State</dt><dd>{{ c.state }}{% if c.health %}, {{ c.health }}{% endif %}</dd>

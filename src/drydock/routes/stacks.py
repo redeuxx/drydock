@@ -34,6 +34,7 @@ from drydock.routes.hosts import release
 from drydock.security.rbac import Role, require_role
 from drydock.security.sessions import Auth
 from drydock.templating import is_htmx, render, see_other
+from drydock.updates.check import followed_tag
 
 router = APIRouter()
 
@@ -50,6 +51,7 @@ class Stack:
     total: int
     running: int
     newer: int  # members with a newer image, as the update checker last saw
+    tags: list[str]  # the tags its members follow; "pinned" for a digest or image ID
     jobs: list[Job]
     policies: list[tuple[UpdatePolicy, datetime | None]]  # its update policies, next run
 
@@ -107,6 +109,7 @@ def page(
             len(members),
             sum(c.state == "running" for c in members),
             sum(container_routes.is_newer(verdicts, c) for c in members),
+            sorted({followed_tag(c.image) or "pinned" for c in members}),
             of(h)[0][("stack", name)],
             of(h)[1][name] + of(h)[1][EVERY_STACK],
         )

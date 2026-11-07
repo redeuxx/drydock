@@ -72,6 +72,13 @@ def reference(image: str) -> str | None:
     return f"{repository}:{tag or 'latest'}"
 
 
+def followed_tag(image: str) -> str | None:
+    """The tag an image reference follows ("latest" when it names none), or None when it
+    is pinned by digest or image ID."""
+    ref = reference(image)
+    return ref.rpartition(":")[2] if ref else None
+
+
 def lookup_error(exc: BaseException) -> str:
     """Safe to show: never the registry's or daemon's own text."""
     if isinstance(exc, docker.errors.APIError):

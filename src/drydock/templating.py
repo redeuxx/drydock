@@ -15,6 +15,7 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 from drydock import feed
 from drydock.models import User, utcnow
 from drydock.security.rbac import Role
+from drydock.updates.check import followed_tag
 
 # Only hx-csp may register; an empty value would allow any extension. Indicator CSS ships
 # in app.css instead of being injected as a constructed stylesheet.
@@ -146,6 +147,7 @@ env.filters["logtimes"] = logtimes
 env.filters["duration"] = duration
 env.filters["clock"] = clock
 env.filters["spark"] = spark
+env.filters["tag"] = followed_tag
 # A query string from a dict whose values may be lists (repeated keys); Jinja's urlencode
 # writes a list as one value.
 env.filters["query"] = lambda values: urlencode(values, doseq=True)

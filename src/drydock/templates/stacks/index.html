@@ -76,13 +76,14 @@
 {% endif %}
 <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
   <table class="table table-zebra table-sm">
-    <thead><tr><th scope="col">Stack</th>{% if not chosen %}<th scope="col">Host</th>{% endif %}<th scope="col">Running</th><th scope="col">Updates</th><th scope="col" class="max-md:hidden">Backup jobs</th><th scope="col" class="max-lg:hidden">Auto-update</th>{% if operator %}<th scope="col">Actions</th>{% endif %}</tr></thead>
+    <thead><tr><th scope="col">Stack</th>{% if not chosen %}<th scope="col">Host</th>{% endif %}<th scope="col">Running</th><th scope="col" class="max-sm:hidden">Tags</th><th scope="col">Updates</th><th scope="col" class="max-md:hidden">Backup jobs</th><th scope="col" class="max-lg:hidden">Auto-update</th>{% if operator %}<th scope="col">Actions</th>{% endif %}</tr></thead>
     <tbody>
       {% for s in stacks %}
       <tr>
         <td class="font-semibold"><a class="link link-hover" href="/containers?{{ {'host': s.host.id, 'stack': s.name}|urlencode }}">{{ s.name }}</a></td>
         {% if not chosen %}<td>{{ s.host.name }}</td>{% endif %}
         <td>{{ s.running }} of {{ s.total }}</td>
+        <td class="max-sm:hidden">{% for t in s.tags %}<span class="badge badge-soft badge-neutral badge-sm mr-1">{{ t }}</span>{% endfor %}</td>
         <td>{% if s.newer %}<span class="badge badge-soft badge-info badge-sm">{{ s.newer }} newer</span>{% endif %}</td>
         <td class="max-md:hidden">{% for job in s.jobs %}<a class="link" href="/jobs/{{ job.id }}">{{ job.name }}</a>{% if not job.enabled %} (disabled){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</td>
         <td class="max-lg:hidden">
@@ -99,7 +100,7 @@
         {% endif %}
       </tr>
       {% else %}
-      <tr><td colspan="{{ (6 if operator else 5) + (0 if chosen else 1) }}">No Compose stacks on {{ "this host" if chosen else "any host" }}.</td></tr>
+      <tr><td colspan="{{ (7 if operator else 6) + (0 if chosen else 1) }}">No Compose stacks on {{ "this host" if chosen else "any host" }}.</td></tr>
       {% endfor %}
     </tbody>
   </table>

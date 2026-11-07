@@ -20,7 +20,7 @@ from drydock.hosts.status import Reading, Sample, StatusCollector
 from drydock.models import Host, Job, JobTarget, StorageTarget, UpdatePolicy, UserSession
 from drydock.routes import containers
 from drydock.routes import images as images_routes
-from drydock.updates.check import HostChecks, Verdict
+from drydock.updates.check import HostChecks, Verdict, followed_tag
 from tests.conftest import Browser, add_user
 
 pytestmark = pytest.mark.anyio
@@ -1349,6 +1349,15 @@ def test_pages_of_rows() -> None:
     assert containers.back_url("/images", "", 1) == "/images"
 
 
+def test_the_tag_an_image_reference_follows() -> None:
+    assert followed_tag("nginx") == "latest"
+    assert followed_tag("nginx:1.27") == "1.27"
+    assert followed_tag("registry.local:5000/team/app") == "latest"
+    assert followed_tag("registry.local:5000/team/app:v1.0") == "v1.0"
+    assert followed_tag("nginx@sha256:" + "a" * 64) is None
+    assert followed_tag("sha256:" + "a" * 64) is None
+
+
 def two_hosts(admin: Browser) -> tuple[int, int]:
     """rigel: web and db (stack app). vega: web (stack app, pinned by digest) and cache."""
     rigel = add_host(admin)
@@ -1380,6 +1389,7 @@ async def test_every_hosts_containers_on_one_page(admin: Browser, monkeypatch) -
     assert f'value="{rigel}:' + "a" * 64 in page and f'value="{vega}:' + "c" * 64 in page
     assert f'hx-get="/containers/{vega}/{"c" * 64}/inspect"' in page
     assert 'id="check-updates"' not in page, "one host at a time"
+    assert 'title="Follows 1.37.0">1.37.0</span>' in page and ">pinned</span>" in page
     assert await shown(admin, "stack=app") == ["db", "web"]
     assert await shown(admin, "q=web") == ["web", "web"]
     one = (await admin.get(f"/containers?host={vega}")).text
@@ -1445,6 +1455,7 @@ async def test_every_hosts_stacks(admin: Browser, monkeypatch) -> None:
     assert page.count(">app</a>") == 2
     assert f'href="/containers?host={rigel}&amp;stack=app"' in page
     assert f'href="/containers?host={vega}&amp;stack=app"' in page
+    assert ">1.37.0</span>" in page and ">pinned</span>" in page
     assert "Schedule updates of every stack" not in page and "Check for updates" not in page
 
     calls = []
