@@ -1,16 +1,19 @@
 {% extends "base.html" %}
-{% from "_macros.html" import check_updates with context %}
+{% from "_macros.html" import check_updates, host_picker, pager, unread_hosts with context %}
 {% block title %}Stacks{% endblock %}
 {% block content %}
 <h1 class="mb-4 text-3xl font-bold">Stacks</h1>
 {% set operator = auth.user.role >= Role.operator %}
 {% set admin = auth.user.role >= Role.admin %}
-{# One form per action. The update posts to the containers page's update-stack route, which
-   opens its run. Names come from the host: autoescaped only. #}
+{# One form per action, on the stack's own host; view is the host the page shows ("all"
+   for every host), to come back to. The update posts to the containers page's update-stack
+   route, which opens its run. Names come from the host: autoescaped only. #}
 {% macro stack_form(s, url, verb, label, cls="btn btn-sm btn-warning") -%}
 <form method="post" action="{{ url }}" hx-post="{{ url }}" hx-nonce="{{ csp_nonce }}">
   <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
-  <input type="hidden" name="host" value="{{ chosen.id }}">
+  <input type="hidden" name="host" value="{{ s.host.id }}">
+  <input type="hidden" name="view" value="{{ host_value or 'all' }}">
+  <input type="hidden" name="page" value="{{ page }}">
   <input type="hidden" name="stack" value="{{ s.name }}">
   {% if verb %}<input type="hidden" name="action" value="{{ verb }}">{% endif %}
   <button type="submit" class="{{ cls }}">{{ label }}<span class="sr-only"> {{ s.name }}</span></button>
@@ -33,13 +36,7 @@
 {% if not hosts %}
 <p class="text-sm opacity-70">No host is set up yet.{% if admin %} <a class="link" href="/hosts/new?kind=local">Add the local host</a> or <a class="link" href="/hosts/new?kind=ssh">an SSH host</a>.{% endif %}</p>
 {% else %}
-<form id="host-picker" method="get" action="/stacks" hx-get="/stacks" hx-trigger="change" hx-push-url="true" hx-nonce="{{ csp_nonce }}" class="mb-3 flex items-center gap-2">
-  <label for="host-select" class="text-sm font-semibold">Host</label>
-  <select id="host-select" name="host" class="select select-sm w-auto" data-remember-host data-focus-result>
-    {% for h in hosts %}<option value="{{ h.id }}"{% if h.id == chosen.id %} selected{% endif %}>{{ h.name }}{% if not h.enabled %} (disabled){% endif %}</option>{% endfor %}
-  </select>
-  <noscript><button type="submit" class="btn btn-sm">Show</button></noscript>
-</form>
+{{ host_picker("/stacks", hosts, chosen) }}
 {% if notice %}
 <div role="alert" class="alert {{ 'alert-success' if notice[1] else 'alert-warning' }} alert-soft mb-3 text-sm"><span>{{ notice[0] }}</span></div>
 {% endif %}
@@ -47,13 +44,15 @@
 {% set failed = outcomes|selectattr("error")|list %}
 <div role="alert" class="alert {{ 'alert-warning' if failed else 'alert-success' }} alert-soft mb-3 text-sm">
   <ul>
-    {% for o in outcomes %}<li>{{ o.name }}: {{ o.error if o.error else verbs[o.action] }}</li>{% endfor %}
+    {% for o in outcomes %}<li>{{ o.name }}{% if o.host %} on {{ o.host }}{% endif %}: {{ o.error if o.error else verbs[o.action] }}</li>{% endfor %}
   </ul>
 </div>
 {% endif %}
 {# Polls itself like the containers table; frontend/app.ts skips a poll while a dialog is open. #}
+{% set live = chosen.enabled if chosen else hosts|selectattr("enabled")|list|length > 0 %}
 <div id="stacks"
-  {%- if chosen.enabled %} data-poller="Stack status" hx-get="/stacks?host={{ chosen.id }}" hx-trigger="every 10s" hx-target="this" hx-select="#stacks" hx-swap="outerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}"{% endif %}>
+  {%- if live %} data-poller="Stack status" hx-get="{{ page_url }}{{ page }}" hx-trigger="every 10s" hx-target="this" hx-select="#stacks" hx-swap="outerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}"{% endif %}>
+{% if chosen %}
 {% if not chosen.enabled %}
 <p class="text-sm opacity-70">Disabled: drydock does not connect to this host.</p>
 {% elif snap is none or snap.taken_at is none %}
@@ -62,27 +61,33 @@
 {% else %}
 <p class="text-sm opacity-70">Reading the containers&hellip;</p>
 {% endif %}
-{% else %}
-{% if snap.error %}
+{% elif snap.error %}
 <div class="alert alert-warning alert-soft mb-3 px-3 py-2 text-sm"><span>Stale since {{ snap.stale_since|ago }}: {{ snap.error }}</span></div>
 {% endif %}
-{% if operator %}{{ check_updates("/stacks/check-updates", checks, stacks|selectattr("newer")|list|length, "stack") }}{% endif %}
-{% if admin and stacks and not every %}
+{% set ready = chosen.enabled and snap is not none and snap.taken_at is not none %}
+{% else %}
+{{ unread_hosts(unread) }}
+{% set ready = true %}
+{% endif %}
+{% if ready %}
+{% if operator and chosen %}{{ check_updates("/stacks/check-updates", checks, newer, "stack") }}{% endif %}
+{% if admin and chosen and stacks and not every %}
 <p class="mb-2 text-sm"><a class="link" href="/updates/new?{{ {'host': chosen.id, 'type': 'stack', 'target': '*'}|urlencode }}">Schedule updates of every stack on {{ chosen.name }}</a></p>
 {% endif %}
 <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
   <table class="table table-zebra table-sm">
-    <thead><tr><th scope="col">Stack</th><th scope="col">Running</th><th scope="col">Updates</th><th scope="col" class="max-md:hidden">Backup jobs</th><th scope="col" class="max-lg:hidden">Auto-update</th>{% if operator %}<th scope="col">Actions</th>{% endif %}</tr></thead>
+    <thead><tr><th scope="col">Stack</th>{% if not chosen %}<th scope="col">Host</th>{% endif %}<th scope="col">Running</th><th scope="col">Updates</th><th scope="col" class="max-md:hidden">Backup jobs</th><th scope="col" class="max-lg:hidden">Auto-update</th>{% if operator %}<th scope="col">Actions</th>{% endif %}</tr></thead>
     <tbody>
       {% for s in stacks %}
       <tr>
-        <td class="font-semibold"><a class="link link-hover" href="/containers?{{ {'host': chosen.id, 'stack': s.name}|urlencode }}">{{ s.name }}</a></td>
+        <td class="font-semibold"><a class="link link-hover" href="/containers?{{ {'host': s.host.id, 'stack': s.name}|urlencode }}">{{ s.name }}</a></td>
+        {% if not chosen %}<td>{{ s.host.name }}</td>{% endif %}
         <td>{{ s.running }} of {{ s.total }}</td>
         <td>{% if s.newer %}<span class="badge badge-soft badge-info badge-sm">{{ s.newer }} newer</span>{% endif %}</td>
         <td class="max-md:hidden">{% for job in s.jobs %}<a class="link" href="/jobs/{{ job.id }}">{{ job.name }}</a>{% if not job.enabled %} (disabled){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</td>
         <td class="max-lg:hidden">
           {%- for policy, when in s.policies %}<span title="{{ 'next ' ~ when|stamp(False) if when else 'disabled' }}">{% if admin %}<a class="link" href="/updates/{{ policy.id }}">{{ policy.name }}</a>{% else %}{{ policy.name }}{% endif %}{% if not policy.enabled %} (disabled){% endif %}</span>{% if not loop.last %}, {% endif %}{% endfor %}
-          {%- if admin and not s.policies %}<a class="link" href="/updates/new?{{ {'host': chosen.id, 'type': 'stack', 'target': s.name}|urlencode }}">Schedule<span class="sr-only"> updates of {{ s.name }}</span></a>{% endif -%}
+          {%- if admin and not s.policies %}<a class="link" href="/updates/new?{{ {'host': s.host.id, 'type': 'stack', 'target': s.name}|urlencode }}">Schedule<span class="sr-only"> updates of {{ s.name }}</span></a>{% endif -%}
         </td>
         {% if operator %}
         <td><div class="flex flex-wrap items-center gap-1">
@@ -94,11 +99,12 @@
         {% endif %}
       </tr>
       {% else %}
-      <tr><td colspan="{{ 6 if operator else 5 }}">No Compose stacks on this host.</td></tr>
+      <tr><td colspan="{{ (6 if operator else 5) + (0 if chosen else 1) }}">No Compose stacks on {{ "this host" if chosen else "any host" }}.</td></tr>
       {% endfor %}
     </tbody>
   </table>
 </div>
+{{ pager(page, pages, page_url) }}
 {% endif %}
 </div>
 {% endif %}

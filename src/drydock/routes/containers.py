@@ -15,7 +15,7 @@ import json
 import re
 from collections import defaultdict
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from typing import Annotated, Any
 from urllib.parse import urlencode, urlsplit
@@ -23,7 +23,7 @@ from urllib.parse import urlencode, urlsplit
 import anyio.from_thread
 import docker.errors
 import requests
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -34,7 +34,7 @@ from drydock.db import get_db
 from drydock.hosts import inventory
 from drydock.hosts.helper import HELPER_LABEL
 from drydock.hosts.inventory import PROJECT_LABEL
-from drydock.hosts.status import ContainerStatus
+from drydock.hosts.status import ContainerStatus, HostSnapshot
 from drydock.jobs.dispatcher import DispatchError, lock_scope, name_key
 from drydock.models import EVERY_STACK, HealthAck, Host, Job, JobTarget, UpdatePolicy, utcnow
 from drydock.routes.auth import client_ip
@@ -80,9 +80,15 @@ SORTS: dict[str, Callable[[ContainerStatus], Any]] = {
     "stack": lambda c: c.project.lower() if c.project else None,
 }
 # Uptime sorts by when the container started: the longest up comes first ascending.
+Verdicts = dict[str, Any]  # the update checker's, by container ID
+
+
+def is_newer(verdicts: Verdicts, c: ContainerStatus) -> bool:
+    return c.id in verdicts and verdicts[c.id].state == "update"
+
+
 # The status filter: the dashboard cards' counters link here with these keys. Each test
 # takes the row and the update checker's verdicts by container ID.
-Verdicts = dict[str, Any]
 STATUSES: dict[str, tuple[str, Callable[[ContainerStatus, Verdicts], bool]]] = {
     "running": ("Running", lambda c, v: c.state == "running"),
     "exited": ("Stopped (exited or dead)", lambda c, v: c.state in ("exited", "dead")),
@@ -90,17 +96,58 @@ STATUSES: dict[str, tuple[str, Callable[[ContainerStatus, Verdicts], bool]]] = {
     "restarting": ("Restarting", lambda c, v: c.state == "restarting"),
     "created": ("Created", lambda c, v: c.state == "created"),
     "unhealthy": ("Unhealthy", lambda c, v: c.health == "unhealthy"),
-    "updates": ("Update available", lambda c, v: c.id in v and v[c.id].state == "update"),
+    "updates": ("Update available", lambda c, v: is_newer(v, c)),
 }
 
 
-def sort_rows(rows: list[ContainerStatus], key: str, descending: bool) -> list[ContainerStatus]:
-    by = SORTS[key]
-    known = [c for c in rows if by(c) is not None]
-    unknown = [c for c in rows if by(c) is None]
+Found = tuple[Host, ContainerStatus]
+
+
+def sort_rows(rows: list[Found], key: str, descending: bool) -> list[Found]:
+    def by(row: Found) -> Any:
+        return SORTS[key](row[1])
+
+    known = [r for r in rows if by(r) is not None]
+    unknown = [r for r in rows if by(r) is None]
     # Ties keep name order (rows arrive sorted by name), whichever way the column sorts.
     known.sort(key=by, reverse=descending)
     return known + unknown
+
+
+# EVERY HOST AND PAGES (the containers, stacks and images pages)
+#
+# A Docker page shows one host, or every enabled host when none is chosen (the host
+# picker's All hosts, and a host that does not exist). Its rows come PAGE_SIZE at a time.
+
+PAGE_SIZE = 100  # as many as MAX_SELECTED, so a page's checkboxes are one valid selection
+
+
+def pick_host(hosts: list[Host], host: str) -> Host | None:
+    """The host to show, or None for every host."""
+    return next((h for h in hosts if str(h.id) == host), None)
+
+
+def shown_hosts(hosts: list[Host], chosen: Host | None) -> list[Host]:
+    return [chosen] if chosen is not None else [h for h in hosts if h.enabled]
+
+
+def page_number(text: str) -> int:
+    """The ?page= value; anything but a plain number is the first page."""
+    return int(text) if text.isascii() and text.isdigit() and len(text) < 7 else 1
+
+
+def back_url(path: str, back: str, number: int) -> str:
+    """Where an action on a Docker page returns to: back is the host the page showed (an
+    ID, or anything else for every host), number its page."""
+    query = ({"host": back} if back.isdigit() else {}) | ({"page": number} if number > 1 else {})
+    return f"{path}?{urlencode(query)}" if query else path
+
+
+def paginate[T](rows: list[T], number: int) -> tuple[list[T], int, int]:
+    """(the rows on that page, that page, how many pages). Past the end is the last page."""
+    pages = max(1, -(-len(rows) // PAGE_SIZE))
+    number = min(max(number, 1), pages)
+    return rows[(number - 1) * PAGE_SIZE : number * PAGE_SIZE], number, pages
 
 
 def matches(c: ContainerStatus, query: str, values: bool) -> bool:
@@ -148,31 +195,48 @@ def containers(
     request: Request,
     auth: Viewer,
     db: Session = Depends(get_db),
-    host: int | None = None,
+    host: str = "",
     sort: str = "name",
     order: str = "asc",
     status: str = "",
     stack: str = "",
     q: str = "",
+    number: Annotated[str, Query(alias="page")] = "1",
 ) -> Response:
-    return page(request, auth, db, View(host, sort, order, status, stack, q))
+    view = View(host, sort, order, status, stack, q, page_number(number))
+    return page(request, auth, db, view)
 
 
 @dataclass(frozen=True)
 class View:
-    """What the page shows: the host, sort and filters, as the query string gives them."""
+    """What the page shows: the host ("" for every host), sort, filters and page, as the
+    query string gives them."""
 
-    host: int | None = None
+    host: str = ""
     sort: str = "name"
     order: str = "asc"
     status: str = ""
     stack: str = ""
     q: str = ""
+    page: int = 1
 
     @property
     def url(self) -> str:
-        shown = {k: v for k, v in asdict(self).items() if v not in ("", None)}
+        shown = {k: v for k, v in asdict(self).items() if v not in ("", 1)}
         return "/containers?" + urlencode(shown)
+
+
+@dataclass(frozen=True)
+class Row:
+    """A container on the page, with what its row shows besides the container itself."""
+
+    host: Host
+    c: ContainerStatus
+    verdict: Any  # the update checker's (updates/check.py), or None
+    lines: tuple[list[float | None], list[int | None]]  # its CPU and memory sparklines
+    jobs: list[Job]  # the backup jobs that cover it
+    policies: list[tuple[UpdatePolicy, datetime | None]]  # its update policies, next run
+    port_base: str | None
 
 
 def page(
@@ -183,100 +247,113 @@ def page(
     outcomes: list[Outcome] | None = None,
     notice: tuple[str, bool] | None = None,
 ) -> Response:
-    host, sort, order, status, stack, q = (
-        view.host,
-        view.sort,
-        view.order,
-        view.status,
-        view.stack,
-        view.q,
-    )
     collector = request.app.state.status
     collector.touch()
+    updates = request.app.state.updates
     hosts = list(db.scalars(select(Host).order_by(Host.name)))
-    chosen = next((h for h in hosts if h.id == host), None) or next(
-        (h for h in hosts if h.enabled), hosts[0] if hosts else None
-    )
-    sort = sort if sort in SORTS else "name"
-    order = "desc" if order == "desc" else "asc"
-    status = status if status in STATUSES else ""
-    query = q.strip()[:MAX_QUERY]
+    chosen = pick_host(hosts, view.host)
+    sort = view.sort if view.sort in SORTS else "name"
+    order = "desc" if view.order == "desc" else "asc"
+    status = view.status if view.status in STATUSES else ""
+    stack = view.stack
+    query = view.q.strip()[:MAX_QUERY]
     admin = auth.user.role >= Role.admin
+
+    verdicts: dict[int, Verdicts] = {}
+    snaps: dict[int, HostSnapshot | None] = {}
+    found: list[Found] = []
+    for h in shown_hosts(hosts, chosen):
+        snaps[h.id] = snap = collector.snapshot(h.id)
+        checks = updates.result(h.id)
+        verdicts[h.id] = checks.verdicts if checks is not None else {}
+        if snap is not None:
+            found += [(h, c) for c in snap.containers]
+    total = len(found)
+    stacks = sorted({c.project for _, c in found if c.project})
+    if chosen is None:
+        found.sort(key=lambda r: (r[1].name, r[0].name))  # as one host's arrive, then by host
+    stack_newer = sum(  # members of the filtered stack with a newer image (one host only)
+        1
+        for h, c in found
+        if chosen is not None and stack and c.project == stack and is_newer(verdicts[h.id], c)
+    )
+    if status:
+        found = [r for r in found if STATUSES[status][1](r[1], verdicts[r[0].id])]
+    if stack:
+        found = [r for r in found if r[1].project == stack]
+    if query:
+        found = [r for r in found if matches(r[1], query.lower(), admin)]
+    shown, number, pages = paginate(sort_rows(found, sort, order == "desc"), view.page)
+
+    scheduler = request.app.state.scheduler
+    facts: dict[int, Any] = {}  # per host of a row: its jobs, policies, sparklines, ports
+    rows = []
+    for h, c in shown:
+        if h.id not in facts:
+            facts[h.id] = (
+                covering_jobs(db, h.id),
+                [
+                    (p, scheduler.next_update_time(p.id) if p.enabled else None)
+                    for p in db.scalars(select(UpdatePolicy).where(UpdatePolicy.host_id == h.id))
+                ],
+                collector.history(h.id),
+                port_base(request, h, admin),
+            )
+        covers, policies, history, base = facts[h.id]
+        mine = (("container", c.name), ("stack", c.project))
+        mine += (("stack", EVERY_STACK),) if c.project else ()
+        jobs = covers[("container", c.name)] + (covers[("stack", c.project)] if c.project else [])
+        rows.append(
+            Row(
+                h,
+                c,
+                verdicts[h.id].get(c.id),
+                history.containers.get(c.id, ([], [])),
+                list({j.id: j for j in jobs}.values()),
+                [(p, when) for p, when in policies if (p.target_type, p.target) in mine],
+                base,
+            )
+        )
+    host_value = str(chosen.id) if chosen is not None else ""
+    shown_view = View(host_value, sort, order, status, stack, query)
     context: dict[str, Any] = {
         "hosts": hosts,
         "chosen": chosen,
+        "host_value": host_value,  # the host field of the page's forms
         "sort": sort,
         "order": order,
         "status": status,
         "stack": stack,
         "q": query,
         "statuses": STATUSES,
-        "rows": [],
-        "stacks": [],
-        "jobs_of": {},
+        "rows": rows,
+        "matched": len(found),
+        "total": total,
+        "page": number,
+        "pages": pages,
+        "page_url": shown_view.url + "&page=",
+        "stacks": stacks,
+        # Every host's page: the hosts that were not read cleanly, with their reading.
+        "unread": [],
         "outcomes": outcomes or [],
         "verbs": ACTIONS,
         "checks": None,
-        "verdicts": {},
         "notice": notice,  # (text, whether it went well) after a check for updates
-        "stack_newer": 0,  # members of the filtered stack with a newer image
-        "auto_update": {},  # container ID: [(update policy, its next run)]
-        "history": None,  # the host's sparklines (hosts/status.py History)
+        "stack_newer": stack_newer,
     }
-    if chosen is not None:
-        snap = collector.snapshot(chosen.id)
-        context["history"] = collector.history(chosen.id)
-        checks = request.app.state.updates.result(chosen.id)
-        verdicts = checks.verdicts if checks is not None else {}
+    if chosen is None:
+        context["unread"] = [
+            (h, snaps[h.id])
+            for h in shown_hosts(hosts, chosen)
+            if snaps[h.id] is None or snaps[h.id].taken_at is None or snaps[h.id].error
+        ]
+    else:
         context |= {
-            "checks": checks,
-            "verdicts": verdicts,
+            "checks": updates.result(chosen.id),
             "state": request.app.state.hosts.status(chosen),
-            "snap": snap,
+            "snap": snaps[chosen.id],
             "where": target(chosen) if admin else None,
-            "port_base": port_base(request, chosen, admin),
         }
-        if snap is not None:
-            context["stacks"] = sorted({c.project for c in snap.containers if c.project})
-            if stack:
-                context["stack_newer"] = sum(
-                    1
-                    for c in snap.containers
-                    if c.project == stack and c.id in verdicts and verdicts[c.id].state == "update"
-                )
-            rows = list(snap.containers)
-            if status:
-                rows = [c for c in rows if STATUSES[status][1](c, verdicts)]
-            if stack:
-                rows = [c for c in rows if c.project == stack]
-            if query:
-                rows = [c for c in rows if matches(c, query.lower(), admin)]
-            context["rows"] = sort_rows(rows, sort, order == "desc")
-            policies = list(
-                db.scalars(select(UpdatePolicy).where(UpdatePolicy.host_id == chosen.id))
-            )
-            scheduler = request.app.state.scheduler
-            context["auto_update"] = {
-                c.id: [
-                    (p, scheduler.next_update_time(p.id) if p.enabled else None)
-                    for p in policies
-                    if (p.target_type, p.target)
-                    in (("container", c.name), ("stack", c.project))
-                    + ((("stack", EVERY_STACK),) if c.project else ())
-                ]
-                for c in context["rows"]
-            }
-            covers = covering_jobs(db, chosen.id)
-            context["jobs_of"] = {
-                c.id: list(
-                    {
-                        j.id: j
-                        for j in covers[("container", c.name)]
-                        + (covers[("stack", c.project)] if c.project else [])
-                    }.values()
-                )
-                for c in context["rows"]
-            }
     # The table's own requests (its poll, the toolbar) take the table alone; the host
     # picker swaps #main, so it takes the page.
     partial = (
@@ -327,6 +404,7 @@ class Outcome:
     action: str
     name: str
     error: str | None = None
+    host: str | None = None  # its host's name, when the page shows more than one host
 
 
 def daemon_error(exc: BaseException) -> str:
@@ -453,58 +531,95 @@ def acknowledge(
     return outcomes, acked
 
 
+def targets(items: list[str], host: str) -> dict[int, list[str]]:
+    """Host ID to container IDs, from "<host ID>:<container ID>" values (a bare container
+    ID is on host, the form's own). 422 for anything else."""
+    by_host: dict[int, list[str]] = {}
+    for item in items:
+        where, _, container_id = item.rpartition(":")
+        where = where or host
+        if not (
+            CONTAINER_ID_RE.fullmatch(container_id)
+            and where.isascii()
+            and where.isdigit()
+            and len(where) < 10
+        ):
+            raise HTTPException(status_code=422)
+        found = by_host.setdefault(int(where), [])
+        if container_id not in found:
+            found.append(container_id)
+    return by_host
+
+
+async def refresh_all(collector: Any, host_ids: list[int]) -> None:
+    """The collector's refresh of each host, at the same time."""
+    async with anyio.create_task_group() as group:
+        for host_id in host_ids:
+            group.start_soon(collector.refresh, host_id)
+
+
 @router.post("/containers/actions")
 def container_actions(
     request: Request,
     auth: Operator,
-    host: Annotated[int, Form()],
     action: Annotated[str, Form()],
     db: Session = Depends(get_db),
+    host: Annotated[str, Form()] = "",
     ids: Annotated[list[str] | None, Form(alias="id")] = None,
     sort: Annotated[str, Form()] = "name",
     order: Annotated[str, Form()] = "asc",
     status: Annotated[str, Form()] = "",
     stack: Annotated[str, Form()] = "",
     q: Annotated[str, Form()] = "",
+    number: Annotated[str, Form(alias="page")] = "1",
 ) -> Response:
-    """action is "stop" for the selected containers (id), or "stop:<id>" for one row's."""
-    view = View(host, sort, order, status, stack, q)
+    """action is "stop" for the selected containers (id), or "stop:<id>" for one row's.
+    Each id is "<host ID>:<container ID>", or a container ID on host; host is also the
+    page's own ("" for every host)."""
+    view = View(host, sort, order, status, stack, q, page_number(number))
     verb, _, one = action.partition(":")
-    chosen = list(dict.fromkeys([one] if one else ids or []))
-    if verb not in ACTIONS or not all(CONTAINER_ID_RE.fullmatch(i) for i in chosen):
+    if verb not in ACTIONS:
         raise HTTPException(status_code=422)
+    picked = targets([one] if one else ids or [], host)
     if verb == "remove":
         require_admin_reauth(auth)
-    target_host = db.get(Host, host)
-    if target_host is None:
+    target_hosts = [db.get(Host, host_id) for host_id in picked]
+    if any(h is None for h in target_hosts):
         raise HTTPException(status_code=404)
-    release(db, target_host)
-    if not chosen:
+    acted_on = [release(db, h) for h in target_hosts if h is not None]
+    count = sum(len(chosen) for chosen in picked.values())
+    if not count:
         outcomes = [Outcome(verb, "Nothing", "Select containers first.")]
-    elif len(chosen) > MAX_SELECTED:
+    elif count > MAX_SELECTED:
         outcomes = [Outcome(verb, "Nothing", f"Select at most {MAX_SELECTED} containers.")]
     else:
-        acked: list[tuple[str, datetime]] = []
-        if verb == "acknowledge":
-            outcomes, acked = acknowledge(request, db, auth, target_host, chosen)
-        else:
-            outcomes = run_actions(request, auth, target_host, verb, chosen)
-        for outcome in outcomes:
-            audit.record(
-                db,
-                actor=auth.user.username,
-                action=f"container.{verb}",
-                target=f"container:{outcome.name}",
-                outcome="success" if outcome.error is None else "failure",
-                ip=client_ip(request),
-                details={"host": target_host.name}
-                | ({} if outcome.error is None else {"error": outcome.error}),
-            )
+        outcomes = []
+        acked: list[tuple[int, str, datetime]] = []
+        named = not host or len(acted_on) > 1  # the outcomes say which host
+        for target_host in acted_on:
+            chosen = picked[target_host.id]
+            if verb == "acknowledge":
+                done, seen = acknowledge(request, db, auth, target_host, chosen)
+                acked += [(target_host.id, container_id, at) for container_id, at in seen]
+            else:
+                done = run_actions(request, auth, target_host, verb, chosen)
+            for outcome in done:
+                audit.record(
+                    db,
+                    actor=auth.user.username,
+                    action=f"container.{verb}",
+                    target=f"container:{outcome.name}",
+                    outcome="success" if outcome.error is None else "failure",
+                    ip=client_ip(request),
+                    details={"host": target_host.name}
+                    | ({} if outcome.error is None else {"error": outcome.error}),
+                )
+            outcomes += [replace(o, host=target_host.name) for o in done] if named else done
         db.commit()
-        for container_id, at in acked:
-            request.app.state.status.acknowledge(target_host.id, container_id, at)
+        for host_id, container_id, at in acked:
+            request.app.state.status.acknowledge(host_id, container_id, at)
         if verb != "acknowledge":
-            anyio.from_thread.run(request.app.state.status.refresh, target_host.id)
+            anyio.from_thread.run(refresh_all, request.app.state.status, [h.id for h in acted_on])
     if not is_htmx(request):
         # A form without script: redirect, so reloading the page never acts again. The
         # outcomes are in the audit log and the table.
@@ -556,7 +671,7 @@ def check_updates(
 ) -> Response:
     """Asks the registries now which containers of the host have a newer image (at most
     once a minute per host). Audited: it makes drydock contact registries."""
-    view = View(host, sort, order, status, stack, q)
+    view = View(str(host), sort, order, status, stack, q)
     target_host, notice, error = ask_registries(request, db, host)
     audit.record(
         db,
@@ -618,9 +733,11 @@ def update_container(
     host: Annotated[int, Form()],
     container: Annotated[str, Form()],
     db: Session = Depends(get_db),
+    shown: Annotated[str | None, Form(alias="view")] = None,
 ) -> Response:
     """Starts an update run of one container to what its tag names on the registry now
-    (updates/apply.py) and opens its run page. Audited."""
+    (updates/apply.py) and opens its run page. Audited. A refusal shows view, the host the
+    page showed ("all" for every host), or else the container's host."""
     if not CONTAINER_ID_RE.fullmatch(container):
         raise HTTPException(status_code=422)
     target_host = db.get(Host, host)
@@ -658,7 +775,8 @@ def update_container(
     )
     db.commit()
     if run_id is None:
-        view = View(target_host.id)
+        back = shown or str(target_host.id)
+        view = View(back if back.isdigit() else "")
         if not is_htmx(request):
             return see_other(request, view.url)
         response = page(request, auth, db, view, notice=(f"{label}: {error}", False))
@@ -715,7 +833,7 @@ def update_stack(
     )
     db.commit()
     if run_id is None:
-        view = View(target_host.id, stack=stack)
+        view = View(str(target_host.id), stack=stack)
         if not is_htmx(request):
             return see_other(request, view.url)
         response = page(request, auth, db, view, notice=(f"Stack {stack}: {error}", False))

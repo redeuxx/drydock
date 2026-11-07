@@ -13,18 +13,20 @@ policies and health checks usually cover a start; follow depends_on if that fall
 """
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Any
+from urllib.parse import urlencode
 
 import anyio.from_thread
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from drydock import audit
 from drydock.db import get_db
+from drydock.hosts.status import HostSnapshot
 from drydock.models import EVERY_STACK, Host, Job, UpdatePolicy
 from drydock.routes import containers as container_routes
 from drydock.routes.auth import client_ip
@@ -43,6 +45,7 @@ STACK_ACTIONS = ("start", "stop", "restart", "remove")
 
 @dataclass(frozen=True)
 class Stack:
+    host: Host
     name: str
     total: int
     running: int
@@ -55,62 +58,89 @@ def page(
     request: Request,
     auth: Auth,
     db: Session,
-    host: int | None,
+    host: str,
+    number: int = 1,
     outcomes: list[container_routes.Outcome] | None = None,
     notice: tuple[str, bool] | None = None,
 ) -> Response:
+    """One host's stacks, or every enabled host's when host names none (routes/containers.py
+    pick_host), a page at a time."""
     collector = request.app.state.status
     collector.touch()
     hosts = list(db.scalars(select(Host).order_by(Host.name)))
-    chosen = next((h for h in hosts if h.id == host), None) or next(
-        (h for h in hosts if h.enabled), hosts[0] if hosts else None
-    )
-    snap = None
-    checks = None
-    stacks: list[Stack] = []
-    every = False  # a policy updates every stack on the host
-    if chosen is not None:
-        snap = collector.snapshot(chosen.id)
-        checks = request.app.state.updates.result(chosen.id)
+    chosen = container_routes.pick_host(hosts, host)
+    snaps: dict[int, HostSnapshot | None] = {}
+    found = []  # (host, stack, its members, the host's update verdicts)
+    for h in container_routes.shown_hosts(hosts, chosen):
+        snaps[h.id] = snap = collector.snapshot(h.id)
+        checks = request.app.state.updates.result(h.id)
         verdicts = checks.verdicts if checks is not None else {}
-        if snap is not None:
-            groups = defaultdict(list)
-            for c in snap.containers:
-                if c.project:
-                    groups[c.project].append(c)
-            covers = container_routes.covering_jobs(db, chosen.id)
-            scheduler = request.app.state.scheduler
+        groups = defaultdict(list)
+        for c in snap.containers if snap is not None else ():
+            if c.project:
+                groups[c.project].append(c)
+        found += [(h, name, members, verdicts) for name, members in groups.items()]
+    found.sort(key=lambda f: (f[1], f[0].name))
+    shown, number, pages = container_routes.paginate(found, number)
+
+    scheduler = request.app.state.scheduler
+    facts: dict[int, Any] = {}  # per host: the jobs that cover its stacks, its stack policies
+
+    def of(h: Host) -> Any:
+        if h.id not in facts:
             policies = defaultdict(list)
             for p in db.scalars(
                 select(UpdatePolicy)
-                .where(UpdatePolicy.host_id == chosen.id, UpdatePolicy.target_type == "stack")
+                .where(UpdatePolicy.host_id == h.id, UpdatePolicy.target_type == "stack")
                 .order_by(UpdatePolicy.name)
             ):
                 policies[p.target].append(
                     (p, scheduler.next_update_time(p.id) if p.enabled else None)
                 )
-            stacks = [
-                Stack(
-                    name,
-                    len(members),
-                    sum(c.state == "running" for c in members),
-                    sum(c.id in verdicts and verdicts[c.id].state == "update" for c in members),
-                    covers[("stack", name)],
-                    policies[name] + policies[EVERY_STACK],
-                )
-                for name, members in sorted(groups.items())
-            ]
-            every = bool(policies[EVERY_STACK])
+            facts[h.id] = (container_routes.covering_jobs(db, h.id), policies)
+        return facts[h.id]
+
+    stacks = [
+        Stack(
+            h,
+            name,
+            len(members),
+            sum(c.state == "running" for c in members),
+            sum(container_routes.is_newer(verdicts, c) for c in members),
+            of(h)[0][("stack", name)],
+            of(h)[1][name] + of(h)[1][EVERY_STACK],
+        )
+        for h, name, members, verdicts in shown
+    ]
+    host_value = str(chosen.id) if chosen is not None else ""
+    single = chosen is not None and chosen.enabled
     return render(
         request,
         "stacks/index.html",
         auth=auth,
         hosts=hosts,
         chosen=chosen,
-        snap=snap,
+        host_value=host_value,
+        snap=snaps.get(chosen.id) if chosen is not None else None,
+        unread=[
+            (h, snap)
+            for h in container_routes.shown_hosts(hosts, None)
+            if (snap := snaps[h.id]) is None or snap.taken_at is None or snap.error
+        ]
+        if chosen is None
+        else [],
         stacks=stacks,
-        every=every,
-        checks=checks,
+        total=len(found),
+        newer=sum(  # stacks with a newer image, on every page
+            any(container_routes.is_newer(verdicts, c) for c in members)
+            for _, _, members, verdicts in found
+        ),
+        page=number,
+        pages=pages,
+        page_url=f"/stacks?{urlencode({'host': host_value, 'page': ''})}",
+        # A policy updates every stack on the (one) host.
+        every=single and bool(of(chosen)[1][EVERY_STACK]),
+        checks=request.app.state.updates.result(chosen.id) if chosen is not None else None,
         notice=notice,
         outcomes=outcomes or [],
         verbs=container_routes.ACTIONS,
@@ -119,9 +149,13 @@ def page(
 
 @router.get("/stacks")
 def stacks(
-    request: Request, auth: Viewer, db: Session = Depends(get_db), host: int | None = None
+    request: Request,
+    auth: Viewer,
+    db: Session = Depends(get_db),
+    host: str = "",
+    number: Annotated[str, Query(alias="page")] = "1",
 ) -> Response:
-    return page(request, auth, db, host)
+    return page(request, auth, db, host, container_routes.page_number(number))
 
 
 @router.post("/stacks/check-updates")
@@ -143,7 +177,7 @@ def check_updates(
     url = f"/stacks?host={host}"
     if not is_htmx(request):
         return see_other(request, url)
-    response = page(request, auth, db, host, notice=notice)
+    response = page(request, auth, db, str(host), notice=notice)
     response.headers["HX-Replace-Url"] = url
     return response
 
@@ -156,9 +190,12 @@ def stack_actions(
     stack: Annotated[str, Form()],
     action: Annotated[str, Form()],
     db: Session = Depends(get_db),
+    shown: Annotated[str | None, Form(alias="view")] = None,
+    number: Annotated[str, Form(alias="page")] = "1",
 ) -> Response:
     """Runs action on every container of the stack, as the cache last saw them. Audited
-    once for the stack, with each container's outcome."""
+    once for the stack, with each container's outcome. view is the host the page showed
+    ("all" for every host); the stack's own host if not given."""
     if action not in STACK_ACTIONS:
         raise HTTPException(status_code=422)
     if action == "remove":
@@ -183,9 +220,13 @@ def stack_actions(
     )
     db.commit()
     anyio.from_thread.run(request.app.state.status.refresh, target_host.id)
-    url = f"/stacks?host={target_host.id}"
+    back = shown or str(target_host.id)
+    shown_page = container_routes.page_number(number)
+    url = container_routes.back_url("/stacks", back, shown_page)
     if not is_htmx(request):
         return see_other(request, url)
-    response = page(request, auth, db, target_host.id, outcomes)
+    if not back.isdigit():  # every host: the outcomes say which host
+        outcomes = [replace(o, host=target_host.name) for o in outcomes]
+    response = page(request, auth, db, back, shown_page, outcomes=outcomes)
     response.headers["HX-Replace-Url"] = url
     return response

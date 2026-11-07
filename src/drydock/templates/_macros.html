@@ -106,3 +106,39 @@
   <span class="opacity-70">{% if checks %}{{ found }} {{ noun }}{{ "" if found == 1 else "s" }} with a newer image, checked {{ checks.checked_at|ago }}{% if checks.error %} ({{ checks.error }}){% endif %}{% else %}Not checked yet{% endif %}</span>
 </form>
 {%- endmacro %}
+
+{# Previous and next for a Docker page's rows (routes/containers.py paginate); url ends in
+   "page=". Nothing when they fit on one page. #}
+{% macro pager(page, pages, url) -%}
+{% if pages > 1 %}
+<nav class="mt-3 flex flex-wrap items-center gap-2 text-sm" aria-label="Pages">
+  {% if page > 1 %}<a class="btn btn-outline btn-sm" href="{{ url }}{{ page - 1 }}" rel="prev">Previous</a>{% endif %}
+  <span class="opacity-70">Page {{ page }} of {{ pages }}</span>
+  {% if page < pages %}<a class="btn btn-outline btn-sm" href="{{ url }}{{ page + 1 }}" rel="next">Next</a>{% endif %}
+</nav>
+{% endif %}
+{%- endmacro %}
+
+{# The host picker of the containers, stacks and images pages: every host, or one.
+   frontend/app.ts remembers the last choice. #}
+{% macro host_picker(path, hosts, chosen) -%}
+<form id="host-picker" method="get" action="{{ path }}" hx-get="{{ path }}" hx-trigger="change" hx-push-url="true" hx-nonce="{{ csp_nonce }}" class="mb-3 flex items-center gap-2">
+  <label for="host-select" class="text-sm font-semibold">Host</label>
+  <select id="host-select" name="host" class="select select-sm w-auto" data-remember-host data-focus-result>
+    <option value=""{% if not chosen %} selected{% endif %}>All hosts</option>
+    {% for h in hosts %}<option value="{{ h.id }}"{% if chosen and h.id == chosen.id %} selected{% endif %}>{{ h.name }}{% if not h.enabled %} (disabled){% endif %}</option>{% endfor %}
+  </select>
+  <noscript><button type="submit" class="btn btn-sm">Show</button></noscript>
+</form>
+{%- endmacro %}
+
+{# Every host's page: the hosts whose containers were not read cleanly (routes/containers.py). #}
+{% macro unread_hosts(unread) -%}
+{% if unread %}
+<div role="status" class="alert alert-warning alert-soft mb-3 text-sm">
+  <ul>
+    {% for h, snap in unread %}<li><span class="font-semibold">{{ h.name }}</span>: {% if snap is none or (snap.taken_at is none and not snap.error) %}reading the containers&hellip;{% elif snap.taken_at is none %}cannot read the containers: {{ snap.error }}{% else %}stale since {{ snap.stale_since|ago }}: {{ snap.error }}{% endif %}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
+{%- endmacro %}

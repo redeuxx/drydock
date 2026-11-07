@@ -13,12 +13,14 @@ refuses to remove an image a new container already uses. Add a dispatcher key if
 
 import re
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated, Any
+from urllib.parse import urlencode
 
 import docker.errors
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -42,6 +44,7 @@ Admin = Annotated[Auth, Depends(require_role(Role.admin))]
 
 IMAGE_ID_RE = re.compile(r"sha256:[0-9a-f]{64}")
 IMAGE_TIMEOUT = 30
+READERS = 8  # hosts read at the same time on every host's page
 NO_TAG = "<none>:<none>"
 
 
@@ -53,6 +56,7 @@ class Image:
     created: datetime
     users: list[str]  # names of the containers that use it
     newer: bool = False  # a container using it has a newer image, as last checked
+    host: Any = None  # the Host it is on
 
 
 def image_error(exc: BaseException) -> str:
@@ -94,6 +98,7 @@ def read_images(request: Request, host: Host, newer: set[str]) -> tuple[list[Ima
                 datetime.fromtimestamp(int(i.get("Created") or 0), UTC),
                 sorted(users.get(str(i["Id"]), [])),
                 str(i["Id"]) in behind,
+                host,
             )
             for i in api.images()
         ]
@@ -132,41 +137,64 @@ def page(
     request: Request,
     auth: Auth,
     db: Session,
-    host: int | None,
+    host: str,
+    number: int = 1,
     notice: tuple[str, bool] | None = None,
 ) -> Response:
+    """One host's images, or every enabled host's when host names none (routes/containers.py
+    pick_host), read from each daemon at the same time, a page at a time."""
     hosts = list(db.scalars(select(Host).order_by(Host.name)))
-    chosen = next((h for h in hosts if h.id == host), None) or next(
-        (h for h in hosts if h.enabled), hosts[0] if hosts else None
-    )
-    images: list[Image] = []
-    error = None
-    checks = request.app.state.updates.result(chosen.id) if chosen is not None else None
-    if chosen is not None and chosen.enabled:
-        for h in hosts:
-            db.expunge(h)
-        db.rollback()  # no lock while waiting on the network (routes/hosts.py release)
-        verdicts = checks.verdicts if checks is not None else {}
-        newer = {cid for cid, v in verdicts.items() if v.state == "update"}
-        images, error = read_images(request, chosen, newer)
+    chosen = container_routes.pick_host(hosts, host)
+    read = [h for h in container_routes.shown_hosts(hosts, chosen) if h.enabled]
+    updates = request.app.state.updates
+    checks = {h.id: updates.result(h.id) for h in read}
+    for h in hosts:
+        db.expunge(h)
+    db.rollback()  # no lock while waiting on the network (routes/hosts.py release)
+
+    def one(h: Host) -> tuple[list[Image], str | None]:
+        verdicts = checks[h.id].verdicts if checks[h.id] is not None else {}
+        return read_images(request, h, {cid for cid, v in verdicts.items() if v.state == "update"})
+
+    # ponytail: one thread per host, at most READERS at once; a slow host holds the page
+    # up to IMAGE_TIMEOUT. Cache the images (as hosts/status.py does containers) if that hurts.
+    with ThreadPoolExecutor(max_workers=READERS) as pool:
+        results = list(pool.map(one, read))
+    images = [i for found, _ in results for i in found]
+    errors = [(h, error) for h, (_, error) in zip(read, results, strict=True) if error]
+    if chosen is None:
+        images.sort(key=lambda i: (not i.tags, i.tags[0] if i.tags else "", i.host.name, i.id))
+    shown, number, pages = container_routes.paginate(images, number)
+    host_value = str(chosen.id) if chosen is not None else ""
     return render(
         request,
         "images/index.html",
         auth=auth,
         hosts=hosts,
         chosen=chosen,
-        images=images,
-        error=error,
-        checks=checks,
+        host_value=host_value,
+        images=shown,
+        count=len(images),
+        size=sum(i.size for i in images),
+        newer=sum(i.newer for i in images),
+        page=number,
+        pages=pages,
+        page_url=f"/images?{urlencode({'host': host_value, 'page': ''})}",
+        errors=errors,  # (host, an error that is safe to show)
+        checks=checks.get(chosen.id) if chosen is not None else None,
         notice=notice,
     )
 
 
 @router.get("/images")
 def images(
-    request: Request, auth: Viewer, db: Session = Depends(get_db), host: int | None = None
+    request: Request,
+    auth: Viewer,
+    db: Session = Depends(get_db),
+    host: str = "",
+    number: Annotated[str, Query(alias="page")] = "1",
 ) -> Response:
-    return page(request, auth, db, host)
+    return page(request, auth, db, host, container_routes.page_number(number))
 
 
 @router.post("/images/check-updates")
@@ -188,7 +216,7 @@ def check_updates(
     url = f"/images?host={host}"
     if not is_htmx(request):
         return see_other(request, url)
-    response = page(request, auth, db, host, notice)
+    response = page(request, auth, db, str(host), notice=notice)
     response.headers["HX-Replace-Url"] = url
     return response
 
@@ -200,8 +228,11 @@ def remove(
     host: Annotated[int, Form()],
     image: Annotated[str, Form()],
     db: Session = Depends(get_db),
+    shown: Annotated[str | None, Form(alias="view")] = None,
+    number: Annotated[str, Form(alias="page")] = "1",
 ) -> Response:
-    """Audited, removed or not, once the request itself is valid."""
+    """Audited, removed or not, once the request itself is valid. view is the host the
+    page showed ("all" for every host); the image's own host if not given."""
     require_recent_auth(auth)
     if not IMAGE_ID_RE.fullmatch(image):
         raise HTTPException(status_code=422)
@@ -223,11 +254,13 @@ def remove(
         details={"host": target_host.name, "id": image} | ({"error": error} if error else {}),
     )
     db.commit()
-    url = f"/images?host={target_host.id}"
+    back = shown or str(target_host.id)
+    shown_page = container_routes.page_number(number)
+    url = container_routes.back_url("/images", back, shown_page)
     if not is_htmx(request):
         return see_other(request, url)
-    response = page(
-        request, auth, db, target_host.id, (f"{label}: {error or 'removed'}", not error)
-    )
+    where = "" if back.isdigit() else f" on {target_host.name}"
+    notice = (f"{label}{where}: {error or 'removed'}", not error)
+    response = page(request, auth, db, back, shown_page, notice=notice)
     response.headers["HX-Replace-Url"] = url
     return response

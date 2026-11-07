@@ -985,9 +985,16 @@ async def test_containers_page_for_no_unread_failing_stale_or_disabled_hosts(
     put(collector, replace(old, error="The SSH connection is not up.", stale_since=old.taken_at))
 
     for path in ("/containers", "/containers?host=999999"):
-        first = (await admin.get(path)).text
-        assert f'<option value="{failing}" selected>' in first, "the first enabled host by name"
-        assert "Cannot read the containers: Cannot reach it." in first
+        every = (await admin.get(path)).text
+        assert '<option value="" selected>All hosts</option>' in every, "no host: every host"
+        assert "failing</span>: cannot read the containers: Cannot reach it." in every
+        assert "unread</span>: reading the containers" in every
+        assert "stale</span>: stale since just now: The SSH connection is not up." in every
+        assert "aaa-off</span>" not in every, "a disabled host is left out"
+        assert "No containers on any host." in every and "data-poller" in every
+    failed = (await admin.get(f"/containers?host={failing}")).text
+    assert f'<option value="{failing}" selected>' in failed
+    assert "Cannot read the containers: Cannot reach it." in failed
     assert "Reading the containers" in (await admin.get(f"/containers?host={unread}")).text
     stale_page = (await admin.get(f"/containers?host={stale}")).text
     assert "Stale since just now: The SSH connection is not up." in stale_page
@@ -1014,7 +1021,7 @@ async def test_actions_and_inspect_need_their_roles_and_csrf(admin: Browser, mon
     _, host_id = await a_host_with_containers(admin, monkeypatch)
     action = {"host": str(host_id), "action": f"stop:{'a' * 64}"}
     page = (await admin.get(f"/containers?host={host_id}")).text
-    assert 'id="container-actions"' in page and 'name="id" value="' + "a" * 64 in page
+    assert 'id="container-actions"' in page and f'name="id" value="{host_id}:' + "a" * 64 in page
     assert f'hx-get="/containers/{host_id}/{"a" * 64}/inspect"' in page
     assert 'commandfor="confirm-stop"' in page, "stopping the selected ones asks first"
     assert (await admin.post("/containers/actions", action, csrf=False)).status_code == 403
@@ -1074,7 +1081,10 @@ async def test_actions_refuse_bad_input_before_calling_docker(admin: Browser, mo
 async def test_remove_needs_an_admin_with_a_recent_password(admin: Browser, monkeypatch) -> None:
     _, host_id = await a_host_with_containers(admin, monkeypatch)
     remove = {"host": str(host_id), "action": f"remove:{'a' * 64}"}
-    assert 'value="remove:' + "a" * 64 in (await admin.get(f"/containers?host={host_id}")).text
+    assert (
+        f'value="remove:{host_id}:' + "a" * 64
+        in (await admin.get(f"/containers?host={host_id}")).text
+    )
     await add_user(admin, "runner", "operator")
     admin.sql("UPDATE sessions SET reauth_at = NULL")
     stale = await admin.post("/containers/actions", remove)
@@ -1183,8 +1193,8 @@ async def test_an_acknowledged_exit_is_unhealthy_no_more_until_it_starts_again(
     show(started)
     page = (await admin.get(f"/containers?host={host_id}&status=unhealthy")).text
     assert names_in_order(page) == ["web", "worker"]
-    assert 'value="acknowledge:' + "e" * 64 in page
-    assert 'value="acknowledge:' + "a" * 64 not in page, "running containers: not yet"
+    assert f'value="acknowledge:{host_id}:' + "e" * 64 in page
+    assert f'value="acknowledge:{host_id}:' + "a" * 64 not in page, "running containers: not yet"
 
     htmx = {"HX-Request": "true"}
     data = {"host": str(host_id), "action": "acknowledge", "id": ["e" * 64, "a" * 64]}
@@ -1298,7 +1308,11 @@ async def test_stacks_and_images_pages_check_for_updates(admin: Browser, monkeyp
         images_routes,
         "read_images",
         lambda request, host, behind: (
-            [images_routes.Image("sha256:" + "f" * 64, ["pg:17"], 1, datetime.now(UTC), [])],
+            [
+                images_routes.Image(
+                    "sha256:" + "f" * 64, ["pg:17"], 1, datetime.now(UTC), [], host=host
+                )
+            ],
             None,
         ),
     )
@@ -1316,6 +1330,153 @@ async def test_stacks_and_images_pages_check_for_updates(admin: Browser, monkeyp
     await admin.login("watcher")
     assert "Check for updates" not in (await admin.get(f"/stacks?host={host_id}")).text
     assert (await admin.post("/images/check-updates", {"host": str(host_id)})).status_code == 403
+
+
+# EVERY HOST, PAGES AND TAGS
+
+
+def test_pages_of_rows() -> None:
+    assert containers.page_number("3") == 3
+    for odd in ("", "x", "-1", "²", "9" * 9):
+        assert containers.page_number(odd) == 1, odd
+    rows = list(range(250))
+    assert containers.paginate(rows, 1) == (rows[:100], 1, 3)
+    assert containers.paginate(rows, 3) == (rows[200:], 3, 3)
+    assert containers.paginate(rows, 9)[1:] == (3, 3), "past the end: the last page"
+    assert containers.paginate([], 0) == ([], 1, 1)
+    assert containers.back_url("/stacks", "3", 1) == "/stacks?host=3"
+    assert containers.back_url("/stacks", "all", 2) == "/stacks?page=2"
+    assert containers.back_url("/images", "", 1) == "/images"
+
+
+def two_hosts(admin: Browser) -> tuple[int, int]:
+    """rigel: web and db (stack app). vega: web (stack app, pinned by digest) and cache."""
+    rigel = add_host(admin)
+    vega = add_host(admin, name="vega")
+    app = {status.PROJECT_LABEL: "app"}
+    pinned = "nginx@sha256:" + "f" * 64
+    for host_id, found in [
+        (rigel, [summary("a" * 64, "web"), summary("b" * 64, "db", labels=app)]),
+        (
+            vega,
+            [
+                summary("c" * 64, "web", labels=app, Image=pinned),
+                summary("d" * 64, "cache", "exited", "Exited (0) 1 hour ago"),
+            ],
+        ),
+    ]:
+        snap = status.summarize(host_id, reading(found, {}), {}, datetime.now(UTC))[0]
+        put(admin.app.state.status, snap)
+    return rigel, vega
+
+
+async def test_every_hosts_containers_on_one_page(admin: Browser, monkeypatch) -> None:
+    await cached(admin, monkeypatch)
+    rigel, vega = two_hosts(admin)
+    page = (await admin.get("/containers")).text
+    assert '<option value="" selected>All hosts</option>' in page
+    assert names_in_order(page) == ["cache", "db", "web", "web"]
+    assert 'title="vega">vega</td>' in page and "4 containers" in page
+    assert f'value="{rigel}:' + "a" * 64 in page and f'value="{vega}:' + "c" * 64 in page
+    assert f'hx-get="/containers/{vega}/{"c" * 64}/inspect"' in page
+    assert 'id="check-updates"' not in page, "one host at a time"
+    assert await shown(admin, "stack=app") == ["db", "web"]
+    assert await shown(admin, "q=web") == ["web", "web"]
+    one = (await admin.get(f"/containers?host={vega}")).text
+    assert names_in_order(one) == ["cache", "web"] and 'id="check-updates"' in one
+    assert 'title="vega">vega</td>' not in one, "no host column for one host"
+
+    calls = []
+
+    def fake(request, auth, host, verb, chosen):
+        calls.append((host.name, verb, chosen))
+        return [containers.Outcome(verb, "web")]
+
+    monkeypatch.setattr(containers, "run_actions", fake)
+    htmx = {"HX-Request": "true"}
+    picked = [f"{rigel}:{'a' * 64}", f"{vega}:{'c' * 64}", f"{rigel}:{'a' * 64}"]
+    data = {"host": "", "action": "restart", "id": picked}
+    done = await admin.post("/containers/actions", data, headers=htmx)
+    assert calls == [("rigel", "restart", ["a" * 64]), ("vega", "restart", ["c" * 64])]
+    assert "web on rigel: restarted" in done.text and "web on vega: restarted" in done.text
+    assert done.headers["HX-Replace-Url"] == "/containers?sort=name&order=asc"
+    assert len(admin.sql("SELECT 1 FROM audit_events WHERE action = 'container.restart'")) == 2
+    for bad in ([f"x:{'a' * 64}"], [f"{rigel}:nope"], ["a" * 64]):  # a bare ID needs a host
+        refused = await admin.post("/containers/actions", data | {"id": bad})
+        assert refused.status_code == 422, bad
+    gone = await admin.post("/containers/actions", {"action": f"stop:999999:{'a' * 64}"})
+    assert gone.status_code == 404
+
+
+async def test_containers_come_a_page_at_a_time(admin: Browser, monkeypatch) -> None:
+    await cached(admin, monkeypatch)
+    host_id = add_host(admin)
+    many = [summary(f"{i:064x}", f"c{i:03}") for i in range(130)]
+    put(
+        admin.app.state.status,
+        status.summarize(host_id, reading(many, {}), {}, datetime.now(UTC))[0],
+    )
+    first = (await admin.get("/containers")).text
+    assert len(names_in_order(first)) == 100 and names_in_order(first)[0] == "c000"
+    assert "130 containers" in first and "Page 1 of 2" in first
+    assert 'href="/containers?sort=name&amp;order=asc&amp;page=2"' in first
+    second = (await admin.get("/containers?page=2")).text
+    assert names_in_order(second)[0] == "c100" and len(names_in_order(second)) == 30
+    assert "Page 2 of 2" in second
+    assert 'id="containers-page" name="page" value="2"' in second, "the poll keeps the page"
+    assert names_in_order((await admin.get("/containers?page=99")).text)[0] == "c100"
+
+    # An action keeps the page it was taken on.
+    monkeypatch.setattr(
+        containers,
+        "run_actions",
+        lambda request, auth, host, verb, chosen: [containers.Outcome(verb, "c120")],
+    )
+    data = {"action": f"start:{host_id}:{120:064x}", "page": "2"}
+    done = await admin.post("/containers/actions", data, headers={"HX-Request": "true"})
+    assert names_in_order(done.text)[0] == "c100" and "c120 on rigel: started" in done.text
+    assert done.headers["HX-Replace-Url"] == "/containers?sort=name&order=asc&page=2"
+
+
+async def test_every_hosts_stacks(admin: Browser, monkeypatch) -> None:
+    await cached(admin, monkeypatch)
+    rigel, vega = two_hosts(admin)
+    page = (await admin.get("/stacks")).text
+    assert page.count(">app</a>") == 2
+    assert f'href="/containers?host={rigel}&amp;stack=app"' in page
+    assert f'href="/containers?host={vega}&amp;stack=app"' in page
+    assert "Schedule updates of every stack" not in page and "Check for updates" not in page
+
+    calls = []
+
+    def fake(request, auth, host, verb, chosen):
+        calls.append((host.name, chosen))
+        return [containers.Outcome(verb, "web")]
+
+    monkeypatch.setattr(containers, "run_actions", fake)
+    data = {"host": str(vega), "view": "all", "stack": "app", "action": "restart"}
+    done = await admin.post("/stacks/actions", data, headers={"HX-Request": "true"})
+    assert calls == [("vega", ["c" * 64])]
+    assert "web on vega: restarted" in done.text
+    assert done.headers["HX-Replace-Url"] == "/stacks"
+
+
+async def test_every_hosts_images(admin: Browser, monkeypatch) -> None:
+    await cached(admin, monkeypatch)
+    rigel, _ = two_hosts(admin)
+
+    def read(request, host, behind):
+        if host.name == "vega":
+            return [], "Cannot reach the Docker daemon."
+        image = images_routes.Image("sha256:" + "f" * 64, ["pg:17"], 1, datetime.now(UTC), [])
+        return [replace(image, host=host)], None
+
+    monkeypatch.setattr(images_routes, "read_images", read)
+    page = (await admin.get("/images")).text
+    assert "pg:17" in page and "<td>rigel</td>" in page and "1 image," in page
+    assert "vega</span>: cannot read the images: Cannot reach the Docker daemon." in page
+    assert f'name="host" value="{rigel}"' in page and 'name="view" value="all"' in page
+    assert "Check for updates" not in page
 
 
 def test_an_image_used_by_a_container_with_a_newer_image_is_marked(monkeypatch) -> None:
