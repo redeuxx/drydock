@@ -252,7 +252,8 @@ async def test_a_missed_policy_fire_is_audited_and_rung(admin: Browser) -> None:
         db.flush()
         policy_id = policy.id
     sched = admin.app.state.scheduler
-    now = datetime.now(UTC)
+    # Noon: hours past the 04:00 fire, so it is a miss whatever the time of the test run.
+    now = datetime.now(UTC).replace(hour=12, minute=0)
     spec = scheduler_module.Spec(policy_id, "0 4 * * *", "UTC", now - timedelta(days=3), "update")
     await sched._catch_up(spec, now)
     assert admin.sql(
