@@ -139,12 +139,16 @@ def fetch(host: str, port: int) -> tuple[x509.Certificate, bool]:
     unverified = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     unverified.check_hostname = False
     unverified.verify_mode = ssl.CERT_NONE
+    # CPython already sets this floor; stated so it holds whatever the interpreter does.
+    unverified.minimum_version = ssl.TLSVersion.TLSv1_2
     try:
         cert = readable(x509.load_der_x509_certificate(handshake(unverified, host, port)))
     except ValueError:
         raise CertificateError("The server's certificate cannot be read.") from None
+    verified = ssl.create_default_context()
+    verified.minimum_version = ssl.TLSVersion.TLSv1_2
     try:
-        handshake(ssl.create_default_context(), host, port)
+        handshake(verified, host, port)
     except CertificateError:
         return cert, False
     return cert, True
