@@ -136,7 +136,8 @@ async def receive(
         raise UploadError(408, "The upload stalled and was dropped.") from None
     except OSError as exc:  # after TimeoutError, which is one
         log.warning("Upload to %s failed: %s", path, exc)
-        raise UploadError(500, f"The upload could not be written: {exc.strerror or exc}.") from None
+        reason = exc.strerror or "I/O error"
+        raise UploadError(500, f"The upload could not be written: {reason}.") from None
     return upload_id
 
 
