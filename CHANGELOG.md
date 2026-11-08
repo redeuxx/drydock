@@ -2,6 +2,19 @@
 
 Notable changes to drydock. Versions follow [semantic versioning](https://semver.org/); release images are tagged `X.Y.Z` and `X.Y` (see [docs/development.md](docs/development.md#releases)).
 
+## 0.4.1 (2026-11-15)
+
+0.4.0 never published images: its release scan failed on vulnerabilities published that day. Upgrade straight to 0.4.1; everything in the 0.4.0 notes below applies, including copying the `drydock-data` volume first.
+
+### Security
+- rclone v1.76.0 (golang.org/x/net 0.62.0 and Go 1.27.3), for CVE-2026-78661 and CVE-2026-111943.
+- zlib1g 1:1.3.dfsg+really1.3.1-1+deb13u1 from Debian security, for CVE-2026-85091 and CVE-2026-76844.
+- opentelemetry-api 1.45.2, for CVE-2026-126360.
+- Release images are scanned with both Trivy and Grype, on amd64 and arm64, before each release is tagged; the release workflow no longer scans.
+
+### Fixes
+- Run now on an update policy no longer fails with HTTP 500 ("database is locked") after 5 seconds.
+
 ## 0.4.0 (2026-11-07)
 
 **Upgrading:** this version adds a column to the users table, a table of health acknowledgements, a setting to the installation table and two columns to the update policies table, so copy the `drydock-data` volume first ([Upgrading](docs/operations.md#upgrading)).
