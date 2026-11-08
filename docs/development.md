@@ -35,7 +35,7 @@ The suite runs on the image's Python by default. To run it on another supported 
 Audits before a release:
 
 ```sh
-docker compose -f compose.test.yaml run --rm --no-deps -e HOME=/tmp -e UV_TOOL_DIR=/tmp/uv-tools tests sh -c 'uv export --locked --no-dev --no-emit-project --format requirements-txt -o /tmp/requirements.txt -q && uvx pip-audit==2.10.1 --strict --require-hashes --disable-pip -r /tmp/requirements.txt'
+docker compose -f compose.test.yaml run --rm --no-deps -e HOME=/tmp -e UV_TOOL_DIR=/tmp/uv-tools tests sh -c 'uv export --locked --no-dev --no-emit-project --format requirements-txt -o /tmp/requirements.txt -q && uvx pip-audit==2.10.1 --strict --require-hashes --disable-pip --cache-dir /tmp/pip-audit-cache -r /tmp/requirements.txt'
 npm audit
 ```
 
