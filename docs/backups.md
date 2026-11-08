@@ -46,7 +46,7 @@ An SMB target needs the server, the user and the password; the share and folder 
 
 A backup to remote storage is first written to the staging directory (`DRYDOCK_STAGING_DIR`), which therefore needs room for a whole archive, and uploaded once the containers run again. It is uploaded under a temporary name (`<archive>.<8 hex>.partial`) and renamed when complete, so the archive name never shows a partial upload. Cancelling stops the upload and removes the partial file; any that could not be removed is named in the run log.
 
-A remote target makes drydock connect, through rclone, to whatever host its settings name, from a container that can also reach the Docker socket proxy. So, like notification targets, only a superadmin who has re-entered their password in the last 10 minutes can create, change or remove one. Admins see remote targets (without credentials) and local storage stays an admin task. This is a deliberate change from the role matrix in PLAN.md.
+A remote target makes drydock connect, through rclone, to whatever host its settings name, from a container that can also reach the Docker socket proxy. So, like notification targets, only a superadmin who has re-entered their password in the last 10 minutes can create, change or remove one. Admins see remote targets (without credentials) and local storage stays an admin task.
 
 Each form offers a short list of rclone's options, checked on the server; anything else in a submitted form, including a hand-crafted one, refuses the whole form. Left out on purpose:
 

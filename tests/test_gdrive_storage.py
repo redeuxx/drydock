@@ -2,7 +2,7 @@
 fake Google token endpoint (PKCE, both redirect modes, single-use user-bound states), what
 reaches rclone, and "reconnect required" after invalid_grant.
 
-Transfers to a real drive need a real Google account: that check is manual (PLAN.md)."""
+Transfers to a real drive need a real Google account: that check is manual."""
 
 import base64
 import hashlib

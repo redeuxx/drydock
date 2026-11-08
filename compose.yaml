@@ -81,7 +81,7 @@ services:
       ALLOW_UNPAUSE: "1"
       CONTAINERS: "1"
       # Read-only registry lookup (GET /distribution/<ref>/json): drydock stores an image by
-      # reference only when the registry confirms its exact digest (PLAN.md decision 9).
+      # reference only when the registry confirms its exact digest.
       DISTRIBUTION: "1"
       # Container events (GET /events) for the activity page; drydock filters them to
       # containers and keeps only a few fields (docs/hosts.md, Activity).

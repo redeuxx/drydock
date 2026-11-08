@@ -6,7 +6,7 @@ Run as a subprocess, so the peak RSS it reports is its own, and print one JSON o
     python -m tests.age_spike pyrage-stream --gib 10
     python -m tests.age_spike age-binary --gib 10 --age-dir /path/to/age
 
-Modes, in the decision order of PLAN.md:
+Modes, in the order they were weighed:
 - pyrage-passphrase: pyrage.passphrase.encrypt/decrypt (scrypt). pyrage 1.4.0 offers
   these only as bytes in, bytes out, so the whole archive must sit in memory.
 - pyrage-stream: pyrage.encrypt_io/decrypt_io, which stream between file objects but

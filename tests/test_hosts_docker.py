@@ -98,7 +98,7 @@ def test_proxy_allows_enabled_endpoints(path: str) -> None:
 
 @needs_docker
 def test_proxy_allows_the_read_only_registry_lookup() -> None:
-    """DISTRIBUTION=1 (PLAN.md decision 9): the daemon confirms a digest with its registry."""
+    """DISTRIBUTION=1: the daemon confirms a digest with its registry."""
     base = DOCKER_URL.replace("tcp://", "http://")
     repository, digest = IMAGE.split("@")
     ref = f"{repository.rsplit(':', 1)[0]}@{digest}"

@@ -159,7 +159,7 @@ def test_docker_py_private_api_used_for_image_export() -> None:
         api.real.close()
 
 
-# REFERENCE-ONLY IMAGES (PLAN.md DECISION 9)
+# REFERENCE-ONLY IMAGES
 
 
 class RegistryAPI:
