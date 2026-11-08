@@ -85,10 +85,12 @@ RUN set -eu; \
 
 FROM python:3.15.2-slim@sha256:c4158543ecb725b99e57d129dfd43d761d4c43e4577b5e23326aabb223cf7f4e AS runtime
 # Debian fixes the pinned base image does not carry yet, each named: apt and libapt-pkg
-# for CVE-2026-109518 (fixed in 3.0.4). Drop this once the base image has them.
+# for CVE-2026-109518 (fixed in 3.0.4), zlib1g for CVE-2026-85091 and CVE-2026-76844
+# (fixed in 1:1.3.dfsg+really1.3.1-1+deb13u1). Drop each once the base image has it.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends --only-upgrade apt libapt-pkg7.0 \
+ && apt-get install -y --no-install-recommends --only-upgrade apt libapt-pkg7.0 zlib1g \
  && dpkg --compare-versions "$(dpkg-query -W -f '${Version}' apt)" ge 3.0.4 \
+ && dpkg --compare-versions "$(dpkg-query -W -f '${Version}' zlib1g)" ge 1:1.3.dfsg+really1.3.1-1+deb13u1 \
  && rm -rf /var/lib/apt/lists/*
 # pip is never used at runtime, and its vendored packages only add scan findings.
 # The certificate check guards the rclone exception in .trivyignore.yaml: the Go
