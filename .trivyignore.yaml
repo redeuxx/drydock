@@ -51,6 +51,19 @@ vulnerabilities:
   - id: CVE-2026-119373
     statement: sqlite FTS5 detail=none prefix MATCH; drydock has no FTS5 tables and runs no MATCH
     expired_at: 2027-01-31
+  # sqlite: two more heap overflows fixed in SQLite 3.54.0 (Debian bug 1152790, fixed in sid
+  # only; trixie marks them no-dsa). CVE-2026-119374 needs a DELETE with secure-delete on an
+  # FTS5 table whose index is corrupted; CVE-2026-119379 needs sqlite3changeset_apply().
+  # Drydock opens only /data/drydock.db, which it creates (0600, uid 10001) and nothing else
+  # writes, never deserializes a database from bytes, has no FTS5 tables, and Python's sqlite3
+  # module has no session API. Short date: drop both, and CVE-2026-119373, when trixie ships
+  # a fixed libsqlite3-0.
+  - id: CVE-2026-119374
+    statement: sqlite FTS5 secure-delete on a corrupted index; drydock has no FTS5 tables and opens only its own database
+    expired_at: 2026-12-07
+  - id: CVE-2026-119379
+    statement: sqlite session changeset apply; Python's sqlite3 module exposes no session API
+    expired_at: 2026-12-07
 
   # GO STANDARD LIBRARY IN UPSTREAM RELEASE BINARIES, NO FIXED RELEASE YET
 
