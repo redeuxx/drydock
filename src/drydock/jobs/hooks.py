@@ -415,39 +415,6 @@ def _hold(secrets: Sequence[str]) -> int:
     return max(map(len, secrets), default=1) - 1
 
 
-def _cover(text: str, mask: bytearray, secrets: Sequence[str], start: int) -> None:
-    """Sets mask to 1 under every occurrence of a secret in text that ends after start,
-    overlapping ones included (text[:start] was searched before)."""
-    for secret in secrets:
-        covered = 0
-        pos = text.find(secret, max(0, start - len(secret) + 1))
-        while pos != -1:
-            end = pos + len(secret)
-            low = max(pos, covered)
-            mask[low:end] = b"\x01" * (end - low)
-            covered = end
-            pos = text.find(secret, pos + 1)
-
-
-def _uncovered(text: str, mask: bytearray, end: int, masking: bool) -> tuple[str, bool]:
-    """text[:end] with each run of covered characters replaced by one REDACTED marker (no
-    marker for a run that continues the previous text's last one, when masking is set).
-    Returns the text and whether its last character was covered."""
-    pieces = []
-    pos = 0
-    while pos < end:
-        covered = mask[pos]
-        stop = mask.find(0 if covered else 1, pos, end)
-        stop = end if stop == -1 else stop
-        if not covered:
-            pieces.append(text[pos:stop])
-        elif not masking:
-            pieces.append(runlog.REDACTED)
-        masking = bool(covered)
-        pos = stop
-    return "".join(pieces), masking
-
-
 @dataclass
 class _Stream:
     """One output stream of a hook with log_output: the characters not decided yet (raw,
@@ -545,9 +512,9 @@ class OutputLog:
         mask.extend(bytes(len(raw) - len(mask)))
         if tuple(secrets) != part.known:  # a secret was added: search everything again
             part.known, part.scanned = tuple(secrets), 0
-        _cover(raw, mask, secrets, part.scanned)
+        runlog.cover(raw, mask, secrets, part.scanned)
         done = len(raw) if final and complete else max(0, len(raw) - hold)
-        text, part.masking = _uncovered(raw, mask, done, part.masking)
+        text, part.masking = runlog.uncovered(raw, mask, done, part.masking)
         part.raw = raw[done:]
         del mask[:done]
         if final:
@@ -639,7 +606,7 @@ class OutputLog:
         secrets = self._secrets()
         hold = _hold(secrets)
         mask = bytearray(len(text))
-        _cover(text, mask, secrets, 0)
+        runlog.cover(text, mask, secrets, 0)
         # Drop the cut first line and at least hold() characters, so no part of a secret
         # cut at the front is shown, and the last hold() when the stream broke off.
         start = max(text.find("\n") + 1, hold) if self.tail_cut else 0
@@ -650,7 +617,7 @@ class OutputLog:
             f"The last {len(text[start:end].encode())} bytes of standard error of hook"
             f" {self.hook_name}:"
         )
-        shown, _ = _uncovered(text[start:end], mask[start:end], end - start, False)
+        shown, _ = runlog.uncovered(text[start:end], mask[start:end], end - start, False)
         *lines, last = shown.split("\n")
         for line in lines:
             self._write(STDERR, line, newline=True, limited=False)

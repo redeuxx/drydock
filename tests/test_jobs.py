@@ -61,6 +61,12 @@ def test_run_log_redacts_secrets_and_escapes_control_characters(tmp_path: Path) 
     )
 
 
+def test_run_log_redacts_overlapping_secrets_whole(tmp_path: Path) -> None:
+    log = runlog.RunLog(tmp_path / "1.log")
+    log.add_secrets(["abcdXY", "XYzwvu"])
+    assert log.redact("abcdXYzwvu and XYzwvu") == "[redacted] and [redacted]"
+
+
 def test_read_log_returns_complete_lines_only(tmp_path: Path) -> None:
     path = tmp_path / "1.log"
     assert runlog.read_log(path, 0) == ("", 0)

@@ -9,7 +9,7 @@ nothing secret may be written here in the first place.
 import os
 import re
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -18,6 +18,41 @@ MIN_SECRET_LEN = 4  # shorter values (flags, ports) would blank out ordinary wor
 MAX_LINE = 4000
 READ_LIMIT = 256 * 1024  # per poll
 CONTROL_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
+
+
+def cover(text: str, mask: bytearray, secrets: Sequence[str], start: int) -> None:
+    """Sets mask to 1 under every occurrence of a secret in text that ends after start,
+    overlapping ones included (text[:start] was searched before)."""
+    # ponytail: O(len(text) * len(secret)) for a periodic secret ("aaaa...") in a long run
+    # of it; extend matches by the secret's period (KMP failure function) if that matters.
+    for secret in secrets:
+        covered = 0
+        pos = text.find(secret, max(0, start - len(secret) + 1))
+        while pos != -1:
+            end = pos + len(secret)
+            low = max(pos, covered)
+            mask[low:end] = b"\x01" * (end - low)
+            covered = end
+            pos = text.find(secret, pos + 1)
+
+
+def uncovered(text: str, mask: bytearray, end: int, masking: bool) -> tuple[str, bool]:
+    """text[:end] with each run of covered characters replaced by one REDACTED marker (no
+    marker for a run that continues the previous text's last one, when masking is set).
+    Returns the text and whether its last character was covered."""
+    pieces = []
+    pos = 0
+    while pos < end:
+        covered = mask[pos]
+        stop = mask.find(0 if covered else 1, pos, end)
+        stop = end if stop == -1 else stop
+        if not covered:
+            pieces.append(text[pos:stop])
+        elif not masking:
+            pieces.append(REDACTED)
+        masking = bool(covered)
+        pos = stop
+    return "".join(pieces), masking
 
 
 def log_dir(data_dir: Path) -> Path:
@@ -69,8 +104,8 @@ class RunLog:
             self._public.update(v for v in values if v)
 
     def secrets(self) -> list[str]:
-        """The registered secrets, longest first (the order redact replaces them in), less
-        those that are part of a public name.
+        """The registered secrets, longest first, less those that are part of a public
+        name.
 
         Hook output (jobs/hooks.OutputLog) searches for every one of them before it cuts
         a long output line, so a secret never straddles two lines.
@@ -80,9 +115,11 @@ class RunLog:
             return sorted(kept, key=len, reverse=True)
 
     def redact(self, text: str) -> str:
-        for secret in self.secrets():
-            text = text.replace(secret, REDACTED)
-        return text
+        # Masked together, not replaced one by one: replacing "abcdXY" first would leave
+        # "zwvu" of an overlapping "XYzwvu" in "abcdXYzwvu".
+        mask = bytearray(len(text))
+        cover(text, mask, self.secrets(), 0)
+        return uncovered(text, mask, len(text), False)[0]
 
     def __call__(self, message: str) -> None:
         text = CONTROL_RE.sub("?", self.redact(message))[:MAX_LINE]
