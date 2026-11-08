@@ -1050,7 +1050,7 @@ async def test_the_about_page_names_the_version_and_the_stack(admin: Browser) ->
     page = (await admin.get("/about")).text
     assert '<dd class="font-mono">0.4</dd>' in page
     assert "https://pypi.org/project/fastapi/" in page and "rclone" in page
-    assert "https://github.com/rclone/rclone/releases/tag/v1.75.2" in page
+    assert "https://github.com/rclone/rclone/releases/tag/v1.76.0" in page
 
 
 async def test_the_about_page_links_the_build_commit(

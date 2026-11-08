@@ -76,7 +76,7 @@ BACKOFF_MAX = 60.0
 STABLE_AFTER = 60.0  # an rclone that ran this long restarts without the built-up backoff
 MAX_LOG_LINE = 2000
 MAX_ERROR = 500
-# rclone v1.75.2 fs/rc/rcserver: "rc: writeError: failed to write JSON output from %#v: %v",
+# rclone v1.76.0 fs/rc/rcserver: "rc: writeError: failed to write JSON output from %#v: %v",
 # where %#v is the call's whole input.
 INPUT_DUMP = "failed to write JSON output from "
 # A connection string as rclone logs a served path, plain or percent-encoded. It holds the

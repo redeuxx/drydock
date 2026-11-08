@@ -183,7 +183,7 @@ def test_runtime_image_carries_a_checksummed_rclone() -> None:
     # Without it every rclone test in the tests image would skip.
     assert "COPY --from=rclone /opt/rclone /opt/rclone" in inline
     versions = set(re.findall(r"releases/download/(v[0-9.]+)/rclone-\1-", text + inline))
-    assert versions == {"v1.75.2"}
+    assert versions == {"v1.76.0"}
 
 
 def test_every_base_image_is_pinned_by_digest() -> None:
