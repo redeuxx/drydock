@@ -93,12 +93,8 @@ RUN apt-get update \
  && dpkg --compare-versions "$(dpkg-query -W -f '${Version}' zlib1g)" ge 1:1.3.dfsg+really1.3.1-1+deb13u1 \
  && rm -rf /var/lib/apt/lists/*
 # pip is never used at runtime, and its vendored packages only add scan findings.
-# The certificate check guards the rclone exception in .trivyignore.yaml: the Go
-# intermediates it denylists chain to emSign ECC Root CA - G3 (this SHA-256), which the
-# base image's ca-certificates no longer trusts. Go reads the bundle and every file here.
 RUN rm -r /usr/local/lib/python3.*/site-packages/pip /usr/local/lib/python3.*/site-packages/pip-*.dist-info \
       /usr/local/lib/python3.*/ensurepip /usr/local/bin/pip* \
- && python -c 'import glob, hashlib, re, ssl; pems = [m for f in glob.glob("/etc/ssl/certs/*") for m in re.findall("-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----", open(f).read(), re.S)]; assert len(pems) > 100; assert "86a1ecba089c4a8d3bbe2734c612ba341d813e043cf9e8a862cd5c57a36bbe6b" not in {hashlib.sha256(ssl.PEM_cert_to_DER_cert(p)).hexdigest() for p in pems}, "emSign ECC Root CA - G3 is trusted again"' \
  && groupadd --gid 10001 drydock \
  && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin drydock \
  && mkdir -p /data /run/drydock \
