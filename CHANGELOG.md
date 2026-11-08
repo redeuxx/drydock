@@ -2,31 +2,44 @@
 
 Notable changes to drydock. Versions follow [semantic versioning](https://semver.org/); release images are tagged `X.Y.Z` and `X.Y` (see [docs/development.md](docs/development.md#releases)).
 
-## Unreleased
+## 0.4.0 (2026-11-07)
 
 **Upgrading:** this version adds a column to the users table, a table of health acknowledgements, a setting to the installation table and two columns to the update policies table, so copy the `drydock-data` volume first ([Upgrading](docs/operations.md#upgrading)).
 
+**Highlights:** Stacks and Images pages, switching a container or a whole stack to another image tag, and every host on one page.
+
+### New features
 - Stacks page under Docker: each Compose stack on a host with its running containers, newer images and backup jobs. Operators update, start, stop and restart a whole stack; admins remove one (containers only, volumes and networks kept). It lists each stack's update policies, and admins schedule automatic updates of a stack from there.
 - Images page under Docker: a host's images with the containers that use each one. Admins remove unused images.
+- Switch tag: operators move a container, or a whole stack, to another tag of its image (say `1.28`, or `latest`), as an update that is put back if the new one fails. A stack switches its main service (the one no other service depends on, preferring one with ports) and the services from the same publisher on the same tag; databases and caches keep theirs. Update policies can name a tag to follow and a stack's main service.
+- The Containers, Stacks and Images pages show every enabled host at once (All hosts, now the default in the host picker), with a Host column, and show 100 rows a page. Selected containers on several hosts are acted on together.
+- Admins prune a host's images, or every host's, from the Images page: untagged ones only, or every image no container uses. Refused while a run is active.
 - Admins can remove containers from the containers page (stopped first, volumes kept). Removing containers, stacks and images asks for the password again.
+- Update policies can update every Compose stack on a host (target `*`), each stack in its own run, and the Stacks page lists and schedules them.
+- A Settings page (admins, under your name) sets how often drydock checks for newer images, from every hour to never (only when asked); 6 hours by default.
+- The activity page lists backup runs among the container events, with a Backup run filter.
+- A container that exited while unhealthy stays unhealthy until an operator acknowledges it on the containers page; it counts again once it has started since. On daemons before API 1.52, an exited container's health now comes from its last inspect.
+
+### Improvements
 - The dashboard's Environments section is now Hosts, and it folds away; whether it starts folded is a preference on the Account page.
 - The logs page's container list folds away, and stays as it was left in this browser.
 - Adding a host asks for the password again before the form, not after it is filled in.
-- A container that exited while unhealthy stays unhealthy until an operator acknowledges it on the containers page; it counts again once it has started since. On daemons before API 1.52, an exited container's health now comes from its last inspect.
-- The activity page lists backup runs among the container events, with a Backup run filter.
-- A Settings page (admins, under your name) sets how often drydock checks for newer images, from every hour to never (only when asked); 6 hours by default.
 - Check for updates on the Stacks and Images pages too; the Images page marks images whose containers have a newer one.
-- Update policies can update every Compose stack on a host (target `*`), each stack in its own run, and the Stacks page lists and schedules them.
 - Containers, Stacks, Images and Update policies share a Docker menu in the navigation bar, and the Manage menu is now Backups.
-- Starting an update of a container or a stack no longer fails with HTTP 500 ("database is locked") after 5 seconds.
-- The Containers, Stacks and Images pages show every enabled host at once (All hosts, now the default in the host picker), with a Host column, and show 100 rows a page. Selected containers on several hosts are acted on together.
 - The containers and stacks pages show the tag each container follows (`latest`, `v1.0`), or that it is pinned by digest.
-- Switch tag: operators move a container, or a whole stack, to another tag of its image (say `1.28`, or `latest`), as an update that is put back if the new one fails. A stack switches its main service (the one no other service depends on, preferring one with ports) and the services from the same publisher on the same tag; databases and caches keep theirs. Update policies can name a tag to follow and a stack's main service.
 - While a container, stack or image action runs, its button spins and its dialog says Docker is working, instead of showing nothing until the page updates.
 - Switching a tag asks to confirm, naming the tag.
 - Short notes explain the Docker pages in place: each page says what it shows, and an "i" next to Tag, Tags and Stack explains tags and main services.
-- Admins prune a host's images, or every host's, from the Images page: untagged ones only, or every image no container uses. Refused while a run is active.
 - The containers table gives every column a width and scrolls sideways when they do not fit, so headers no longer overlap and the actions column is never cut off.
+
+### Fixes
+- Starting an update of a container or a stack no longer fails with HTTP 500 ("database is locked") after 5 seconds.
+- A restore from a server path is refused, not failed with HTTP 500, when the opened file cannot be checked.
+
+### Security
+- Run logs redact two secrets that overlap in one line completely; before, part of one could remain.
+- A failed upload's error names only the operating system's reason, never other exception text.
+- The certificate check for a WebDAV remote states TLS 1.2 as its minimum (Python already enforced it).
 
 ## 0.3.0 (2026-11-05)
 
