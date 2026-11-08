@@ -47,7 +47,11 @@ def open_checked(path: str, allowed: tuple[Path, ...]) -> tuple[BinaryIO, Path]:
     except OSError as exc:
         raise PathError(f"{real} cannot be opened: {exc.strerror}.") from None
     try:
-        if Path(f"/proc/self/fd/{fd}").readlink() != real:
+        try:
+            opened = Path(f"/proc/self/fd/{fd}").readlink()
+        except OSError:
+            raise PathError(f"{real} cannot be checked.") from None
+        if opened != real:
             raise PathError(f"{real} changed while it was opened.")
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise PathError(f"{real} is not a regular file.")

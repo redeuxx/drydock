@@ -116,6 +116,18 @@ def test_the_last_component_swapped_for_a_symlink_is_refused(
     refused(inbox / NAME, (inbox,), "cannot be opened")  # O_NOFOLLOW: ELOOP
 
 
+def test_a_descriptor_that_cannot_be_checked_is_refused(
+    inbox: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without /proc the opened file cannot be compared: a refusal, not a 500."""
+
+    def no_proc(self: Path) -> Path:
+        raise FileNotFoundError(2, "No such file or directory", str(self))
+
+    monkeypatch.setattr(paths.Path, "readlink", no_proc)
+    refused(inbox / NAME, (inbox,), "cannot be checked")
+
+
 def test_a_directory_and_a_fifo_are_refused(inbox: Path) -> None:
     directory = inbox / ("drydock-d" + NAME.removeprefix("drydock-web"))
     directory.mkdir()
