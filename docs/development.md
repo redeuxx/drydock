@@ -32,12 +32,19 @@ There is no CI on push: the tests, audits and smoke test run locally before a pu
 
 The suite runs on the image's Python by default. To run it on another supported Python, set `DRYDOCK_TEST_PYTHON_IMAGE` to a digest-pinned `python:X.Y-slim` image.
 
-Audits before a release:
+Audits before a release, all on the commit to be tagged, right before tagging:
 
 ```sh
 docker compose -f compose.test.yaml run --rm --no-deps -e HOME=/tmp -e UV_TOOL_DIR=/tmp/uv-tools tests sh -c 'uv export --locked --no-dev --no-emit-project --format requirements-txt -o /tmp/requirements.txt -q && uvx pip-audit==2.10.1 --strict --require-hashes --disable-pip --cache-dir /tmp/pip-audit-cache -r /tmp/requirements.txt'
 npm audit
+
+# The release workflow's image scan, on a fresh amd64 build: it must exit 0, or the release fails
+TRIVY=$(sed -n 's/^  TRIVY: //p' .forgejo/workflows/release.yml)
+docker build -q -t drydock:scan .
+docker run --rm -i -v /var/run/docker.sock:/var/run/docker.sock -v drydock-trivy-cache:/cache --entrypoint sh "$TRIVY" -c 'cat > /tmp/ignore.yaml && exec trivy image --cache-dir /cache --quiet --scanners vuln,secret --severity HIGH,CRITICAL --ignorefile /tmp/ignore.yaml --exit-code 1 drydock:scan' < .trivyignore.yaml
 ```
+
+New CVEs are published daily, so a scan that passed for the previous release says nothing about this one. Fix or except every finding before the tag: a failed release workflow means another patch release, because a pushed tag is never moved.
 
 The integration tests reach the host's Docker daemon through the same socket proxy as production and create (then remove) containers and volumes there. A privileged `docker:dind` container running sshd stands in for a remote host; the tests generate the SSH key pair in memory and authorize it at test time. The Phase 1 spikes (marked `slow`) move a gigabyte through each path and need about 4 GB free in the Docker VM; `pytest -m 'not slow'` skips them.
 
