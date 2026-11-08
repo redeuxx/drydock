@@ -89,7 +89,7 @@ async def test_csp_nonce_is_fresh_and_matches_the_page(admin: Browser) -> None:
         nonce = re.search(r"'nonce-([^']+)'", response.headers["content-security-policy"])
         assert nonce
         nonces.append(nonce.group(1))
-        scripts = re.findall(r"<script[^>]*>", response.text)
+        scripts = re.findall(r"<script\b[^>]*>", response.text, re.I)
         assert len(scripts) == 4
         assert all(f'nonce="{nonce.group(1)}"' in tag for tag in scripts)
         assert f'hx-nonce="{nonce.group(1)}"' in response.text  # the logout form
@@ -117,10 +117,10 @@ def test_templates_load_only_the_bundled_assets() -> None:
         "/static/js/upload.js",
     }
     for name, text in template_sources():
-        links = re.findall(r"<link\b[^>]*>", text)
+        links = re.findall(r"<link\b[^>]*>", text, re.I)
         bundled = ('href="/static/css/app.css"', 'rel="icon" href="/static/logo.svg"')
         assert all(any(href in tag for href in bundled) for tag in links), name
-        for tag in re.findall(r"<script\b[^>]*>", text):
+        for tag in re.findall(r"<script\b[^>]*>", text, re.I):
             src = re.search(r'src="([^"]+)"', tag)
             assert src and src.group(1) in allowed_scripts, f"{name}: {tag}"
             assert 'nonce="{{ csp_nonce }}"' in tag, f"{name}: {tag}"
