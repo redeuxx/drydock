@@ -38,23 +38,39 @@ Audits before a release, all on the commit to be tagged, right before tagging:
 docker compose -f compose.test.yaml run --rm --no-deps -e HOME=/tmp -e UV_TOOL_DIR=/tmp/uv-tools tests sh -c 'uv export --locked --no-dev --no-emit-project --format requirements-txt -o /tmp/requirements.txt -q && uvx pip-audit==2.10.1 --strict --require-hashes --disable-pip --cache-dir /tmp/pip-audit-cache -r /tmp/requirements.txt'
 npm audit
 
-# The release workflow's image scan, on a fresh amd64 build: it must exit 0, or the release fails
-TRIVY=$(sed -n 's/^  TRIVY: //p' .forgejo/workflows/release.yml)
+# Image scans with Trivy and Grype, on fresh amd64 and arm64 builds. Every one must exit 0.
+# They run only here: the release workflow does not scan.
+TRIVY=docker.io/aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c
+GRYPE=docker.io/anchore/grype:v0.121.2@sha256:6a36234da13f9faa327306ac0b3dab3405cfa2b4eb20c8f904125a8707863913
+docker run --rm --privileged "$(sed -n 's/^  BINFMT: //p' .forgejo/workflows/release.yml)" --install arm64
 docker build -q -t drydock:scan .
-docker run --rm -i -v /var/run/docker.sock:/var/run/docker.sock -v drydock-trivy-cache:/cache --entrypoint sh "$TRIVY" -c 'cat > /tmp/ignore.yaml && exec trivy image --cache-dir /cache --quiet --scanners vuln,secret --severity HIGH,CRITICAL --ignorefile /tmp/ignore.yaml --exit-code 1 drydock:scan' < .trivyignore.yaml
+docker buildx build -q --platform linux/arm64 --load -t drydock:scan-arm64 .
+
+# Fresh databases: Trivy reuses a cached one for up to a day. Check both were built in the last day.
+docker run --rm -v drydock-trivy-cache:/cache "$TRIVY" clean --vuln-db --cache-dir /cache
+docker run --rm -v drydock-trivy-cache:/cache "$TRIVY" image --download-db-only --quiet --cache-dir /cache
+docker run --rm -v drydock-trivy-cache:/cache "$TRIVY" version --cache-dir /cache
+docker run --rm -v drydock-grype-db:/cache -e GRYPE_DB_CACHE_DIR=/cache "$GRYPE" db update
+docker run --rm -v drydock-grype-db:/cache -e GRYPE_DB_CACHE_DIR=/cache "$GRYPE" db status
+
+for image in drydock:scan drydock:scan-arm64; do
+  docker run --rm -i -v /var/run/docker.sock:/var/run/docker.sock -v drydock-trivy-cache:/cache --entrypoint sh "$TRIVY" -c "cat > /tmp/ignore.yaml && exec trivy image --cache-dir /cache --skip-db-update --quiet --scanners vuln,secret --severity HIGH,CRITICAL --ignorefile /tmp/ignore.yaml --exit-code 1 $image" < .trivyignore.yaml
+  docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v drydock-grype-db:/cache -e GRYPE_DB_CACHE_DIR=/cache -e GRYPE_DB_AUTO_UPDATE=false -v "$PWD/.grype.yaml:/grype.yaml:ro" "$GRYPE" -c /grype.yaml --fail-on high "docker:$image"
+done
+docker image rm drydock:scan drydock:scan-arm64
 ```
 
-New CVEs are published daily, so a scan that passed for the previous release says nothing about this one. Fix or except every finding before the tag: a failed release workflow means another patch release, because a pushed tag is never moved.
+New CVEs are published daily, so a scan that passed for the previous release says nothing about this one. Fix or except every finding before the tag: a pushed tag is never moved, so a finding found after it means another patch release.
+
+The scans fail on any high or critical finding that `.trivyignore.yaml` (Trivy) or `.grype.yaml` (Grype) does not list. The two scanners use different databases, so each finds things the other misses. A finding excepted for both gets an entry in each, with the same reason. Each entry names the CVE, why drydock is not exposed, and an expiry date (an `expired_at` field for Trivy, an `# expires` comment for Grype, which has no expiry field); review it then rather than moving the date.
 
 The integration tests reach the host's Docker daemon through the same socket proxy as production and create (then remove) containers and volumes there. A privileged `docker:dind` container running sshd stands in for a remote host; the tests generate the SSH key pair in memory and authorize it at test time. The Phase 1 spikes (marked `slow`) move a gigabyte through each path and need about 4 GB free in the Docker VM; `pytest -m 'not slow'` skips them.
 
 ## Releases
 
-A tag `vX.Y.Z` that matches `version` in `pyproject.toml` runs the release workflow on the self-hosted Forgejo runner. It builds amd64 and arm64, scans both with Trivy, checks that each carries an SBOM and provenance, then pushes `X.Y.Z` and `X.Y` to the Forgejo instance's container registry (`<forgejo host>/<owner>/drydock`) from the same build that was scanned. It runs no tests, so tag only a commit whose local suite passed.
+A tag `vX.Y.Z` that matches `version` in `pyproject.toml` runs the release workflow on the self-hosted Forgejo runner. It builds amd64 and arm64, checks that each carries an SBOM and provenance and that the arm64 image starts, then pushes `X.Y.Z` and `X.Y` to the Forgejo instance's container registry (`<forgejo host>/<owner>/drydock`) from the same build. It runs no tests and no vulnerability scans, so tag only a commit whose local suite and audits passed.
 
 The job logs in with the repository Actions secret `REGISTRY_TOKEN`, a Forgejo access token of the repository owner with the `write:package` scope and nothing else. Without it, tags fail at the publish step.
-
-The scan fails on any high or critical finding that `.trivyignore.yaml` does not list. Each entry there names the CVE, why drydock is not exposed, the files it applies to when it is in one binary, and an expiry date, after which the scan fails on it again; review it then rather than moving the date.
 
 Before tagging a release that adds a migration, add its upgrade fixture (`tests/fixtures/upgrade/<revision>.sql`) so the next release's migrations are tested against a database it wrote:
 

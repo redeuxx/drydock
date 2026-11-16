@@ -1,8 +1,9 @@
 name: Release
 
 # Runs on a self-hosted Forgejo runner, on a tag vX.Y.Z only: tests run locally, not here.
-# Builds the image for amd64 and arm64, scans both with Trivy, checks each carries an SBOM
-# and provenance, then publishes X.Y.Z and X.Y. The runner's jobs drive its host's Docker
+# Builds the image for amd64 and arm64, checks each carries an SBOM and provenance, then
+# publishes X.Y.Z and X.Y. Vulnerability scans (Trivy and Grype) run locally before the tag,
+# never here (docs/development.md). The runner's jobs drive its host's Docker
 # daemon (the runner mounts its socket), which also runs Forgejo.
 
 on:
@@ -14,7 +15,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  TRIVY: docker.io/aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c
   # QEMU for the arm64 stages of the multi-arch build, and the BuildKit that runs it (the
   # daemon's own builder cannot build several platforms or attach attestations).
   BINFMT: docker.io/tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
@@ -22,7 +22,7 @@ env:
 
 jobs:
   release:
-    name: amd64 and arm64 image, scan, and publish
+    name: amd64 and arm64 image and publish
     runs-on: docker
     timeout-minutes: 60
     env:
@@ -64,22 +64,12 @@ jobs:
             echo "$predicate: $count"
             test "$count" -eq 2
           done
-      # Fails on any high or critical finding not excepted in .trivyignore.yaml. Trivy
-      # reads one platform per OCI layout, so each is exported on its own (from the build
-      # cache) and reaches the scanner on stdin with the exceptions: a bind mount would
-      # resolve on the runner host.
-      - name: Scan both platforms
-        run: |
-          for arch in amd64 arm64; do
-            docker buildx build --builder "$BUILDER" --platform "linux/$arch" --output "type=oci,dest=/tmp/drydock-$arch.tar" .
-            tar -cf - -C /tmp "drydock-$arch.tar" -C "$GITHUB_WORKSPACE" .trivyignore.yaml | docker run --rm -i -v drydock-ci-trivy-cache:/cache --entrypoint sh "$TRIVY" -c "mkdir -p /w/oci && tar -xf - -C /w && tar -xf /w/drydock-$arch.tar -C /w/oci && exec trivy image --cache-dir /cache --quiet --scanners vuln,secret --severity HIGH,CRITICAL --ignorefile /w/.trivyignore.yaml --exit-code 1 --table-mode detailed --input /w/oci"
-          done
       - name: The arm64 image starts
         run: |
           docker buildx build --builder "$BUILDER" --platform linux/arm64 --load -t "$ARM64_IMAGE" .
           docker run --rm --platform linux/arm64 --entrypoint sh "$ARM64_IMAGE" -c 'python -c "import uvloop, httptools, argon2, pydantic_core, cryptography.fernet, drydock.archive.verify" && /opt/age/age --version && /opt/rclone/rclone version'
       # REGISTRY_TOKEN: a Forgejo access token with the write:package scope, stored as an
-      # Actions secret of the repository. The same builder and inputs as the scanned build,
+      # Actions secret of the repository. The same builder and inputs as the checked build,
       # so every layer comes from its cache. Pushes X.Y.Z and X.Y.
       - name: Publish the release
         env:

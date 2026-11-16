@@ -28,5 +28,5 @@ The README's [Read this first](README.md#read-this-first) and [Install](README.m
 ## Supply chain
 
 - Every base image, build tool and CI image is pinned by digest, and the age and rclone binaries by SHA-256.
-- CI runs `pip-audit` and `npm audit` on the dependencies, and Trivy (vulnerabilities and secrets) on the amd64 and arm64 images. High and critical findings fail the build unless `.trivyignore.yaml` lists them with a reason and an expiry date.
-- Release images carry an SPDX SBOM and SLSA provenance, built and published from the same CI run that scanned them.
+- Before every release tag, `pip-audit` and `npm audit` run on the dependencies, and Trivy (vulnerabilities and secrets) and Grype on fresh amd64 and arm64 builds of the image. High and critical findings block the release unless `.trivyignore.yaml` and `.grype.yaml` list them with a reason and an expiry date.
+- Release images carry an SPDX SBOM and SLSA provenance, built and published from the same CI run that checked them.

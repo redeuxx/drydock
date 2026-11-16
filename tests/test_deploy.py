@@ -345,7 +345,7 @@ def release_workflow() -> dict:
 
 def test_release_images_are_pinned_by_digest() -> None:
     images = [v for k, v in release_workflow()["env"].items() if k.isupper()]
-    assert len(images) == 3
+    assert len(images) == 2
     for image in images:
         assert re.fullmatch(DIGEST_RE, image), image
 
@@ -387,8 +387,24 @@ def test_scan_exceptions_say_why_and_expire() -> None:
         assert set(entry) <= {"id", "paths", "statement", "expired_at"}, entry
         assert re.fullmatch(r"(CVE-\d{4}-\d+|GHSA(-[0-9a-z]{4}){3})", entry["id"]), entry
         assert len(entry["statement"]) > 20 and entry["expired_at"], entry
-    scan = release_steps()["Scan both platforms"]["run"]
-    assert "for arch in amd64 arm64" in scan and "--input /w/oci" in scan
-    assert "--ignorefile /w/.trivyignore.yaml" in scan and ".trivyignore.yaml |" in scan
-    assert "--exit-code 1" in scan and "--severity HIGH,CRITICAL" in scan
-    assert "--ignore-unfixed" not in scan  # unfixed findings need an entry too
+    grype_text = (ROOT / ".grype.yaml").read_text()
+    grype = YAML(typ="safe").load(grype_text)["ignore"]
+    assert grype and re.search(r"# expires \d{4}-\d{2}-\d{2}", grype_text)
+    for rule in grype:
+        assert set(rule) <= {"vulnerability", "fix-state", "package", "reason"}, rule
+        assert re.fullmatch(r"CVE-\d{4}-\d+|GHSA(-[0-9a-z]{4}){3}", rule["vulnerability"]), rule
+        assert len(rule["reason"]) > 20, rule
+
+
+def test_image_scans_run_locally_with_both_scanners() -> None:
+    """Trivy and Grype gate a release from the local audits, never from CI."""
+    assert "trivy" not in (ROOT / ".forgejo" / "workflows" / "release.yml").read_text().lower()
+    docs = (ROOT / "docs" / "development.md").read_text()
+    for name in ("TRIVY", "GRYPE"):
+        pin = re.search(rf"^{name}=(\S+)$", docs, re.M)
+        assert pin and re.fullmatch(DIGEST_RE, pin[1]), name
+    assert "for image in drydock:scan drydock:scan-arm64" in docs
+    assert "--ignorefile /tmp/ignore.yaml --exit-code 1" in docs and "< .trivyignore.yaml" in docs
+    assert "--severity HIGH,CRITICAL" in docs and "--ignore-unfixed" not in docs
+    assert '-c /grype.yaml --fail-on high "docker:$image"' in docs
+    assert "clean --vuln-db" in docs and "db update" in docs

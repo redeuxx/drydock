@@ -581,7 +581,7 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 ### T40. A weakly configured deployment or a vulnerable image
 
 **Threat:** the container runs as root, with a writable root filesystem or extra capabilities, from an image or binary that can change under it or carries known vulnerabilities, or two drydocks share one `/data`.
-**Defence:** the image runs as uid 10001 with a read-only root filesystem, no capabilities and `no-new-privileges`. Base images are pinned by digest, age and rclone are checksummed, and a second process cannot take the `/data` lock. The release workflow scans the image for high and critical vulnerabilities and secrets; findings that cannot be fixed yet need a dated exception in `.trivyignore.yaml`. Releases carry an SBOM and provenance for amd64 and arm64.
+**Defence:** the image runs as uid 10001 with a read-only root filesystem, no capabilities and `no-new-privileges`. Base images are pinned by digest, age and rclone are checksummed, and a second process cannot take the `/data` lock. Every release image is scanned with Trivy and Grype for high and critical vulnerabilities (and with Trivy for secrets) before the tag; findings that cannot be fixed yet need a dated exception in `.trivyignore.yaml` and `.grype.yaml`. Releases carry an SBOM and provenance for amd64 and arm64.
 **Tests:**
 - `tests/test_deploy.py::test_compose_publishes_drydock_and_hardens_the_container`
 - `tests/test_deploy.py::test_dockerfile_runtime_stage`
