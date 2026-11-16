@@ -2,7 +2,7 @@
 
 Notable changes to drydock. Versions follow [semantic versioning](https://semver.org/); release images are tagged `X.Y.Z` and `X.Y` (see [docs/development.md](docs/development.md#releases)).
 
-## 0.4.1 (2026-11-15)
+## 0.4.1 (2026-11-16)
 
 0.4.0 never published images: its release scan failed on vulnerabilities published that day. Upgrade straight to 0.4.1; everything in the 0.4.0 notes below applies, including copying the `drydock-data` volume first.
 
