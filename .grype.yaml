@@ -1,0 +1,151 @@
+# High and critical Grype findings in the drydock image that cannot be fixed yet, each with
+# why drydock is not exposed. The same findings from Trivy are in .trivyignore.yaml; keep the
+# two in step (same CVE, same reason). Scan commands: docs/development.md.
+#
+# Grype has no expiry field, so each entry carries an "expires" comment to review by, with
+# the .trivyignore.yaml dates. fix-state: wont-fix makes a rule lapse by itself: once Debian
+# ships a fixed package for trixie the match is "fixed", the rule stops applying and the scan
+# fails until the image is upgraded. Never extend an entry without re-reading the advisory.
+#
+# The image runs drydock as uid 10001 with no capabilities, no-new-privileges and a
+# read-only root filesystem (compose.yaml), so setuid binaries cannot raise privileges.
+
+ignore:
+  # DEBIAN 13 BASE PACKAGES, ALSO EXCEPTED IN .trivyignore.yaml
+
+  # util-linux: setuid mount(8) and nsenter privilege escalations. Drydock never runs mount
+  # or nsenter, the image has no fstab entries, and no-new-privileges disables setuid.
+  # expires 2027-01-31
+  - vulnerability: CVE-2026-76642
+    fix-state: wont-fix
+    package: {name: "^(util-linux|bsdutils|libblkid1|liblastlog2-2|libmount1|libsmartcols1|libuuid1|login|mount)$", type: deb}
+    reason: util-linux setuid mount hooks; never run, setuid disabled by no-new-privileges
+  - vulnerability: CVE-2026-78408
+    fix-state: wont-fix
+    package: {name: "^(util-linux|bsdutils|libblkid1|liblastlog2-2|libmount1|libsmartcols1|libuuid1|login|mount)$", type: deb}
+    reason: nsenter --join-cgroup; drydock never runs nsenter
+  - vulnerability: CVE-2026-78409
+    fix-state: wont-fix
+    package: {name: "^(util-linux|bsdutils|libblkid1|liblastlog2-2|libmount1|libsmartcols1|libuuid1|login|mount)$", type: deb}
+    reason: mount X-mount.subdir; never run, no fstab entries, setuid disabled
+  - vulnerability: CVE-2026-78410
+    fix-state: wont-fix
+    package: {name: "^(util-linux|bsdutils|libblkid1|liblastlog2-2|libmount1|libsmartcols1|libuuid1|login|mount)$", type: deb}
+    reason: mount restricted bind mounts; never run, no fstab entries, setuid disabled
+  # acl: symlink traversal when a privileged caller passes an attacker's path to libacl.
+  # Nothing in drydock calls libacl, and the process has no privileges to borrow.
+  # expires 2027-01-31
+  - vulnerability: CVE-2026-54369
+    fix-state: wont-fix
+    package: {name: libacl1, type: deb}
+    reason: libacl pathname functions; unused by drydock, which runs unprivileged
+  # ncurses: a buffer overflow in the infocmp command-line tool, which drydock never runs.
+  # expires 2027-01-31
+  - vulnerability: CVE-2025-69720
+    fix-state: wont-fix
+    package: {upstream-name: ncurses, type: deb}
+    reason: ncurses infocmp tool; never run
+  # perl: memory exhaustion in Archive::Tar. Drydock never runs Perl; archives are read by
+  # drydock's own guarded tar reader.
+  # expires 2027-01-31
+  - vulnerability: CVE-2026-9538
+    fix-state: wont-fix
+    package: {name: perl-base, type: deb}
+    reason: perl Archive::Tar; drydock never runs perl
+  # sqlite: three heap overflows fixed in SQLite 3.54.0 (Debian sid only, trixie no-dsa).
+  # Drydock opens only /data/drydock.db, which it creates (0600, uid 10001) and nothing else
+  # writes, never deserializes a database from bytes, has no FTS5 tables, runs no MATCH, and
+  # Python's sqlite3 module has no session API.
+  # expires 2027-01-31 (CVE-2026-119373), 2026-12-07 (CVE-2026-119374, CVE-2026-119379)
+  - vulnerability: CVE-2026-119373
+    fix-state: wont-fix
+    package: {name: libsqlite3-0, type: deb}
+    reason: sqlite FTS5 detail=none prefix MATCH; drydock has no FTS5 tables and runs no MATCH
+  - vulnerability: CVE-2026-119374
+    fix-state: wont-fix
+    package: {name: libsqlite3-0, type: deb}
+    reason: sqlite FTS5 secure-delete on a corrupted index; drydock has no FTS5 tables and opens only its own database
+  - vulnerability: CVE-2026-119379
+    fix-state: wont-fix
+    package: {name: libsqlite3-0, type: deb}
+    reason: sqlite session changeset apply; Python's sqlite3 module exposes no session API
+
+  # DEBIAN 13 BASE PACKAGES, GRYPE ONLY (Trivy rates these MEDIUM from vendor scores; Grype
+  # uses NVD's HIGH)
+
+  # glibc (libc6, libc-bin 2.41-12+deb13u4; trixie-security has nothing newer), all three
+  # <no-dsa> for trixie. upstream-name glibc matches both binary packages.
+  # strfmon/strfmon_l overflow with right-justified padding: nothing in the image imports
+  # strfmon, CPython has no binding, and age and rclone are static Go binaries.
+  # expires 2027-01-31
+  - vulnerability: CVE-2026-19499
+    fix-state: wont-fix
+    package: {upstream-name: glibc, type: deb}
+    reason: glibc strfmon; no binary or library in the image calls it
+  # ns_printrr/ns_printrrf/fp_nquery TSIG printing overflow in libresolv: deprecated debugging
+  # functions nothing imports; only libnss_hesiod links libresolv, and nsswitch.conf does not
+  # use hesiod.
+  # expires 2027-01-31
+  - vulnerability: CVE-2026-5435
+    fix-state: wont-fix
+    package: {upstream-name: glibc, type: deb}
+    reason: glibc libresolv record-printing debug functions; nothing in the image calls them
+  # gettext LANGUAGE path traversal loads an attacker's .mo file (unfixed upstream and in
+  # sid). It needs an attacker-set LANGUAGE and a non-C locale. Drydock's environment is fixed
+  # by compose.yaml, its children (age, rclone, version probes) get explicit minimal envs, and
+  # the image has only C, C.utf8 and POSIX on a read-only rootfs, under which glibc ignores
+  # LANGUAGE (tested in the image).
+  # expires 2027-01-31
+  - vulnerability: CVE-2026-84243
+    fix-state: wont-fix
+    package: {upstream-name: glibc, type: deb}
+    reason: glibc gettext LANGUAGE traversal; environment not attacker-controlled and only C locales installed
+  # gcc-14 runtime (gcc-14-base, libgcc-s1, libstdc++6 14.2.0-19), fixed only in forky/sid.
+  # Only apt links libstdc++, and drydock never runs apt; the drydock process loads only the
+  # libgcc_s unwinder (for the Rust wheels), which neither CVE touches.
+  # libstdc++ aligned operator new size overflow: only the aligned_alloc and malloc fallbacks
+  # round the size, and Debian's build uses posix_memalign.
+  # expires 2027-01-31
+  - vulnerability: CVE-2026-95619
+    fix-state: wont-fix
+    package: {upstream-name: gcc-14, type: deb}
+    reason: libstdc++ aligned new overflow only on the aligned_alloc path; Debian build uses posix_memalign, and no drydock process loads libstdc++
+  # Use-after-free in __gnu_pbds binary_heap erase_if, a header-only template not compiled into
+  # libstdc++.so.6; nothing in the image contains pb_ds code and no headers are installed.
+  # expires 2027-01-31
+  - vulnerability: CVE-2026-102010
+    fix-state: wont-fix
+    package: {upstream-name: gcc-14, type: deb}
+    reason: header-only pb_ds priority_queue erase_if; not in the shipped runtime libraries, and nothing in the image uses it
+  # acl: TOCTOU symlink race in the recursive walk_tree of getfacl, setfacl and chacl (fixed in
+  # sid 2.4.0-1). The acl tools are not installed, libacl.so.1 does not export walk_tree,
+  # drydock runs no libacl user, and the attack needs a privileged caller.
+  # expires 2027-01-31
+  - vulnerability: CVE-2026-54370
+    fix-state: wont-fix
+    package: {name: libacl1, type: deb}
+    reason: acl getfacl/setfacl/chacl walk_tree race; tools not installed, drydock runs no libacl user and is unprivileged
+  # perl: CPU and memory exhaustion in Pod::Text on deeply nested =over (unfixed everywhere).
+  # Pod::Text is not in the image (perl-modules-5.40 is not installed), and drydock never
+  # runs perl.
+  # expires 2027-01-31
+  - vulnerability: CVE-2026-82560
+    fix-state: wont-fix
+    package: {name: perl-base, type: deb}
+    reason: perl Pod::Text nested =over loop; Pod::Text not installed and drydock never runs perl
+
+  # GRYPE DATA LAG, FIXED IN THE INSTALLED PACKAGE
+
+  # zlib: both fixed in 1:1.3.dfsg+really1.3.1-1+deb13u1 (DSA-6613-1, the same patch), which
+  # the Dockerfile installs and checks. Debian's tracker recorded the trixie fix at 07:48Z on
+  # 2026-11-07, after the Grype database built at 06:18Z. The version pin keeps the rule off
+  # any other build. Drop both once Grype's data shows them fixed.
+  # expires 2026-11-21
+  - vulnerability: CVE-2026-85091
+    fix-state: not-fixed
+    package: {name: zlib1g, version: "1:1.3.dfsg+really1.3.1-1+deb13u1", type: deb}
+    reason: fixed in the installed deb13u1 (DSA-6613-1); Grype's database predates Debian's tracker update
+  - vulnerability: CVE-2026-76844
+    fix-state: not-fixed
+    package: {name: zlib1g, version: "1:1.3.dfsg+really1.3.1-1+deb13u1", type: deb}
+    reason: fixed in the installed deb13u1 (DSA-6613-1, same patch as CVE-2026-85091); Grype's database predates Debian's tracker update
