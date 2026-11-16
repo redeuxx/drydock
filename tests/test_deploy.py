@@ -398,7 +398,9 @@ def test_scan_exceptions_say_why_and_expire() -> None:
 
 def test_image_scans_run_locally_with_both_scanners() -> None:
     """Trivy and Grype gate a release from the local audits, never from CI."""
-    assert "trivy" not in (ROOT / ".forgejo" / "workflows" / "release.yml").read_text().lower()
+    workflow = (ROOT / ".forgejo" / "workflows" / "release.yml").read_text().lower()
+    code = [line for line in workflow.splitlines() if not line.lstrip().startswith("#")]
+    assert not [line for line in code if "trivy" in line or "grype" in line]
     docs = (ROOT / "docs" / "development.md").read_text()
     for name in ("TRIVY", "GRYPE"):
         pin = re.search(rf"^{name}=(\S+)$", docs, re.M)
