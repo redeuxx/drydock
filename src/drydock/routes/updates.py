@@ -23,6 +23,7 @@ from drydock.jobs.dispatcher import DispatchError
 from drydock.models import EVERY_STACK, Host, Job, NotificationTarget, UpdatePolicy, utcnow
 from drydock.routes.auth import client_ip
 from drydock.routes.containers import CONTAINER_ID_RE
+from drydock.routes.hosts import release
 from drydock.routes.jobs import (
     JOB_NAME_RE,
     SCHEDULE_PRESETS,
@@ -360,9 +361,9 @@ def run_policy(
     request: Request, policy_id: int, auth: Operator, db: Session = Depends(get_db)
 ) -> Response:
     """Runs the policy's update now (its backup first included). Audited."""
-    policy = get_policy(db, policy_id)
-    name = policy.name
-    db.rollback()
+    # The dispatcher writes the run row in its own transaction: release, not rollback, which
+    # would expire auth.user and take the write lock back to reload it (routes/hosts.py).
+    name = release(db, get_policy(db, policy_id)).name
     try:
         run_id = anyio.from_thread.run(
             request.app.state.dispatcher.submit_policy, policy_id, auth.user.username

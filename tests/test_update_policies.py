@@ -101,23 +101,22 @@ async def test_run_now_is_for_operators_and_audited(admin: Browser, monkeypatch)
     host_id = add_host(admin, "web-host")
     await admin.post("/updates", policy_form(host_id))
     ((policy_id,),) = admin.sql("SELECT id FROM update_policies")
-    started: list[tuple] = []
 
-    async def submit_policy(pid: int, by: str) -> int:
-        started.append((pid, by))
-        if pid != policy_id:
-            raise DispatchError("The update policy is gone or disabled.")
-        return 91
+    async def no_docker(active, by) -> None:
+        pass
 
-    monkeypatch.setattr(admin.app.state.dispatcher, "submit_policy", submit_policy)
+    # The real submit_policy, which writes the run row in its own transaction: the route
+    # must not hold the write lock meanwhile (it did after a rollback reloaded auth.user).
+    monkeypatch.setattr(admin.app.state.dispatcher, "_execute_update", no_docker)
     await add_user(admin, "runner", "operator")
     await admin.login("runner")
     done = await admin.post(f"/updates/{policy_id}/run", {})
-    assert done.status_code == 303 and done.headers["location"] == "/runs/91"
-    assert started == [(policy_id, "runner")]
+    ((run_id, by),) = admin.sql("SELECT id, triggered_by FROM runs WHERE kind = 'update'")
+    assert done.status_code == 303 and done.headers["location"] == f"/runs/{run_id}"
+    assert by == "runner"
     assert admin.sql(
         "SELECT actor, outcome, details FROM audit_events WHERE action = 'update_policy.run'"
-    ) == [("runner", "success", json.dumps({"name": "nightly web", "run_id": 91}))]
+    ) == [("runner", "success", json.dumps({"name": "nightly web", "run_id": run_id}))]
     assert (await admin.post("/updates/999/run", {})).status_code == 404
 
 
