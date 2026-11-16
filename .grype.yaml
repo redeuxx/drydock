@@ -133,19 +133,3 @@ ignore:
     fix-state: wont-fix
     package: {name: perl-base, type: deb}
     reason: perl Pod::Text nested =over loop; Pod::Text not installed and drydock never runs perl
-
-  # GRYPE DATA LAG, FIXED IN THE INSTALLED PACKAGE
-
-  # zlib: both fixed in 1:1.3.dfsg+really1.3.1-1+deb13u1 (DSA-6613-1, the same patch), which
-  # the Dockerfile installs and checks. Debian's tracker recorded the trixie fix at 07:48Z on
-  # 2026-11-07, after the Grype database built at 06:18Z. The version pin keeps the rule off
-  # any other build. Drop both once Grype's data shows them fixed.
-  # expires 2026-11-21
-  - vulnerability: CVE-2026-85091
-    fix-state: not-fixed
-    package: {name: zlib1g, version: "1:1.3.dfsg+really1.3.1-1+deb13u1", type: deb}
-    reason: fixed in the installed deb13u1 (DSA-6613-1); Grype's database predates Debian's tracker update
-  - vulnerability: CVE-2026-76844
-    fix-state: not-fixed
-    package: {name: zlib1g, version: "1:1.3.dfsg+really1.3.1-1+deb13u1", type: deb}
-    reason: fixed in the installed deb13u1 (DSA-6613-1, same patch as CVE-2026-85091); Grype's database predates Debian's tracker update
