@@ -1,5 +1,6 @@
 {% from "status/_host_bar.html" import host_bar %}
 {% from "_spark.html" import sparkline %}
+{% from "_icons.html" import icon %}
 {% from "_macros.html" import about_button, about_note, busy_note, pager, unread_hosts with context %}
 {# One host's containers, or every enabled host's, from the status collector's cache
    (routes/containers.py), a page at a time. The
@@ -46,11 +47,12 @@
   <form method="dialog" class="modal-backdrop"><button>Close</button></form>
 </dialog>
 {%- endmacro %}
+{# A row's actions are items of a popover menu; the dialogs they open sit after the table. #}
 {% macro act(r, verb, label) -%}
-<button type="submit" form="container-actions" name="action" value="{{ verb }}:{{ r.host.id }}:{{ r.c.id }}" class="btn btn-ghost btn-xs"><span class="spinner" aria-hidden="true"></span>{{ label }}<span class="sr-only"> {{ r.c.name }}</span></button>
+<li><button type="submit" form="container-actions" name="action" value="{{ verb }}:{{ r.host.id }}:{{ r.c.id }}"><span class="spinner" aria-hidden="true"></span>{{ label }}<span class="sr-only"> {{ r.c.name }}</span></button></li>
 {%- endmacro %}
 {% macro ask(n, c, verb, label) -%}
-<button type="button" class="btn btn-ghost btn-xs" commandfor="ctr-{{ n }}-{{ verb }}" command="show-modal" aria-haspopup="dialog">{{ label }}<span class="sr-only"> {{ c.name }}</span></button>
+<li><button type="button"{% if verb == "remove" %} class="text-error"{% endif %} commandfor="ctr-{{ n }}-{{ verb }}" command="show-modal" aria-haspopup="dialog">{{ label }}<span class="sr-only"> {{ c.name }}</span></button></li>
 {%- endmacro %}
 {# The tag the container follows (updates/check.py followed_tag), or that it is pinned. #}
 {% macro tag_badge(image) -%}
@@ -167,7 +169,7 @@
           {%- if label == "Tag" %} {{ about_button("about-tag", "The tag a container follows") }}{% endif -%}
         </th>
         {% endfor %}
-        {% if operator %}<th scope="col" class="w-44">Actions</th>{% endif %}
+        {% if operator %}<th scope="col" class="w-24">Actions</th>{% endif %}
       </tr>
     </thead>
     <tbody>
@@ -197,7 +199,7 @@
         <td class="truncate max-lg:hidden">{{ job_links(r.jobs) }}</td>
         <td class="truncate max-xl:hidden">{{ policy_list(r.policies) }}</td>
         {% if operator %}
-        <td><div class="relative z-10 flex flex-wrap gap-1">
+        {% set items -%}
           {%- if c.state in ("exited", "created", "dead") %}{{ act(r, "start", "Start") }}{% endif %}
           {%- if c.state == "paused" %}{{ act(r, "unpause", "Unpause") }}{% endif %}
           {%- if c.state == "running" %}{{ ask(loop.index, c, "restart", "Restart") }}{{ act(r, "pause", "Pause") }}{% endif %}
@@ -205,7 +207,14 @@
           {%- if v and v.state == "update" %}{{ ask(loop.index, c, "update", "Update") }}{% endif %}
           {%- if c.state == "exited" and c.health == "unhealthy" %}{{ act(r, "acknowledge", "Acknowledge") }}{% endif %}
           {%- if admin %}{{ ask(loop.index, c, "remove", "Remove") }}{% endif %}
-        </div></td>
+        {%- endset %}
+        {# A popover, so the table's overflow does not clip it and polls skip while it is
+           open; it anchors to its button (daisyUI's position-area) and flips up near the
+           bottom. Above the row's whole-row name button (relative z-10). #}
+        <td><div class="relative z-10">{% if items %}
+          <button type="button" class="btn btn-ghost btn-xs gap-0.5" popovertarget="ctr-{{ loop.index }}-menu">Actions<span class="sr-only"> for {{ c.name }}</span>{{ icon("chevron-down", "size-3.5 opacity-70") }}</button>
+          <ul id="ctr-{{ loop.index }}-menu" popover class="dropdown dropdown-end menu w-40 rounded-box border border-base-300 bg-base-100 p-2 shadow [position-try-fallbacks:flip-block]">{{ items }}</ul>
+        {% endif %}</div></td>
         {% endif %}
       </tr>
       {% else %}

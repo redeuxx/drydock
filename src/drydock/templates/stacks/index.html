@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_macros.html" import about_button, about_note, busy_note, check_updates, host_picker, pager, unread_hosts with context %}
+{% from "_icons.html" import icon %}
 {% block title %}Stacks{% endblock %}
 {% block content %}
 <h1 class="mb-1 text-3xl font-bold">Stacks</h1>
@@ -9,8 +10,8 @@
 {# One form per action, on the stack's own host; view is the host the page shows ("all"
    for every host), to come back to. The update posts to the containers page's update-stack
    route, which opens its run. Names come from the host: autoescaped only. #}
-{% macro stack_form(s, url, verb, label, cls="btn btn-sm btn-warning") -%}
-<form method="post" action="{{ url }}" hx-post="{{ url }}" hx-nonce="{{ csp_nonce }}">
+{% macro stack_form(s, url, verb, label, cls="btn btn-sm btn-warning", form_cls="") -%}
+<form method="post" action="{{ url }}" hx-post="{{ url }}" hx-nonce="{{ csp_nonce }}"{% if form_cls %} class="{{ form_cls }}"{% endif %}>
   <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
   <input type="hidden" name="host" value="{{ s.host.id }}">
   <input type="hidden" name="view" value="{{ host_value or 'all' }}">
@@ -20,8 +21,13 @@
   <button type="submit" class="{{ cls }}"><span class="spinner" aria-hidden="true"></span>{{ label }}<span class="sr-only"> {{ s.name }}</span></button>
 </form>
 {%- endmacro %}
-{% macro ask(n, s, url, verb, label, text) -%}
-<button type="button" class="btn btn-ghost btn-xs" commandfor="stack-{{ n }}-{{ label|lower }}" command="show-modal" aria-haspopup="dialog">{{ label }}<span class="sr-only"> {{ s.name }}</span></button>
+{# A row's actions sit in a popover menu; each asking action renders twice, as its menu
+   item ("item") and as its dialog ("dialog"), which stays outside the menu: opening a
+   modal closes the menu, and a dialog inside it would close with it. #}
+{% macro ask(n, s, url, verb, label, text, part) -%}
+{% if part == "item" -%}
+<li><button type="button"{% if verb == "remove" %} class="text-error"{% endif %} commandfor="stack-{{ n }}-{{ label|lower }}" command="show-modal" aria-haspopup="dialog">{{ label }}<span class="sr-only"> {{ s.name }}</span></button></li>
+{%- else -%}
 <dialog id="stack-{{ n }}-{{ label|lower }}" class="modal" aria-labelledby="stack-{{ n }}-{{ label|lower }}-title">
   <div class="modal-box">
     <h2 id="stack-{{ n }}-{{ label|lower }}-title" class="mb-2 text-lg font-bold break-all">{{ label }} {{ s.name }}</h2>
@@ -34,11 +40,14 @@
   </div>
   <form method="dialog" class="modal-backdrop"><button>Close</button></form>
 </dialog>
+{%- endif %}
 {%- endmacro %}
 {# Switch tag: an update of the stack to another tag of its main service
    (routes/containers.py update_stack, updates/switch.py). #}
-{% macro switch_tag(n, s) -%}
-<button type="button" class="btn btn-ghost btn-xs" commandfor="stack-{{ n }}-switch" command="show-modal" aria-haspopup="dialog">Switch tag<span class="sr-only"> of {{ s.name }}</span></button>
+{% macro switch_tag(n, s, part) -%}
+{% if part == "item" -%}
+<li><button type="button" commandfor="stack-{{ n }}-switch" command="show-modal" aria-haspopup="dialog">Switch tag<span class="sr-only"> of {{ s.name }}</span></button></li>
+{%- else -%}
 <dialog id="stack-{{ n }}-switch" class="modal" aria-labelledby="stack-{{ n }}-switch-title">
   <div class="modal-box">
     <h2 id="stack-{{ n }}-switch-title" class="mb-2 text-lg font-bold break-all">Switch the tag of {{ s.name }}</h2>
@@ -64,6 +73,14 @@
   </div>
   <form method="dialog" class="modal-backdrop"><button>Close</button></form>
 </dialog>
+{%- endif %}
+{%- endmacro %}
+{% macro actions(n, s, part) -%}
+  {%- if s.newer %}{{ ask(n, s, "/containers/update-stack", None, "Update", "Pull the newer images of " ~ s.name ~ " first, then make its containers that have one again in dependency order, waiting for each one's healthy dependencies. If any of them does not start or become healthy, all of them are put back. Containers without a newer image are left alone.", part) }}{% endif %}
+  {%- if s.running < s.total and part == "item" %}<li>{{ stack_form(s, "/stacks/actions", "start", "Start", "w-full px-3 py-1.5 text-left", "p-0") }}</li>{% endif %}
+  {%- if s.running %}{{ ask(n, s, "/stacks/actions", "restart", "Restart", "Restart every container of " ~ s.name ~ "?", part) }}{{ ask(n, s, "/stacks/actions", "stop", "Stop", "Stop every container of " ~ s.name ~ "? Each gets its own stop timeout to shut down.", part) }}{% endif %}
+  {%- if s.main %}{{ switch_tag(n, s, part) }}{% endif %}
+  {%- if admin %}{{ ask(n, s, "/stacks/actions", "remove", "Remove", "Remove every container of " ~ s.name ~ "? Each is stopped first, then deleted. Volumes and networks are kept, but drydock cannot make the stack again: run docker compose up on the host for that. This cannot be undone.", part) }}{% endif %}
 {%- endmacro %}
 {% if not hosts %}
 <p class="text-sm opacity-70">No host is set up yet.{% if admin %} <a class="link" href="/hosts/new?kind=local">Add the local host</a> or <a class="link" href="/hosts/new?kind=ssh">an SSH host</a>.{% endif %}</p>
@@ -80,7 +97,7 @@
   </ul>
 </div>
 {% endif %}
-{# Polls itself like the containers table; frontend/app.ts skips a poll while a dialog is open. #}
+{# Polls itself like the containers table; frontend/app.ts skips a poll while a dialog or a menu is open. #}
 {% set live = chosen.enabled if chosen else hosts|selectattr("enabled")|list|length > 0 %}
 <div id="stacks"
   {%- if live %} data-poller="Stack status" hx-get="{{ page_url }}{{ page }}" hx-trigger="every 10s" hx-target="this" hx-select="#stacks" hx-swap="outerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}"{% endif %}>
@@ -123,13 +140,15 @@
           {%- if admin and not s.policies %}<a class="link" href="/updates/new?{{ {'host': s.host.id, 'type': 'stack', 'target': s.name}|urlencode }}">Schedule<span class="sr-only"> updates of {{ s.name }}</span></a>{% endif -%}
         </td>
         {% if operator %}
-        <td><div class="flex flex-wrap items-center gap-1">
-          {%- if s.newer %}{{ ask(loop.index, s, "/containers/update-stack", None, "Update", "Pull the newer images of " ~ s.name ~ " first, then make its containers that have one again in dependency order, waiting for each one's healthy dependencies. If any of them does not start or become healthy, all of them are put back. Containers without a newer image are left alone.") }}{% endif %}
-          {%- if s.running < s.total %}{{ stack_form(s, "/stacks/actions", "start", "Start", "btn btn-ghost btn-xs") }}{% endif %}
-          {%- if s.running %}{{ ask(loop.index, s, "/stacks/actions", "restart", "Restart", "Restart every container of " ~ s.name ~ "?") }}{{ ask(loop.index, s, "/stacks/actions", "stop", "Stop", "Stop every container of " ~ s.name ~ "? Each gets its own stop timeout to shut down.") }}{% endif %}
-          {%- if s.main %}{{ switch_tag(loop.index, s) }}{% endif %}
-          {%- if admin %}{{ ask(loop.index, s, "/stacks/actions", "remove", "Remove", "Remove every container of " ~ s.name ~ "? Each is stopped first, then deleted. Volumes and networks are kept, but drydock cannot make the stack again: run docker compose up on the host for that. This cannot be undone.") }}{% endif %}
-        </div></td>
+        {# A popover, so the table's overflow does not clip it and polls skip while it is open;
+           it anchors to its button (daisyUI's position-area) and flips up near the bottom. #}
+        <td>
+          <button type="button" class="btn btn-ghost btn-xs gap-0.5" popovertarget="stack-{{ loop.index }}-menu">Actions<span class="sr-only"> for {{ s.name }}</span>{{ icon("chevron-down", "size-3.5 opacity-70") }}</button>
+          <ul id="stack-{{ loop.index }}-menu" popover class="dropdown dropdown-end menu w-40 rounded-box border border-base-300 bg-base-100 p-2 shadow [position-try-fallbacks:flip-block]">
+            {{ actions(loop.index, s, "item") }}
+          </ul>
+          {{ actions(loop.index, s, "dialog") }}
+        </td>
         {% endif %}
       </tr>
       {% else %}

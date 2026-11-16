@@ -258,6 +258,15 @@ document.addEventListener("click", (event) => {
   }
 });
 
+// A table row's actions are a popover menu (ul.menu[popover]). Opening a modal from it does
+// not close it, so picking any item does; the item's own action (a dialog, a submit) runs
+// after this listener all the same.
+
+document.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element) || !event.target.closest("button")) return;
+  event.target.closest<HTMLElement>("ul.menu[popover]:popover-open")?.hidePopover();
+});
+
 // SELECT ALL
 //
 // The containers table's header checkbox (data-select-all) checks or clears every row's

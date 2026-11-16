@@ -12,6 +12,9 @@ Notable changes to drydock. Versions follow [semantic versioning](https://semver
 - opentelemetry-api 1.45.2, for CVE-2026-126360.
 - Release images are scanned with both Trivy and Grype, on amd64 and arm64, before each release is tagged; the release workflow no longer scans.
 
+### Interface
+- The Containers and Stacks pages put each row's actions in an Actions menu instead of a row of buttons.
+
 ### Fixes
 - Run now on an update policy no longer fails with HTTP 500 ("database is locked") after 5 seconds.
 

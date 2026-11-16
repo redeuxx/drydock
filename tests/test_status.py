@@ -1196,6 +1196,7 @@ async def test_an_acknowledged_exit_is_unhealthy_no_more_until_it_starts_again(
     assert names_in_order(page) == ["web", "worker"]
     assert f'value="acknowledge:{host_id}:' + "e" * 64 in page
     assert f'value="acknowledge:{host_id}:' + "a" * 64 not in page, "running containers: not yet"
+    assert 'popovertarget="ctr-1-menu"' in page and '<ul id="ctr-1-menu" popover' in page
 
     htmx = {"HX-Request": "true"}
     data = {"host": str(host_id), "action": "acknowledge", "id": ["e" * 64, "a" * 64]}
@@ -1458,6 +1459,9 @@ async def test_every_hosts_stacks(admin: Browser, monkeypatch) -> None:
     assert f'href="/containers?host={vega}&amp;stack=app"' in page
     assert ">1.37.0</span>" in page and ">pinned</span>" in page
     assert "Schedule updates of every stack" not in page and "Check for updates" not in page
+    menu = page.split('<ul id="stack-1-menu" popover', 1)[1].split("</ul>", 1)[0]
+    assert 'popovertarget="stack-1-menu"' in page and 'commandfor="stack-1-restart"' in menu
+    assert "<dialog" not in menu and 'id="stack-1-restart"' in page, "dialogs sit outside the menu"
 
     calls = []
 

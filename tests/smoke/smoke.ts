@@ -416,6 +416,8 @@ await page.keyboard.press("Escape");
 await page.goto("/containers?q=drydock-test-smoke-target-1");
 const targetRow = page.locator("#containers tbody tr", { hasText: "drydock-test-smoke-target-1" });
 await targetRow.waitFor({ timeout: 20000 });
+// The row's actions are a popover menu; picking one closes it and still submits.
+await targetRow.getByRole("button", { name: "Actions for drydock-test-smoke-target-1" }).click();
 await targetRow.getByRole("button", { name: "Start drydock-test-smoke-target-1" }).click();
 const refused = await page
   .locator("#main [role=alert]", { hasText: "own Compose project" })
