@@ -4,6 +4,7 @@ require_role() is the only way routes get a user: it validates the session and,
 for any method that is not GET/HEAD/OPTIONS, the CSRF token and Origin.
 """
 
+import logging
 from datetime import timedelta
 from enum import IntEnum
 
@@ -12,6 +13,8 @@ from fastapi import Depends, HTTPException, Request
 from drydock.models import utcnow
 from drydock.security import csrf
 from drydock.security.sessions import Auth, load_auth
+
+log = logging.getLogger("drydock.rbac")
 
 REAUTH_WINDOW = timedelta(minutes=10)
 
@@ -38,8 +41,19 @@ async def authenticated(request: Request, auth: Auth = Depends(load_auth)) -> Au
 
 
 def require_role(minimum: Role):
-    async def dependency(auth: Auth = Depends(authenticated)) -> Auth:
+    async def dependency(request: Request, auth: Auth = Depends(authenticated)) -> Auth:
         if auth.user.role < minimum:
+            # The server log, not the audit table: a refusal changes nothing, and audit rows
+            # are never deleted. The route's template, so no request text reaches the log.
+            route = getattr(request.scope.get("route"), "path", "?")
+            log.warning(
+                "Refused %s %s to %r: needs %s, has %s",
+                request.method,
+                route,
+                auth.user.username,
+                minimum.name,
+                Role(auth.user.role).name,
+            )
             raise HTTPException(status_code=403, detail="Your role does not allow this.")
         return auth
 
