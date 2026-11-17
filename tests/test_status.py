@@ -889,7 +889,8 @@ async def test_containers_page_shows_the_cache_and_never_calls_docker(
     assert 'href="http://drydock.test:8080"' in page, "the local host's ports, at drydock's address"
     assert "9090&rarr;90/tcp" in page and ":9090" not in page, "no link to a loopback-only port"
     assert f'href="/jobs/{jobs["web-nightly"]}">web-nightly</a>' in page
-    assert page.count(f'href="/jobs/{jobs["app-all"]}">app-all</a> (disabled)') == 4, "db, cache"
+    assert page.count(f'href="/jobs/{jobs["app-all"]}">app-all</a> (disabled)') == 2, "db, cache"
+    assert "Net I/O" not in page and "Ports</th>" not in page, "the rest is in the row's dialog"
     assert "4 containers" in page
     assert collector._viewed_at > 0, "the page keeps the collector reading"
 
@@ -904,6 +905,52 @@ async def test_containers_page_shows_the_cache_and_never_calls_docker(
         f"/containers?host={host_id}", headers={"HX-Request": "true", "HX-Target": "main#main"}
     )
     assert 'id="containers-filter"' in picked.text
+
+
+def row_of(page: str, name: str) -> str:
+    """The table row of the container named name."""
+    for row in page.split('<tr class="relative')[1:]:
+        if f'title="{name}">' in row:
+            return row.split("</tr>")[0]
+    raise AssertionError(name)
+
+
+async def test_the_last_backup_and_a_missing_schedule_are_shown(
+    admin: Browser, monkeypatch
+) -> None:
+    """web: a scheduled job, last backup 3 hours ago (an older failure does not count).
+    db and cache: only the disabled stack job, whose newest run failed. The markup one: no
+    job at all."""
+    _, host_id = await a_host_with_containers(admin, monkeypatch)
+    jobs = add_jobs(admin, host_id)
+    now = datetime.now(UTC)
+    with admin.app.state.sessionmaker() as db, db.begin():
+        db.execute(update(Job).where(Job.id == jobs["web-nightly"]).values(cron="0 3 * * *"))
+        for job, status_, hours, kind in [
+            ("web-nightly", "done", 3, "backup"),
+            ("web-nightly", "failed", 5, "backup"),
+            ("web-nightly", "done", 1, "update"),  # not a backup
+            ("app-all", "done", 50, "backup"),
+            ("app-all", "interrupted", 1, "backup"),
+        ]:
+            db.add(
+                Run(
+                    job_id=jobs[job],
+                    kind=kind,
+                    status=status_,
+                    finished_at=now - timedelta(hours=hours, minutes=1),
+                )
+            )
+    page = (await admin.get(f"/containers?host={host_id}")).text
+    web = row_of(page, "web")
+    assert "3 hours ago" in web and "No schedule" not in web and "Failed" not in web
+    for name in ("db", "cache"):
+        row = row_of(page, name)
+        assert "No schedule" in row and "Its backup jobs run only when started by hand" in row
+        assert '<span class="text-error"' in row and "Failed 1 hour ago" in row
+    bare = row_of(page, MARKUP)
+    assert "No schedule" in bare and "No backup job covers it" in bare and " ago" not in bare
+    assert "No schedule: no backup job covers it." in page, "the dialog says why"
 
 
 async def test_containers_sort_by_an_allowed_column_only(admin: Browser, monkeypatch) -> None:

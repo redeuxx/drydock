@@ -25,7 +25,7 @@ import docker.errors
 import requests
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import Response
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from drydock import audit
@@ -36,7 +36,16 @@ from drydock.hosts.helper import HELPER_LABEL
 from drydock.hosts.inventory import PROJECT_LABEL
 from drydock.hosts.status import ContainerStatus, HostSnapshot
 from drydock.jobs.dispatcher import DispatchError, lock_scope, name_key
-from drydock.models import EVERY_STACK, HealthAck, Host, Job, JobTarget, UpdatePolicy, utcnow
+from drydock.models import (
+    EVERY_STACK,
+    HealthAck,
+    Host,
+    Job,
+    JobTarget,
+    Run,
+    UpdatePolicy,
+    utcnow,
+)
 from drydock.routes.auth import client_ip
 from drydock.routes.hosts import DOCKER_ERRORS, open_host, release, target
 from drydock.security.rbac import Role, require_recent_auth, require_role
@@ -177,6 +186,41 @@ def covering_jobs(db: Session, host_id: int) -> dict[tuple[str, str], list[Job]]
     return covers
 
 
+@dataclass(frozen=True)
+class Backups:
+    """What a row says about a container's backups: whether an enabled job runs on a
+    schedule, when a backup of it last succeeded, and when one last failed."""
+
+    scheduled: bool
+    last: datetime | None
+    failed: datetime | None
+
+    @property
+    def failing(self) -> bool:
+        """The newest outcome is a failure."""
+        return self.failed is not None and (self.last is None or self.failed > self.last)
+
+
+def last_runs(db: Session, job_ids: set[int], statuses: tuple[str, ...]) -> dict[int, datetime]:
+    """Each job's newest backup run to finish with one of statuses, from its run history
+    (which keeps runs for the run history days)."""
+    if not job_ids:
+        return {}
+    found = db.execute(
+        select(Run.job_id, func.max(Run.finished_at))
+        .where(Run.job_id.in_(job_ids), Run.kind == "backup", Run.status.in_(statuses))
+        .group_by(Run.job_id)
+    )
+    return {job_id: when for job_id, when in found if when is not None}
+
+
+def backups(jobs: list[Job], done: dict[int, datetime], bad: dict[int, datetime]) -> Backups:
+    def newest(found: dict[int, datetime]) -> datetime | None:
+        return max((found[j.id] for j in jobs if j.id in found), default=None)
+
+    return Backups(any(j.enabled and j.cron for j in jobs), newest(done), newest(bad))
+
+
 def port_base(request: Request, host: Host, admin: bool) -> str | None:
     """Where a published port is reached from the browser: drydock's own address (the
     BASE_URL setting, never the request's Host header) for the local host, an SSH host's
@@ -239,6 +283,7 @@ class Row:
     jobs: list[Job]  # the backup jobs that cover it
     policies: list[tuple[UpdatePolicy, datetime | None]]  # its update policies, next run
     port_base: str | None
+    backups: Backups
 
 
 def page(
@@ -290,6 +335,7 @@ def page(
     scheduler = request.app.state.scheduler
     facts: dict[int, Any] = {}  # per host of a row: its jobs, policies, sparklines, ports
     rows = []
+    covered: list[tuple[Host, ContainerStatus, list[Job]]] = []
     for h, c in shown:
         if h.id not in facts:
             facts[h.id] = (
@@ -301,19 +347,26 @@ def page(
                 collector.history(h.id),
                 port_base(request, h, admin),
             )
-        covers, policies, history, base = facts[h.id]
+        covers = facts[h.id][0]
+        jobs = covers[("container", c.name)] + (covers[("stack", c.project)] if c.project else [])
+        covered.append((h, c, list({j.id: j for j in jobs}.values())))
+    job_ids = {j.id for _, _, jobs in covered for j in jobs}
+    done = last_runs(db, job_ids, ("done",))
+    bad = last_runs(db, job_ids, ("failed", "interrupted"))
+    for h, c, jobs in covered:
+        _, policies, history, base = facts[h.id]
         mine = (("container", c.name), ("stack", c.project))
         mine += (("stack", EVERY_STACK),) if c.project else ()
-        jobs = covers[("container", c.name)] + (covers[("stack", c.project)] if c.project else [])
         rows.append(
             Row(
                 h,
                 c,
                 verdicts[h.id].get(c.id),
                 history.containers.get(c.id, ([], [])),
-                list({j.id: j for j in jobs}.values()),
+                jobs,
                 [(p, when) for p, when in policies if (p.target_type, p.target) in mine],
                 base,
+                backups(jobs, done, bad),
             )
         )
     host_value = str(chosen.id) if chosen is not None else ""

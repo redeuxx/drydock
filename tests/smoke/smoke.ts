@@ -407,6 +407,23 @@ check(
 await page.locator(rowButtons).first().click();
 check((await page.locator("#containers dialog[open]").count()) === 1, "a row opens its dialog");
 await page.keyboard.press("Escape");
+// Every host's page has the most columns (Host). It ends on 1280, the width the rest uses.
+for (const width of [375, 1024, 1280]) {
+  await page.setViewportSize({ width, height: 800 });
+  await page.goto("/containers");
+  await page.locator(rowButtons).first().waitFor({ timeout: 20000 });
+  const fits = await page.evaluate(() => {
+    const table = document.querySelector("#containers table");
+    const box = table?.parentElement;
+    const root = document.documentElement;
+    return !!box && table!.scrollWidth <= box.clientWidth && root.scrollWidth <= root.clientWidth;
+  });
+  check(fits, `/containers fits a ${width}px window without scrolling sideways`);
+}
+check(
+  (await page.locator("#containers tbody td", { hasText: /No schedule|ago|Not yet/ }).count()) > 0,
+  "the containers table says when each container was last backed up, or that it has no schedule",
+);
 
 // A CONTAINER ACTION AND INSPECT
 //

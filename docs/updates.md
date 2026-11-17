@@ -34,7 +34,7 @@ A container that another container joins the network of (`network_mode: service:
 
 ## Switching tags
 
-A container follows the tag its image names: `1.27` in `nginx:1.27`, or `latest` when it names none. The containers page shows it in a **Tag** column (**Tags** on the stacks page), and an "i" beside it explains it in place. To move to another tag, an operator opens the container's row and uses **Switch tag**: drydock makes the container again from the same repository at the new tag, exactly as an update does (pulled by digest first, the configuration kept, put back if the new one does not start or become healthy). It works for a container pinned by digest too, which then follows the tag; not for one made from an image ID, which names no repository.
+A container follows the tag its image names: `1.27` in `nginx:1.27`, or `latest` when it names none. A container's dialog on the containers page shows it (the stacks page in a **Tags** column), and an "i" beside it explains it in place. To move to another tag, an operator opens the container's row and uses **Switch tag**: drydock makes the container again from the same repository at the new tag, exactly as an update does (pulled by digest first, the configuration kept, put back if the new one does not start or become healthy). It works for a container pinned by digest too, which then follows the tag; not for one made from an image ID, which names no repository.
 
 A stack switches as a whole from its **Switch tag** on the Stacks page. The tag is for its **main service**: the one the rest of the stack is there for. Drydock picks the service no other service depends on (by `depends_on`), preferring one that binds a host port, then the first by name, and names it under the stack; the dialog lets you pick another. The main service's replicas move with it, and so do images of the same app: from the same publisher (registry and path, say `ghcr.io/immich-app`), whose names start like the main's (`immich-server`, `immich-machine-learning`), on the main's tag or that tag with a suffix (`v1.120-cuda` becomes `v1.121-cuda`). So an app and its workers stay on one version. The others, a database or a cache, keep their tags and get the newest image of them, as in a stack update. Docker Hub's official images (`nextcloud`, `mariadb`, `redis`) come from many publishers, and every image has a `latest`, so a main service that is one of them, or follows `latest`, moves alone. It is all or nothing, in dependency order, and each container is stopped meanwhile; putting it back does not undo what a new version did to its data, so back up first for a major version or an older tag.
 
@@ -52,7 +52,7 @@ A stack policy whose target is `*` updates every Compose stack on its host, dryd
 - **Tell:** a notification target hears about every failed or interrupted update, and about successful ones too if you tick that.
 - A fire missed while drydock was stopped runs late if it was less than an hour ago; an older one is skipped, recorded in the audit log and shown in the bell, like a job's.
 
-The dashboard's "Next scheduled runs" includes the policies, and the containers page shows which policy updates each container, with its next run. Every create, edit, delete and run now is in the audit log.
+The dashboard's "Next scheduled runs" includes the policies, and a container's dialog on the containers page shows which policy updates it, with its next run. Every create, edit, delete and run now is in the audit log.
 
 ## What is not updated
 

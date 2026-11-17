@@ -11,24 +11,16 @@
    actions all submit #container-actions, and stop and restart ask first.
    Each row's container is "<host ID>:<container ID>" in the forms.
    Names, images, addresses and ports come from the host: autoescaped only. #}
+{# A glance only: the name (its stack under it), state, load and backups. The rest of a
+   container is in its row's dialog. Name takes what the fixed columns leave. #}
 {% set columns = [
-  ("name", "Name", "w-48"),
-  ("image", "Image", "w-56 max-md:hidden"),
-  (None, "Tag", "w-24 max-md:hidden"),
-  ("state", "State", "w-32"),
-  ("uptime", "Uptime", "w-36 max-sm:hidden"),
-  ("restarts", "Restarts", "w-20 max-lg:hidden"),
-  ("cpu", "CPU", "w-16"),
-  ("memory", "Memory", "w-40 max-sm:hidden"),
-  ("net", "Net I/O", "w-40 max-xl:hidden"),
-  ("disk", "Disk I/O", "w-40 max-xl:hidden"),
-  ("ip", "IP", "w-32 max-lg:hidden"),
-  (None, "Ports", "w-32 max-lg:hidden"),
-  ("stack", "Stack", "w-32 max-md:hidden"),
-  (None, "Backup jobs", "w-36 max-lg:hidden"),
-  (None, "Auto-update", "w-36 max-xl:hidden"),
+  ("name", "Name", ""),
+  ("state", "State", "w-28 max-sm:hidden"),
+  ("cpu", "CPU", "w-24 max-sm:hidden"),
+  ("memory", "Memory", "w-36 max-sm:hidden"),
+  (None, "Last backup", "w-44 max-sm:w-28"),
 ] %}
-{% if not chosen %}{% set columns = columns[:1] + [(None, "Host", "w-32")] + columns[1:] %}{% endif %}
+{% if not chosen %}{% set columns = columns[:1] + [(None, "Host", "w-32 max-md:hidden")] + columns[1:] %}{% endif %}
 {% set state_tones = {"running": "badge-success", "paused": "badge-warning", "restarting": "badge-warning", "exited": "badge-neutral", "dead": "badge-error", "created": "badge-info"} %}
 {% set health_tones = {"healthy": "bg-success", "unhealthy": "bg-error", "starting": "bg-warning"} %}
 {% set operator = auth.user.role >= Role.operator %}
@@ -58,12 +50,17 @@
 {% macro tag_badge(image) -%}
 {% set t = image|tag %}{% if t %}<span class="badge badge-soft badge-neutral badge-sm" title="Follows {{ t }}">{{ t }}</span>{% else %}<span class="opacity-50" title="Pinned by digest or image ID">pinned</span>{% endif %}
 {%- endmacro %}
-{% macro pair(a, b) %}{% if a is none and b is none %}<span class="opacity-50">n/a</span>{% else %}{{ a|filesize or "0 bytes" }} / {{ b|filesize or "0 bytes" }}{% endif %}{% endmacro %}
 {% macro port_list(ports, linked) -%}
 {% for p in ports %}{% if linked and p.protocol == "tcp" and not p.loopback %}<a class="link relative z-10" href="{{ linked }}:{{ p.public }}" target="_blank" rel="noopener noreferrer">{{ p.public }}</a>{% else %}{{ p.public }}{% endif %}&rarr;{{ p.private }}/{{ p.protocol }}{% if not loop.last %}, {% endif %}{% endfor %}
 {%- endmacro %}
-{% macro policy_list(found) -%}
-{% for policy, when in found %}<span title="{{ 'next ' ~ when|stamp(False) if when else 'disabled' }}">{{ policy.name }}{% if not policy.enabled %} (disabled){% endif %}</span>{% if not loop.last %}, {% endif %}{% endfor %}
+{# Backups.scheduled, last and failed (routes/containers.py): no schedule is a warning, a
+   failure newer than the last success an error. #}
+{% macro last_backup(r) -%}
+{% set b = r.backups %}
+{% if not b.scheduled %}<span class="badge badge-soft badge-warning badge-sm" title="{{ 'No backup job covers it' if not r.jobs else 'Its backup jobs run only when started by hand, or are disabled' }}">No schedule</span>{% endif %}
+{% if b.failing %}<span class="text-error" title="Failed {{ b.failed|stamp }}">Failed {{ b.failed|ago }}</span>
+{%- elif b.last %}<span title="{{ b.last|stamp }}">{{ b.last|ago }}</span>
+{%- elif b.scheduled %}<span class="opacity-60">Not yet</span>{% endif %}
 {%- endmacro %}
 {% macro job_links(jobs) -%}
 {% for job in jobs %}<a class="link relative z-10" href="/jobs/{{ job.id }}">{{ job.name }}</a>{% if not job.enabled %} (disabled){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
@@ -154,8 +151,8 @@
 {{ confirm("confirm-restart", "restart", "Restart", "Restart the selected containers?") }}
 {% if admin %}{{ confirm("confirm-remove", "remove", "Remove", "Remove the selected containers? Each is stopped first (its own stop timeout), then deleted. Their volumes are kept. This cannot be undone.") }}{% endif %}
 {% endif %}
-{# Every column has a width, so none collapses and spills its header over the next; the
-   table scrolls sideways when they add up to more than the page. #}
+{# Every column but Name has a width, so none collapses and spills its header over the
+   next. The columns fit a desktop page; only a phone may scroll sideways. #}
 <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
   <table class="table table-zebra table-sm table-fixed w-full">
     <thead>
@@ -166,10 +163,9 @@
           {%- if key -%}
           <a class="link link-hover" href="/containers?{{ {'host': host_value, 'sort': key, 'order': 'desc' if key == sort and order == 'asc' else 'asc', 'status': status, 'stack': stack, 'q': q}|urlencode }}">{{ label }}{% if key == sort %}<span aria-hidden="true">{{ " ▼" if order == "desc" else " ▲" }}</span>{% endif %}</a>
           {%- else %}{{ label }}{% endif -%}
-          {%- if label == "Tag" %} {{ about_button("about-tag", "The tag a container follows") }}{% endif -%}
         </th>
         {% endfor %}
-        {% if operator %}<th scope="col" class="w-24">Actions</th>{% endif %}
+        {% if operator %}<th scope="col" class="w-24 max-sm:w-12"><span class="max-sm:sr-only">Actions</span></th>{% endif %}
       </tr>
     </thead>
     <tbody>
@@ -177,27 +173,21 @@
       {% set c = r.c %}
       <tr class="relative hover:bg-base-200">
         {% if operator %}<td><input type="checkbox" form="container-actions" name="id" value="{{ r.host.id }}:{{ c.id }}" class="checkbox checkbox-xs relative z-10" data-select aria-label="Select {{ c.name }}"></td>{% endif %}
-        <td class="truncate font-semibold"><button type="button" class="cursor-pointer after:absolute after:inset-0" commandfor="ctr-{{ loop.index }}" command="show-modal" aria-haspopup="dialog" title="{{ c.name }}">{{ c.name }}</button></td>
-        {% if not chosen %}<td class="truncate" title="{{ r.host.name }}">{{ r.host.name }}</td>{% endif %}
         {% set v = r.verdict %}
-        <td class="truncate max-md:hidden" title="{{ c.image }}">{% if v and v.state == "update" %}<span class="badge badge-soft badge-info badge-xs mr-1" title="{{ v.reason }}">update</span>{% endif %}{{ c.image }}</td>
-        <td class="truncate max-md:hidden">{{ tag_badge(c.image) }}</td>
-        <td class="truncate">
+        <td>
+          <div class="flex min-w-0 items-center gap-1 font-semibold"><button type="button" class="truncate cursor-pointer after:absolute after:inset-0" commandfor="ctr-{{ loop.index }}" command="show-modal" aria-haspopup="dialog" title="{{ c.name }}">{{ c.name }}</button>{% if v and v.state == "update" %}<span class="badge badge-soft badge-info badge-xs shrink-0" title="{{ v.reason }}">update</span>{% endif %}</div>
+          {# On a phone the State column folds in here. #}
+          <div class="flex min-w-0 items-center gap-1 text-xs"><span class="badge badge-soft badge-xs sm:hidden {{ state_tones.get(c.state, 'badge-neutral') }}">{{ c.state }}{% if c.health %}, {{ c.health }}{% endif %}</span>{% if c.project %}<span class="truncate opacity-60" title="Stack {{ c.project }}">{{ c.project }}</span>{% endif %}</div>
+        </td>
+        {% if not chosen %}<td class="truncate max-md:hidden" title="{{ r.host.name }}">{{ r.host.name }}</td>{% endif %}
+        <td class="truncate max-sm:hidden" title="{{ c.status_text }}">
           <span class="badge badge-soft badge-sm {{ state_tones.get(c.state, 'badge-neutral') }}">{{ c.state }}</span>
           {% if c.health %}<span class="ml-1 inline-block size-2 rounded-full {{ health_tones[c.health] }}" title="{{ c.health }}"></span><span class="sr-only">, {{ c.health }}</span>{% endif %}
         </td>
-        <td class="truncate max-sm:hidden" title="{{ c.status_text }}">{{ c.status_text }}</td>
-        <td class="truncate max-lg:hidden">{{ c.restarts if c.restarts is not none else "" }}</td>
         {% set lines = r.lines %}
-        <td class="truncate">{% if c.cpu_percent is not none %}{{ "%.1f"|format(c.cpu_percent) }}%{% endif %}{{ sparkline(lines[0], None, "block h-3 w-full", floor=1) }}</td>
+        <td class="truncate max-sm:hidden">{% if c.cpu_percent is not none %}{{ "%.1f"|format(c.cpu_percent) }}%{% endif %}{{ sparkline(lines[0], None, "block h-3 w-full", floor=1) }}</td>
         <td class="truncate max-sm:hidden">{% if c.mem_bytes is not none %}{{ c.mem_bytes|filesize }}{% if c.mem_limit %} / {{ c.mem_limit|filesize }}{% endif %}{% endif %}{{ sparkline(lines[1], c.mem_limit, "block h-3 w-full") }}</td>
-        <td class="truncate max-xl:hidden">{% if c.net_rx is not none %}{{ pair(c.net_rx, c.net_tx) }}{% endif %}</td>
-        <td class="truncate max-xl:hidden">{% if c.block_read is not none %}{{ pair(c.block_read, c.block_write) }}{% endif %}</td>
-        <td class="truncate max-lg:hidden">{{ c.ips[0][1] if c.ips else "" }}</td>
-        <td class="truncate max-lg:hidden">{{ port_list(c.ports, r.port_base) }}</td>
-        <td class="truncate max-md:hidden">{{ c.project or "" }}</td>
-        <td class="truncate max-lg:hidden">{{ job_links(r.jobs) }}</td>
-        <td class="truncate max-xl:hidden">{{ policy_list(r.policies) }}</td>
+        <td><div class="flex flex-wrap items-center gap-x-2 gap-y-1">{{ last_backup(r) }}</div></td>
         {% if operator %}
         {% set items -%}
           {%- if c.state in ("exited", "created", "dead") %}{{ act(r, "start", "Start") }}{% endif %}
@@ -212,7 +202,7 @@
            open; it anchors to its button (daisyUI's position-area) and flips up near the
            bottom. Above the row's whole-row name button (relative z-10). #}
         <td><div class="relative z-10">{% if items %}
-          <button type="button" class="btn btn-ghost btn-xs gap-0.5" popovertarget="ctr-{{ loop.index }}-menu">Actions<span class="sr-only"> for {{ c.name }}</span>{{ icon("chevron-down", "size-3.5 opacity-70") }}</button>
+          <button type="button" class="btn btn-ghost btn-xs gap-0.5" popovertarget="ctr-{{ loop.index }}-menu"><span class="max-sm:sr-only">Actions</span><span class="sr-only"> for {{ c.name }}</span>{{ icon("chevron-down", "size-3.5 opacity-70") }}</button>
           <ul id="ctr-{{ loop.index }}-menu" popover class="dropdown dropdown-end menu w-40 rounded-box border border-base-300 bg-base-100 p-2 shadow [position-try-fallbacks:flip-block]">{{ items }}</ul>
         {% endif %}</div></td>
         {% endif %}
@@ -224,7 +214,7 @@
   </table>
 </div>
 {{ pager(page, pages, page_url) }}
-{# Outside the table, so a hidden column does not hide it; the row dialogs say it in brief. #}
+{# Opened from a row's dialog. #}
 {% call about_note("about-tag", "The tag a container follows") %}
   <p>The part after the colon in the image a container was made from: <code>1.27</code> in <code>nginx:1.27</code>. An image named without one follows <code>latest</code>.</p>
   <p>Updates bring the newest image of that tag. A tag like <code>latest</code> can jump a major version; a tag like <code>1.27</code> stays within it.</p>
@@ -241,7 +231,7 @@
       <dt class="font-semibold">Host</dt><dd class="break-all">{{ r.host.name }}</dd>
       <dt class="font-semibold">ID</dt><dd class="font-mono text-xs break-all">{{ c.id }}</dd>
       <dt class="font-semibold">Image</dt><dd class="break-all">{{ c.image }}</dd>
-      <dt class="font-semibold">Tag</dt><dd>{{ tag_badge(c.image) }} <span class="text-xs opacity-70">{% if c.image|tag %}Updates bring the newest image of this tag.{% else %}It never changes by itself.{% endif %}</span></dd>
+      <dt class="font-semibold">Tag</dt><dd>{{ tag_badge(c.image) }} {{ about_button("about-tag", "The tag a container follows") }} <span class="text-xs opacity-70">{% if c.image|tag %}Updates bring the newest image of this tag.{% else %}It never changes by itself.{% endif %}</span></dd>
       {% set v = r.verdict %}
       <dt class="font-semibold">Updates</dt><dd>{% if v %}{{ v.reason }}{% if v.latest %} <span class="font-mono text-xs opacity-70">({{ v.latest[7:19] }})</span>{% endif %}{% else %}Not checked yet.{% endif %}</dd>
       <dt class="font-semibold">State</dt><dd>{{ c.state }}{% if c.health %}, {{ c.health }}{% endif %}</dd>
@@ -256,6 +246,8 @@
       <dt class="font-semibold">Ports</dt><dd class="break-all">{{ port_list(c.ports, r.port_base) }}</dd>
       <dt class="font-semibold">Stack</dt><dd class="break-all">{% if c.project %}{{ c.project }}{% if c.service %} (service {{ c.service }}){% endif %}{% endif %}</dd>
       <dt class="font-semibold">Backup jobs</dt><dd>{{ job_links(jobs) if jobs else "None" }}</dd>
+      {% set b = r.backups %}
+      <dt class="font-semibold">Last backup</dt><dd>{% if b.last %}{{ b.last|stamp }}{% else %}None in the run history{% endif %}{% if b.failing %}<br><span class="text-error">Failed {{ b.failed|stamp }}</span>{% endif %}{% if not b.scheduled %}<br>No schedule: {{ "no backup job covers it." if not jobs else "its jobs run only when started by hand, or are disabled." }}{% endif %}</dd>
       {% set found = r.policies %}
       <dt class="font-semibold">Auto-update</dt><dd>{% for policy, when in found %}{{ policy.name }}{% if when %}, next {{ when|stamp(False) }}{% elif not policy.enabled %} (disabled){% endif %}{% if not loop.last %}<br>{% endif %}{% else %}None{% endfor %}</dd>
     </dl>
