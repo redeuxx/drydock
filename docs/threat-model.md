@@ -418,7 +418,7 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 ### T28. Hooks as a way to run commands
 
 **Threat:** a hook runs a command in a container the job does not cover, runs through a shell, or is changed by someone who should not run code.
-**Defence:** only superadmins edit hooks. Hooks are argv lists run without a shell, bound to a container of the job, and checked again at run time.
+**Defence:** only superadmins edit hooks. Hooks are argv lists run without a shell, bound to a container of the job, and checked again at run time. Only a superadmin changes how drydock connects to a host (its Docker address, or SSH address, port, user and socket) while hooks are bound to it, so an admin cannot point a hook at another daemon.
 **Tests:**
 - `tests/test_hooks_docker.py::test_argv_is_passed_literally_without_a_shell`
 - `tests/test_hooks.py::test_parse_argv_accepts_literals_and_rejects_bad_shapes`
@@ -427,6 +427,7 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 - `tests/test_hooks_routes.py::test_hook_rebinding_is_checked_against_attached_jobs`
 - `tests/test_stack_dispatch.py::test_binding_is_checked_again_at_run_time`
 - `tests/test_stacks_docker.py::test_hook_bound_to_another_project_is_refused_at_run_time`
+- `tests/test_hooks_routes.py::test_only_a_superadmin_moves_a_host_that_hooks_are_bound_to`
 
 ### T29. Backups acting on the wrong container
 

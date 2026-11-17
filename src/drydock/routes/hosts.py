@@ -212,6 +212,10 @@ def validate(form: HostForm, run_dir: Path) -> list[str]:
     return [e for e in errors if e]
 
 
+# Where drydock connects to a host; see update_host for who may change it.
+CONNECTION = ("docker_url", "address", "port", "username", "remote_socket_path")
+
+
 def apply(host: Host, form: HostForm) -> None:
     host.name = form.name
     host.enabled = form.enabled
@@ -472,7 +476,20 @@ def update_host(
         db.rollback()
         return edit_page(request, auth, host, 422, form=form, errors=errors)
     before, endpoint = summary(host), (host.address, host.port)
+    connection = {field: getattr(host, field) for field in CONNECTION}
     apply(host, form)
+    moved = [field for field in CONNECTION if getattr(host, field) != connection[field]]
+    if moved and auth.user.role < Role.superadmin:
+        # A hook runs where a superadmin bound it: moving its host's connection would point
+        # the hook at another daemon (or another machine), so that is theirs to do.
+        bound = db.scalars(select(Hook.name).where(Hook.host_id == host.id).order_by(Hook.name))
+        if names := bound.all():
+            db.rollback()
+            error = (
+                f"Hooks are bound to this host: {', '.join(names)}. A superadmin must change"
+                " how drydock connects to it."
+            )
+            return edit_page(request, auth, get_host(db, host_id), 409, form=form, error=error)
     after = summary(host)
     details: dict[str, Any] = {
         field: {"from": before[field], "to": after[field]}

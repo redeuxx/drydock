@@ -330,6 +330,25 @@ async def test_host_with_hooks_cannot_be_deleted(admin: Browser) -> None:
     assert admin.sql("SELECT COUNT(*) FROM hosts") == [(0,)]
 
 
+async def test_only_a_superadmin_moves_a_host_that_hooks_are_bound_to(admin: Browser) -> None:
+    """A hook runs where a superadmin bound it, so an admin cannot point its host elsewhere."""
+    host_id = add_host(admin)
+    await add_hook(admin, host_id)
+    moved = {"name": "local", "enabled": "1", "docker_url": "tcp://10.0.0.5:2375"}
+    await add_user(admin, "host-admin", "admin")
+    await admin.login("host-admin")
+    response = await admin.post(f"/hosts/{host_id}", moved)
+    assert response.status_code == 409, response.text
+    assert "Hooks are bound to this host: dump. A superadmin must change" in response.text
+    assert admin.sql("SELECT name, docker_url FROM hosts") == [("local", "tcp://127.0.0.1:9")]
+    # The rest of the host stays an admin's to edit.
+    renamed = {"name": "renamed", "enabled": "1", "docker_url": "tcp://127.0.0.1:9"}
+    assert (await admin.post(f"/hosts/{host_id}", renamed)).status_code == 303
+    await admin.login("admin")
+    assert (await admin.post(f"/hosts/{host_id}", moved)).status_code == 303
+    assert admin.sql("SELECT name, docker_url FROM hosts") == [("local", "tcp://10.0.0.5:2375")]
+
+
 async def test_viewers_see_hook_names_but_never_argv(admin: Browser) -> None:
     host_id, storage_id = add_host(admin), await add_storage(admin)
     argv = '["sh", "-c", "argv-marker-text"]'
