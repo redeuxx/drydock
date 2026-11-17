@@ -184,7 +184,11 @@ def next_fires(cron: CronTrigger | OrTrigger, now: datetime, count: int) -> list
     fires: list[datetime] = []
     fire = None
     while len(fires) < count:
-        fire = cron.get_next_fire_time(fire, fire or now)
+        # The scheduler asks just after a fire, in UTC. A local fire in a skipped hour
+        # (02:00 that is really 03:00) compares by wall clock, so asking at it would list
+        # that 03:00 a second time.
+        after = fire.astimezone(UTC) + timedelta(microseconds=1) if fire else now
+        fire = cron.get_next_fire_time(fire, after)
         if fire is None:
             break
         fires.append(fire)

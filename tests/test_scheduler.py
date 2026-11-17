@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from anyio import sleep as anyio_sleep
 from apscheduler.events import EVENT_JOB_MISSED
+from apscheduler.job import Job as SchedulerJob
 
 from drydock.config import Settings
 from drydock.db import make_engine
@@ -113,11 +114,52 @@ def test_skipped_and_repeated_local_times() -> None:
     cron = trigger("30 2 * * *", "Europe/Berlin")
     spring = scheduler.next_fires(cron, datetime(2026, 3, 29, tzinfo=UTC), 1)
     assert [f.astimezone(UTC).strftime("%m-%d %H:%M") for f in spring] == ["03-29 01:30"]
+    # A skipped 02:00 is 03:00: one run, so the preview lists it once.
+    both = scheduler.next_fires(
+        trigger("0 2-3 * * *", "Europe/Berlin"), datetime(2026, 3, 29, tzinfo=UTC), 3
+    )
+    assert [f.astimezone(UTC).strftime("%m-%d %H:%M") for f in both] == [
+        "03-29 01:00",
+        "03-30 00:00",
+        "03-30 01:00",
+    ]
     autumn = scheduler.next_fires(cron, datetime(2026, 10, 25, tzinfo=UTC), 2)
     assert [f.astimezone(UTC).strftime("%m-%d %H:%M") for f in autumn] == [
         "10-25 00:30",
         "10-25 01:30",
     ]
+
+
+@pytest.mark.parametrize(
+    ("tz", "change"),
+    [
+        ("America/Chicago", datetime(2026, 11, 1, 7, tzinfo=UTC)),  # back an hour
+        ("Australia/Lord_Howe", datetime(2026, 4, 4, 15, tzinfo=UTC)),  # back 30 minutes
+        ("Antarctica/Troll", datetime(2026, 10, 25, 1, tzinfo=UTC)),  # back two hours
+    ],
+)
+@pytest.mark.parametrize("expr", ["0 * * * *", "*/15 * * * *", "30 1 * * *"])
+def test_the_scheduler_moves_forward_through_a_repeated_hour(
+    tz: str, change: datetime, expr: str
+) -> None:
+    """APScheduler's Job._get_run_times loops while the next fire is not in the future, so
+    a trigger that returned a fire again, or an earlier one, would hang the event loop.
+    Its own arithmetic is in UTC; a local time plus a timedelta loses the fold."""
+    cron = trigger(expr, tz)
+    now = change - timedelta(hours=4)
+    fires = [cron.get_next_fire_time(None, now)]
+    while len(fires) < 40:
+        fire = cron.get_next_fire_time(fires[-1], fires[-1].astimezone(UTC))
+        assert fire is not None and fire.astimezone(UTC) > fires[-1].astimezone(UTC)
+        fires.append(fire)
+
+    class Stub:
+        _get_run_times = SchedulerJob._get_run_times
+        trigger = cron
+        next_run_time = fires[0]
+
+    late = fires[-1].astimezone(UTC)
+    assert Stub()._get_run_times(late)[: len(fires)] == fires
 
 
 def test_a_schedule_that_never_runs_is_refused_quickly() -> None:
