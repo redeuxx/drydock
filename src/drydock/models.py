@@ -279,7 +279,10 @@ class Job(Base):
         default='{"keep_last": 7, "mode": "last"}',
         server_default='{"keep_last": 7, "mode": "last"}',
     )
-    # Five-field crontab (jobs.scheduler), NULL: started by hand only. timezone NULL: TZ.
+    # Five-field crontab lines, one per schedule (jobs.scheduler), NULL: started by hand
+    # only. timezone NULL: TZ.
+    # ponytail: SQLite does not enforce VARCHAR lengths, so up to MAX_SCHEDULES lines fit
+    # without a table rebuild; widen the type if drydock ever moves to another database.
     cron: Mapped[str | None] = mapped_column(String(100), default=None)
     timezone: Mapped[str | None] = mapped_column(String(64), default=None)
     # Set by each scheduled fire, and when startup finds a fire missed too long ago.
@@ -358,7 +361,7 @@ class UpdatePolicy(Base):
     host_id: Mapped[int] = mapped_column(ForeignKey("hosts.id", ondelete="RESTRICT"), index=True)
     target_type: Mapped[str] = mapped_column(String(16))
     target: Mapped[str] = mapped_column(String(255))  # a container's name, or a project's
-    cron: Mapped[str] = mapped_column(String(100))
+    cron: Mapped[str] = mapped_column(String(100))  # crontab lines, as Job.cron
     timezone: Mapped[str | None] = mapped_column(String(64), default=None)  # None: TZ
     backup_job_id: Mapped[int | None] = mapped_column(
         ForeignKey("jobs.id", ondelete="SET NULL"), default=None

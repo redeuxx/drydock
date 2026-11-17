@@ -2,14 +2,16 @@
 {% block title %}Schedule preview{% endblock %}
 {% block content %}
 <h1 class="mb-4 text-3xl font-bold">Schedule preview</h1>
-{# The job form loads this element alone (hx-select="#cron-preview") as its fields change. #}
+{# The job and update policy forms load this element alone (hx-select="#cron-preview") as
+   their schedule rows change. #}
 <div id="cron-preview">
   {% if error %}
   <p class="text-error">{{ error }}</p>
-  {% elif not cron %}
-  <p class="opacity-70">No schedule: the job runs only when started by hand.</p>
+  {% elif not scheduled %}
+  <p class="opacity-70">No schedule: runs only when started by hand.</p>
   {% else %}
-  <p>Next runs in {{ tz }}:</p>
+  <p>{{ words }}.</p>
+  <p class="mt-1">Next runs in {{ tz }}:</p>
   <ul class="font-mono">
     {% for fire in fires %}<li>{{ fire }}</li>{% endfor %}
   </ul>

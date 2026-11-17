@@ -595,7 +595,7 @@ await page.selectOption("#new-storage", { label: "local" });
 await page.selectOption("#new-scope", "data");
 await page.selectOption("#new-mode", "stop");
 check(await page.isChecked("input[name=encrypted]"), "new jobs encrypt by default");
-// The schedule preview loads #cron-preview with hx-get as the cron and time zone change.
+// The schedule preview loads #cron-preview with hx-get as the rows and time zone change.
 async function previewShows(text: string): Promise<boolean> {
   return page
     .locator("#new-cron-preview", { hasText: text })
@@ -604,23 +604,44 @@ async function previewShows(text: string): Promise<boolean> {
     .catch(() => false);
 }
 check(await previewShows("Next runs"), "a new job's nightly schedule preview loads with the form");
-check(!(await page.isVisible("#new-cron")), "the cron field stays hidden for a preset");
+const scheduleRows = page.locator("#new-schedule [data-schedule-row]");
+const firstSchedule = scheduleRows.first();
+check(
+  (await firstSchedule.locator("input[name=sched_time]").isVisible()) &&
+    !(await firstSchedule.locator("input[name=sched_cron]").isVisible()),
+  "a days-of-the-week schedule shows its time and days, not the cron field",
+);
 await page.selectOption("#new-timezone", "America/New_York");
-await page.selectOption("#new-cron-preset", "0 3 * * 0");
-check(await previewShows("Sun "), "the preview follows the weekly preset");
+for (const day of ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) {
+  await firstSchedule.locator(`input[aria-label=${day}]`).click();
+}
+check(await previewShows("Every Sunday at 03:00"), "the preview follows the ticked days");
 check(
   (await page.getAttribute("#new-cron-preview", "aria-busy")) === "false" &&
     (await page.title()).startsWith("Add job"),
   "the preview swap keeps the page title and clears aria-busy",
 );
-await page.selectOption("#new-cron-preset", "custom");
+await firstSchedule.locator("select[name=sched_repeat]").selectOption("hours");
 check(
-  (await page.isVisible("#new-cron")) && (await page.inputValue("#new-cron")) === "0 3 * * 0",
-  "Custom shows the cron field, filled from the preset",
+  (await firstSchedule.locator("select[name=sched_every]").isVisible()) &&
+    !(await firstSchedule.locator("input[name=sched_time]").isVisible()),
+  "every few hours shows its own fields",
 );
-await page.fill("#new-cron", "0 3 1 * 1");
+check(await previewShows("Every 6 hours on Sunday"), "the preview follows the kind of schedule");
+await firstSchedule.locator("select[name=sched_repeat]").selectOption("cron");
+await firstSchedule.locator("input[name=sched_cron]").fill("0 3 1 * 1");
 check(await previewShows("not both"), "the preview explains a refused expression");
-await page.selectOption("#new-cron-preset", "manual");
+// Add and Remove send the form back with a schedule more or less, keeping the rest.
+await page.click("button[name=add_schedule]");
+await scheduleRows.nth(1).waitFor();
+check(
+  (await scheduleRows.count()) === 2 && (await page.inputValue("#new-name")) === "smoke job",
+  "Add a schedule keeps the rest of the form",
+);
+await page.click("button[name=remove_schedule][value='1']");
+await scheduleRows.nth(1).waitFor({ state: "detached" });
+await page.click("button[name=remove_schedule][value='0']");
+await scheduleRows.first().waitFor({ state: "detached" });
 check(await previewShows("started by hand"), "the preview says a manual job has no schedule");
 await page.selectOption("#new-timezone", "");
 // Enter in a field saves (the form's hidden default button), not "Add another".

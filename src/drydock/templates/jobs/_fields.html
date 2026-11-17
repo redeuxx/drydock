@@ -1,5 +1,6 @@
 {# Job settings, shared by the add form and the job page. #}
-{% macro job_fields(form, prefix, hosts, targets, scope_labels, mode_labels, target_labels, available_hooks, live_warning, retention_labels, default_tz, csp_nonce, notification_targets, zones, schedule_presets, mount_label) -%}
+{% from "jobs/_schedule.html" import schedule_fields %}
+{% macro job_fields(form, prefix, hosts, targets, scope_labels, mode_labels, target_labels, available_hooks, live_warning, retention_labels, default_tz, csp_nonce, notification_targets, zones, sched, mount_label) -%}
 <div class="fieldset">
   <label class="label gap-2 text-base font-semibold">
     <input type="checkbox" class="checkbox" name="enabled" value="1"{% if form.enabled %} checked{% endif %}>
@@ -95,29 +96,7 @@
   </label>
   <p id="{{ prefix }}-copy-hint" class="label whitespace-normal">Stop and pause mode: the containers are down only while their data is copied on their own host, not while it travels to drydock, and the job's next target starts during the upload. Needs free space on the host where Docker keeps its volumes; the run fails before stopping anything if the copy would not fit. The copy keeps owners, modes and links, but not extended attributes.</p>
 </div>
-<input type="hidden" name="schedule" value="1">
-<div class="fieldset" data-schedule>
-  <label class="fieldset-legend" for="{{ prefix }}-cron-preset">Schedule</label>
-  <select id="{{ prefix }}-cron-preset" class="select w-full" name="cron_preset" data-cron-preset aria-describedby="{{ prefix }}-cron-preview">
-    {% for value, label in schedule_presets.items() %}
-    <option value="{{ value }}"{% if form.cron_preset == value %} selected{% endif %}>{{ label }}</option>
-    {% endfor %}
-  </select>
-  <div data-cron-custom>
-    <label class="label text-sm" for="{{ prefix }}-cron">Cron expression</label>
-    <input id="{{ prefix }}-cron" class="input w-full font-mono" name="cron" value="{{ form.cron }}" autocomplete="off" maxlength="100" placeholder="0 3 * * 0" aria-describedby="{{ prefix }}-cron-hint {{ prefix }}-cron-preview">
-    <p id="{{ prefix }}-cron-hint" class="label whitespace-normal">Five fields: minute, hour, day of month, month, day of week. 0 3 * * 0 runs on Sundays at 03:00. Day of week 0 and 7 are Sunday (sun to sat also work); restrict the day of the month or the day of the week, not both.</p>
-  </div>
-  <label class="label text-sm" for="{{ prefix }}-timezone">Time zone</label>
-  <select id="{{ prefix }}-timezone" class="select w-full" name="timezone">
-    <option value=""{% if not form.timezone %} selected{% endif %}>Drydock's time zone ({{ default_tz }})</option>
-    {% if form.timezone and form.timezone not in zones %}<option value="{{ form.timezone }}" selected>{{ form.timezone }} (no longer listed)</option>{% endif %}
-    {% for zone in zones %}
-    <option value="{{ zone }}"{% if form.timezone == zone %} selected{% endif %}>{{ zone }}</option>
-    {% endfor %}
-  </select>
-  <div id="{{ prefix }}-cron-preview" class="text-sm" aria-live="polite" aria-busy="true" hx-get="/jobs/cron-preview" hx-trigger="load, change from:#{{ prefix }}-cron-preset, input changed delay:400ms from:#{{ prefix }}-cron, change from:#{{ prefix }}-timezone" hx-include="#{{ prefix }}-cron-preset, #{{ prefix }}-cron, #{{ prefix }}-timezone" hx-target="this" hx-select="#cron-preview" hx-swap="innerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}"></div>
-</div>
+{{ schedule_fields(form.schedules, prefix, sched, form.timezone, zones, default_tz, csp_nonce, "No schedule: the job runs only when started by hand, with Run now.") }}
 <div class="fieldset">
   <label class="fieldset-legend" for="{{ prefix }}-pre-hooks">Run before</label>
   <textarea id="{{ prefix }}-pre-hooks" class="textarea w-full font-mono" name="pre_hooks" rows="3" autocomplete="off" aria-describedby="{{ prefix }}-hooks-hint">{{ form.pre_hooks }}</textarea>

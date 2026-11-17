@@ -52,6 +52,7 @@ from drydock.models import (
     UpdatePolicy,
     utcnow,
 )
+from drydock.routes import schedule_rows
 from drydock.routes.auth import FormStr, client_ip
 from drydock.routes.hosts import DOCKER_ERRORS, INVENTORY_TIMEOUT, manager, open_host, release
 from drydock.security.rbac import Role, require_recent_auth, require_role
@@ -110,39 +111,11 @@ MAX_NOTIFICATIONS = 20
 PREVIEW_COUNT = 5
 
 
-SCHEDULE_PRESETS = {
-    "manual": "Only when started by hand",
-    "0 * * * *": "Every hour",
-    "0 */6 * * *": "Every 6 hours",
-    "0 3 * * *": "Every day at 03:00",
-    "0 3 * * 0": "Every Sunday at 03:00",
-    "0 3 1 * *": "On the 1st of every month at 03:00",
-    "custom": "Custom (a cron expression)",
-}
-DEFAULT_SCHEDULE = "0 3 * * *"  # what a new job offers: a nightly backup
-
-
-def preset_of(cron: str) -> str:
-    """The preset a stored cron shows as in the form: "manual" without one, else "custom"."""
-    if not cron:
-        return "manual"
-    return cron if cron in SCHEDULE_PRESETS and cron != "manual" else "custom"
-
-
-def schedule_label(cron: str | None) -> str:
-    """How the job list names a schedule: the preset's words, else the cron in words, else
-    the cron itself."""
-    preset = preset_of(cron or "")
-    if preset != "custom":
-        return SCHEDULE_PRESETS[preset]
-    return scheduler.describe(cron or "") or f"cron {cron}"
-
-
 def scheduled(cron: str, preset: str | None) -> str:
-    """The cron a form means: a known preset, or the typed one for "custom" and for clients
-    that send no preset (older forms and scripts)."""
-    if preset is None or preset == "custom" or preset not in SCHEDULE_PRESETS:
-        return " ".join(cron.split())
+    """The schedule a client that sends no rows means (older forms and scripts): its typed
+    cron lines, or the preset it chose, a cron line or "manual"."""
+    if preset is None or preset == "custom":
+        return cron
     return "" if preset == "manual" else preset
 
 
@@ -173,8 +146,11 @@ class JobForm:
     weekly: str = "4"
     monthly: str = "12"
     yearly: str = "0"
-    cron: str = DEFAULT_SCHEDULE  # empty: started by hand only
-    cron_preset: str = DEFAULT_SCHEDULE  # the schedule list's choice; see SCHEDULE_PRESETS
+    # One row per crontab line (routes/schedule_rows.py); none: started by hand only. A
+    # new job offers a nightly backup.
+    schedules: list[schedule_rows.Row] = dataclass_field(
+        default_factory=lambda: [schedule_rows.Row()]
+    )
     timezone: str = ""  # empty: drydock's TZ
     schedule_sent: bool = True  # False: a client that predates schedules; keep the stored one
     # Notification target IDs, as typed; False: a client that predates them, keep the stored.
@@ -213,8 +189,7 @@ class JobForm:
             post_hooks="\n".join(hook_names(db, hook_ids(job.post_hooks))),
             retention_mode=policy.get("mode", "last"),
             **numbers,
-            cron=job.cron or "",
-            cron_preset=preset_of(job.cron or ""),
+            schedules=schedule_rows.rows_of(job.cron),
             timezone=job.timezone or "",
             notify_success=[str(n.target_id) for n in attachments(db, job.id) if n.on_success],
             notify_failure=[str(n.target_id) for n in attachments(db, job.id) if n.on_failure],
@@ -227,12 +202,14 @@ def submitted(
     notify_success: list[str] | None = None,
     notify_failure: list[str] | None = None,
     cron_preset: str | None = None,
+    schedules: list[schedule_rows.Row] | None = None,
     skip_mounts: list[str] | None = None,
     extra_target_type: list[str] | None = None,
     extra_target: list[str] | None = None,
     **values: str,
 ) -> JobForm:
-    cron = scheduled(values["cron"], cron_preset)
+    if schedules is None:
+        schedules = schedule_rows.typed(scheduled(values["cron"], cron_preset))
     return JobForm(
         name=values["name"].strip(),
         host_id=values["host_id"].strip(),
@@ -258,9 +235,8 @@ def submitted(
         weekly=values["weekly"].strip(),
         monthly=values["monthly"].strip(),
         yearly=values["yearly"].strip(),
-        # The form always sends schedule=1, so an empty cron there means "by hand only".
-        cron=cron,
-        cron_preset=preset_of(cron),
+        # The form always sends schedule=1, so no rows there means "by hand only".
+        schedules=schedules,
         timezone=values["timezone"].strip(),
         schedule_sent=values["schedule"] == "1",
         # The form always sends notifications=1, so no boxes there means "none".
@@ -439,11 +415,10 @@ def check_schedule(form: JobForm, default_tz: str) -> str | None:
     try:
         if form.timezone:
             scheduler.zone(form.timezone)
-        if form.cron:
-            scheduler.checked(form.cron, form.timezone or default_tz, utcnow())
     except scheduler.CronError as exc:
         return str(exc)
-    return None
+    problems = schedule_rows.errors(form.schedules, form.timezone or default_tz, utcnow())
+    return " ".join(problems) or None
 
 
 def validate(
@@ -546,7 +521,7 @@ def apply(job: Job, form: JobForm, pre_ids: list[int], post_ids: list[int]) -> N
     if form.retention_mode:
         job.retention = form_policy(form).to_json()
     if form.schedule_sent:
-        job.cron = form.cron or None
+        job.cron = schedule_rows.cron_of(form.schedules) or None
         job.timezone = form.timezone or None
     if form.skip_mounts_sent:
         job.skip_mounts = json.dumps(mounts.check(form.skip_mounts)[0])
@@ -604,12 +579,13 @@ def describe_schedule(job: Job, default_tz: str) -> str:
     if not job.cron:
         return "None: started by hand only."
     tz = job.timezone or default_tz
+    words = f"{schedule_rows.label(job.cron)} ({tz})"
     fires, error = upcoming(job.cron, tz, 1)
     if error:
-        return f"{job.cron} ({tz}). Not valid, so it does not run: {error}"
+        return f"{words}. Not valid, so it does not run: {error}"
     if not job.enabled:
-        return f"{job.cron} ({tz}). The job is disabled."
-    return f"{job.cron} ({tz}). Next run {fires[0]}."
+        return f"{words}. The job is disabled."
+    return f"{words}. Next run {fires[0]}."
 
 
 def refresh_schedules(request: Request) -> None:
@@ -652,7 +628,7 @@ def choices(request: Request, db: Session) -> dict[str, Any]:
     return {
         "default_tz": request.app.state.settings.tz,
         "zones": sorted_zones(),
-        "schedule_presets": SCHEDULE_PRESETS,
+        "sched": schedule_rows,
         "mount_label": mounts.label,
         "notification_targets": db.scalars(
             select(NotificationTarget).order_by(NotificationTarget.name)
@@ -754,7 +730,7 @@ def list_jobs(request: Request, auth: Viewer, db: Session = Depends(get_db)) -> 
         auth=auth,
         rows=rows,
         scope_labels=SCOPE_LABELS,
-        schedule_label=schedule_label,
+        schedule_label=schedule_rows.label,
         retention_short=retention.short,
         extra_counts=dict(
             db.execute(select(JobTarget.job_id, func.count()).group_by(JobTarget.job_id)).all()
@@ -861,25 +837,47 @@ def mount_options(
     )
 
 
+async def sent_schedules(request: Request) -> list[schedule_rows.Row] | None:
+    return schedule_rows.sent(await request.form())
+
+
+SentSchedules = Annotated[list[schedule_rows.Row] | None, Depends(sent_schedules)]
+
+
 @router.get("/cron-preview")
 def cron_preview(
     request: Request,
     auth: Admin,
-    cron: str = Query("", max_length=200),
+    cron: str = Query("", max_length=1100),
     timezone: str = Query("", max_length=64),
     cron_preset: str | None = Query(None, max_length=200),
 ) -> Response:
-    """The next fire times of a schedule (#cron-preview), as the scheduler computes them.
-    Also a page of its own. The job form loads it as the fields change."""
-    cron = scheduled(cron, cron_preset)
+    """A schedule in words and its next fire times (#cron-preview), as the scheduler
+    computes them. Also a page of its own. The job and update policy forms load it with
+    their schedule rows as the fields change; a cron query (older clients) also works."""
+    rows = schedule_rows.sent(request.query_params)
+    if rows is None:
+        rows = schedule_rows.typed(scheduled(cron, cron_preset))
     tz = timezone.strip() or request.app.state.settings.tz
+    words, fires, error = "", [], None
     try:
-        scheduler.zone(tz)  # also without a cron: saving checks it
-        fires, error = upcoming(cron, tz, PREVIEW_COUNT) if cron else ([], None)
+        scheduler.zone(tz)  # also without a schedule: saving checks it
+        error = " ".join(schedule_rows.errors(rows, tz, utcnow())) or None
+        if rows and error is None:
+            cron = schedule_rows.cron_of(rows)
+            words = schedule_rows.label(cron)
+            fires, error = upcoming(cron, tz, PREVIEW_COUNT)
     except scheduler.CronError as exc:
-        fires, error = [], str(exc)
+        error = str(exc)
     return render(
-        request, "jobs/cron_preview.html", auth=auth, cron=cron, tz=tz, fires=fires, error=error
+        request,
+        "jobs/cron_preview.html",
+        auth=auth,
+        scheduled=bool(rows),
+        words=words,
+        tz=tz,
+        fires=fires,
+        error=error,
     )
 
 
@@ -887,6 +885,7 @@ def cron_preview(
 def create_job(
     request: Request,
     auth: Admin,
+    schedules: SentSchedules,
     name: FormStr = "",
     host_id: FormStr = "",
     target: FormStr = "",
@@ -921,6 +920,8 @@ def create_job(
     extra_target: Annotated[list[str] | None, Form()] = None,
     extra_targets_sent: FormStr = "",
     add_target: FormStr = "",
+    add_schedule: FormStr = "",
+    remove_schedule: FormStr = "",
     db: Session = Depends(get_db),
 ) -> Response:
     form = submitted(
@@ -947,6 +948,7 @@ def create_job(
         yearly=yearly,
         cron=cron,
         cron_preset=cron_preset,
+        schedules=schedules,
         timezone=timezone,
         schedule=schedule,
         notify_success=notify_success,
@@ -960,7 +962,7 @@ def create_job(
     )
     if not form.retention_mode:
         form.retention_mode, form.keep_last = "last", str(retention.DEFAULT_KEEP_LAST)
-    if add_target:
+    if add_target or add_schedule or remove_schedule:
         db.rollback()
         return render(
             request,
@@ -969,7 +971,7 @@ def create_job(
             form=form,
             errors=[],
             available_hooks=[],
-            blank_rows=1,
+            blank_rows=1 if add_target else 0,
             **choices(request, db),
         )
     errors, pre_ids, post_ids = validate(db, form, request.app.state.settings.tz)
@@ -1028,6 +1030,7 @@ def update_job(
     request: Request,
     job_id: int,
     auth: Admin,
+    schedules: SentSchedules,
     name: FormStr = "",
     host_id: FormStr = "",
     target: FormStr = "",
@@ -1062,6 +1065,8 @@ def update_job(
     extra_target: Annotated[list[str] | None, Form()] = None,
     extra_targets_sent: FormStr = "",
     add_target: FormStr = "",
+    add_schedule: FormStr = "",
+    remove_schedule: FormStr = "",
     db: Session = Depends(get_db),
 ) -> Response:
     job = get_job(db, job_id)
@@ -1089,6 +1094,7 @@ def update_job(
         yearly=yearly,
         cron=cron,
         cron_preset=cron_preset,
+        schedules=schedules,
         timezone=timezone,
         schedule=schedule,
         notify_success=notify_success,
@@ -1100,9 +1106,10 @@ def update_job(
         extra_target=extra_target,
         extra_targets_sent=extra_targets_sent,
     )
-    if add_target:
+    if add_target or add_schedule or remove_schedule:
         db.rollback()
-        return job_page(request, db, auth, job, 200, EDIT, form=form, blank_rows=1)
+        blank = 1 if add_target else 0
+        return job_page(request, db, auth, job, 200, EDIT, form=form, blank_rows=blank)
     errors, pre_ids, post_ids = validate(db, form, request.app.state.settings.tz, job.id)
     if errors:
         db.rollback()

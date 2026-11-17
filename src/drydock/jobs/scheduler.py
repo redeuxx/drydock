@@ -7,11 +7,13 @@ holding the data directory lock starts it (main.lifespan). Each fire submits a r
 the dispatcher, which already keeps a job to one queued or running run and runs that touch
 the same containers one after another, so a scheduled run never overlaps a manual one.
 
-Expressions are standard five-field crontab. APScheduler 3 numbers the days of the week
-from Monday = 0, while cron uses Sunday = 0 (and 7), so the day-of-week field is rewritten
-as day names first (normalize). Cron runs a job when either a restricted day of the month
-or a restricted day of the week matches, APScheduler only when both do, so an expression
-restricting both is refused rather than run on fewer days than the user expects.
+Expressions are standard five-field crontab, one per line: a job with several lines runs
+whenever any of them fires (an OrTrigger), once when two fire in the same minute.
+APScheduler 3 numbers the days of the week from Monday = 0, while cron uses Sunday = 0
+(and 7), so the day-of-week field is rewritten as day names first (normalize). Cron runs a
+job when either a restricted day of the month or a restricted day of the week matches,
+APScheduler only when both do, so an expression restricting both is refused rather than
+run on fewer days than the user expects.
 
 Lateness: every job has coalesce, max_instances=1 and misfire_grace_time=MISFIRE_GRACE,
 so a fire the process was too busy for runs once if it is less than an hour late. For the
@@ -39,6 +41,7 @@ from typing import Any
 
 from apscheduler.jobstores.memory import MemoryJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.combining import OrTrigger
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import select
@@ -70,6 +73,8 @@ BOTH_DAYS = (
 )
 BAD_WEEKDAY = "The day of the week must use 0 to 7 (0 and 7 are Sunday) or sun to sat."
 NEVER = "This schedule never runs: no date matches it."
+MAX_SCHEDULES = 10
+TOO_MANY = f"A job can have at most {MAX_SCHEDULES} schedules."
 # How far ahead a schedule must fire: a leap-day schedule fires at least every 8 years.
 # Every search for a fire time is bounded by an end date, since APScheduler would otherwise
 # search up to the year 9999 for a date that never comes (0 0 31 2 *), on the event loop.
@@ -135,29 +140,45 @@ def zone(name: str) -> zoneinfo.ZoneInfo:
     return zoneinfo.ZoneInfo(name)
 
 
-def trigger(expr: str, tz: str, *, until: datetime | None = None) -> CronTrigger:
-    """The trigger for a crontab expression in a time zone. Raises CronError.
+def lines(expr: str) -> list[str]:
+    """The crontab expressions of a schedule, one per non-empty line."""
+    return [" ".join(line.split()) for line in expr.splitlines() if line.strip()]
+
+
+def trigger(expr: str, tz: str, *, until: datetime | None = None) -> CronTrigger | OrTrigger:
+    """The trigger for a schedule's crontab lines in a time zone. Raises CronError.
 
     until bounds every search of the trigger: pass it everywhere except for the trigger the
     scheduler runs, whose schedules are checked to fire within HORIZON (checked)."""
     tzinfo = zone(tz)
-    try:
-        cron = CronTrigger.from_crontab(normalize(expr), timezone=tzinfo)
-    except ValueError as exc:
-        if isinstance(exc, CronError):
-            raise
-        raise CronError(f"The cron expression is not valid: {exc}") from None
-    cron.end_date = until
-    return cron
+    crons = lines(expr)
+    if not crons:
+        raise CronError(CRON_FIELDS)
+    if len(crons) > MAX_SCHEDULES:
+        raise CronError(TOO_MANY)
+    triggers = []
+    for line in crons:
+        try:
+            cron = CronTrigger.from_crontab(normalize(line), timezone=tzinfo)
+        except ValueError as exc:
+            if isinstance(exc, CronError):
+                raise
+            raise CronError(f"The cron expression is not valid: {exc}") from None
+        cron.end_date = until
+        triggers.append(cron)
+    return triggers[0] if len(triggers) == 1 else OrTrigger(triggers)
 
 
 def checked(expr: str, tz: str, now: datetime) -> None:
-    """Raises CronError unless the schedule is valid and fires within HORIZON of now."""
-    if trigger(expr, tz, until=now + HORIZON).get_next_fire_time(None, now) is None:
-        raise CronError(NEVER)
+    """Raises CronError unless every line of the schedule is valid and fires within HORIZON
+    of now."""
+    trigger(expr, tz)  # the line count, and every line valid
+    for line in lines(expr):
+        if trigger(line, tz, until=now + HORIZON).get_next_fire_time(None, now) is None:
+            raise CronError(NEVER if len(lines(expr)) == 1 else f"{line}: {NEVER}")
 
 
-def next_fires(cron: CronTrigger, now: datetime, count: int) -> list[datetime]:
+def next_fires(cron: CronTrigger | OrTrigger, now: datetime, count: int) -> list[datetime]:
     """The next count fire times after now, exactly as the scheduler computes them. Give it a
     trigger bounded with until."""
     fires: list[datetime] = []
@@ -170,7 +191,7 @@ def next_fires(cron: CronTrigger, now: datetime, count: int) -> list[datetime]:
     return fires
 
 
-def first_fire(cron: CronTrigger, after: datetime, until: datetime) -> datetime | None:
+def first_fire(cron: CronTrigger | OrTrigger, after: datetime, until: datetime) -> datetime | None:
     """The first fire time later than after and not later than until."""
     fire = cron.get_next_fire_time(None, after + timedelta(microseconds=1))
     return fire if fire is not None and fire <= until else None
@@ -187,8 +208,13 @@ WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturd
 
 
 def describe(expr: str) -> str | None:
-    """A cron expression in the words the schedule presets use ("Every Sunday at 03:00"),
-    or None for one that is not valid or too unusual to say plainly."""
+    """A schedule in words ("Every Sunday at 03:00"), its lines joined by "; ", or None when
+    a line is not valid or too unusual to say plainly."""
+    words = [describe_line(line) for line in lines(expr)]
+    return "; ".join(w for w in words if w) if words and all(words) else None
+
+
+def describe_line(expr: str) -> str | None:
     try:
         normalize(expr)
         minute, hour, dom, month, dow = expr.split()

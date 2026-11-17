@@ -83,7 +83,7 @@ async def test_the_form_refuses_what_cannot_work(admin: Browser) -> None:
         ({"name": "b", "target": "../x"}, "Enter a container name"),
         ({"name": "c", "target_type": "stack", "target": "Bad Name"}, "Compose project"),
         ({"name": "d", "cron": "61 * * * *"}, ""),
-        ({"name": "e", "cron": ""}, "Choose a schedule."),
+        ({"name": "e", "cron": ""}, "Add a schedule."),
         ({"name": "f", "backup_job_id": str(elsewhere)}, "must back up this container"),
         ({"name": "g", "backup_job_id": "999"}, "Choose an existing job"),
         ({"name": "h", "notify_target_id": "999"}, "Choose an existing notification target."),

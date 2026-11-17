@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_macros.html" import alerts, submit %}
+{% from "jobs/_schedule.html" import schedule_fields %}
 {% block title %}{% if policy %}Edit update policy {{ policy.name }}{% else %}New update policy{% endif %}{% endblock %}
 {% block content %}
 <div class="mb-4 flex flex-wrap items-center gap-3">
@@ -12,6 +13,8 @@
     <p class="text-sm opacity-70">On its schedule, drydock updates the container, or every container of the stack that has a newer image, as docs/updates.md describes: it is put back if the new one does not stay up or become healthy. A tag like <code>latest</code> can move to a new major version: pin minor version tags for what matters.</p>
     <form method="post" action="/updates{% if policy %}/{{ policy.id }}{% endif %}" hx-post="/updates{% if policy %}/{{ policy.id }}{% endif %}" hx-nonce="{{ csp_nonce }}" class="flex flex-col gap-1">
       <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+      {# Enter in a field submits with the first submit button: this one saves, not Remove. #}
+      <button type="submit" class="sr-only" tabindex="-1" aria-hidden="true">Save</button>
       <label class="label text-sm" for="policy-enabled"><input id="policy-enabled" type="checkbox" class="checkbox checkbox-sm" name="enabled" value="1"{% if form.enabled %} checked{% endif %}> Enabled</label>
       <label class="fieldset-legend" for="policy-name">Name</label>
       <input id="policy-name" class="input w-full" name="name" value="{{ form.name }}" maxlength="64" required>
@@ -37,23 +40,7 @@
         <input id="policy-main" class="input w-full" name="main_service" value="{{ form.main_service }}" maxlength="63" placeholder="Found by drydock" autocomplete="off" aria-describedby="policy-main-help">
         <p id="policy-main-help" class="label whitespace-normal">The service the rest of the stack is there for, as its Compose file names it. Drydock picks the one no other service depends on (by <code>depends_on</code>), preferring one that binds a host port, when each run starts; the Stacks page names the one it would pick now.</p>
       </fieldset>
-      <div class="fieldset" data-schedule>
-        <label class="fieldset-legend" for="policy-cron-preset">Schedule</label>
-        <select id="policy-cron-preset" class="select w-full" name="cron_preset" data-cron-preset>
-          {% for value, label in presets.items() %}<option value="{{ value }}"{% if form.cron_preset == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
-        </select>
-        <div data-cron-custom>
-          <label class="label text-sm" for="policy-cron">Cron expression</label>
-          <input id="policy-cron" class="input w-full font-mono" name="cron" value="{{ form.cron }}" autocomplete="off" maxlength="100" placeholder="0 4 * * 0">
-        </div>
-        <label class="label text-sm" for="policy-timezone">Time zone</label>
-        <select id="policy-timezone" class="select w-full" name="timezone">
-          <option value=""{% if not form.timezone %} selected{% endif %}>Drydock's time zone ({{ default_tz }})</option>
-          {% if form.timezone and form.timezone not in zones %}<option value="{{ form.timezone }}" selected>{{ form.timezone }} (no longer listed)</option>{% endif %}
-          {% for zone in zones %}<option value="{{ zone }}"{% if form.timezone == zone %} selected{% endif %}>{{ zone }}</option>{% endfor %}
-        </select>
-        <div id="policy-cron-preview" class="text-sm" aria-live="polite" aria-busy="true" hx-get="/jobs/cron-preview" hx-trigger="load, change from:#policy-cron-preset, input changed delay:400ms from:#policy-cron, change from:#policy-timezone" hx-include="#policy-cron-preset, #policy-cron, #policy-timezone" hx-target="this" hx-select="#cron-preview" hx-swap="innerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}"></div>
-      </div>
+      {{ schedule_fields(form.schedules, "policy", sched, form.timezone, zones, default_tz, csp_nonce, "No schedule yet: add one. To update by hand instead, use Update on the Containers or Stacks page.") }}
       <label class="fieldset-legend" for="policy-backup">Back up first</label>
       <select id="policy-backup" class="select w-full" name="backup_job_id">
         <option value="">No backup first</option>

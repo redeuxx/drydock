@@ -2,6 +2,7 @@
 restart, fires missed while drydock was down or late while it ran, and no overlap with
 manual runs. The backup itself is test_jobs' blocking stand-in."""
 
+import re
 import sqlite3
 import time
 from contextlib import closing
@@ -20,6 +21,7 @@ from drydock.jobs import scheduler
 from drydock.jobs.scheduler import BOTH_DAYS, NEVER, CronError, Scheduler, normalize, trigger
 from drydock.models import utcnow
 from drydock.routes.jobs import fire_text
+from drydock.routes.schedule_rows import FIELDS, Row
 from tests.conftest import Browser, add_user, make_settings, running, sqlite_ts
 from tests.docker_support import wait_until
 from tests.test_jobs import (  # noqa: F401
@@ -34,6 +36,7 @@ from tests.test_restore_schema import alembic_to
 from tests.test_routes import FakeDocker
 from tests.test_stacks_schema import add_job as add_job_row
 from tests.test_stacks_schema import add_parents, sequence, table_sql, version
+from tests.test_update_policies import policy_form
 
 pytestmark = pytest.mark.anyio
 
@@ -164,7 +167,7 @@ async def test_form_preview_and_rebuild_without_restart(admin: Browser) -> None:
     )
     assert preview.status_code == 200 and fire_text(first) in preview.text
     page = await admin.get(f"/jobs/{job_id}")
-    assert f"0 3 * * 0 (America/New_York). Next run {fire_text(first)}." in page.text
+    assert f"Every Sunday at 03:00 (America/New_York). Next run {fire_text(first)}." in page.text
 
     # Editing changes the schedule with no restart; an empty time zone means TZ (UTC here).
     form = {
@@ -201,7 +204,7 @@ async def test_form_preview_and_rebuild_without_restart(admin: Browser) -> None:
     response = await admin.post(f"/jobs/{job_id}", form | {"enabled": ""} | scheduled("30 4 * * *"))
     assert response.status_code == 303 and sched.next_run_time(job_id) is None
     page = await admin.get(f"/jobs/{job_id}")
-    assert "30 4 * * * (UTC). The job is disabled." in page.text
+    assert "Every day at 04:30 (UTC). The job is disabled." in page.text
     response = await admin.post(f"/jobs/{job_id}", form | scheduled(""))
     assert response.status_code == 303 and sched.next_run_time(job_id) is None
     assert admin.sql("SELECT cron, timezone FROM jobs WHERE id = ?", (job_id,)) == [(None, None)]
@@ -256,7 +259,8 @@ async def test_a_job_without_a_time_zone_follows_tz(tmp_path: Path) -> None:
         fire = browser.app.state.scheduler.next_run_time(job_id)
         assert fire is not None and fire.astimezone(UTC).strftime("%H:%M") == "18:00"
         page = await browser.get(f"/jobs/{job_id}")
-        assert "0 3 * * * (Asia/Tokyo). Next run" in page.text and "JST (18:00 UTC)" in page.text
+        assert "Every day at 03:00 (Asia/Tokyo). Next run" in page.text
+        assert "JST (18:00 UTC)" in page.text
         preview = await browser.get("/jobs/cron-preview", params={"cron": "0 3 * * *"})
         assert "Next runs in Asia/Tokyo" in preview.text
 
@@ -447,14 +451,14 @@ def test_migration_0007_adds_and_drops_the_schedule_columns(tmp_path: Path) -> N
         engine.dispose()
 
 
-# SCHEDULE PRESETS AND TIME ZONES IN THE FORM
+# SCHEDULE ROWS AND TIME ZONES IN THE FORM
 
 
 def stored_schedule(browser: Browser, job_id: int) -> tuple:
     return browser.sql("SELECT cron, timezone FROM jobs WHERE id = ?", (job_id,))[0]
 
 
-async def test_a_preset_sets_the_schedule_and_custom_uses_the_typed_cron(admin: Browser) -> None:
+async def test_an_older_clients_preset_or_typed_cron_is_kept(admin: Browser) -> None:
     preset = await add_job(
         admin, "preset", schedule="1", cron_preset="0 */6 * * *", cron="1 2 3 4 *"
     )
@@ -464,19 +468,20 @@ async def test_a_preset_sets_the_schedule_and_custom_uses_the_typed_cron(admin: 
     manual = await add_job(admin, "manual", schedule="1", cron_preset="manual", cron="15 4 * * mon")
     assert stored_schedule(admin, manual)[0] is None
     page = (await admin.get(f"/jobs/{preset}/edit")).text
-    assert '<option value="0 */6 * * *" selected>Every 6 hours</option>' in page
+    assert '<option value="hours" selected>' in page and '<option value="6" selected>' in page
 
 
 async def test_clients_without_a_preset_keep_the_typed_cron(admin: Browser) -> None:
     job_id = await add_job(admin, "script", schedule="1", cron="30 1 * * *")
     assert stored_schedule(admin, job_id)[0] == "30 1 * * *"
     page = (await admin.get(f"/jobs/{job_id}/edit")).text
-    assert '<option value="custom" selected>' in page
+    assert '<option value="days" selected>' in page and 'value="01:30"' in page
 
 
 async def test_a_new_job_offers_a_nightly_schedule_and_every_zone(admin: Browser) -> None:
     page = (await admin.get("/jobs/new")).text
-    assert '<option value="0 3 * * *" selected>Every day at 03:00</option>' in page
+    assert '<option value="days" selected>' in page and 'name="sched_time" value="03:00"' in page
+    assert page.count('name="sched_day"') == 7 and page.count("checked") >= 7
     assert '<option value="Europe/Berlin">Europe/Berlin</option>' in page
     assert 'value="localtime"' not in page
     job_id = await add_job(
@@ -529,3 +534,144 @@ def test_a_cron_is_described_in_words(expr: str, words: str) -> None:
 )
 def test_an_unusual_or_bad_cron_has_no_description(expr: str) -> None:
     assert scheduler.describe(expr) is None
+
+
+# SEVERAL SCHEDULES
+
+
+def rows(*specs: dict[str, str]) -> dict:
+    """Form fields for schedule rows as the form sends them; "days" is a string of day
+    digits (0 = Sunday), every day when left out."""
+    defaults = {
+        "sched_repeat": "days",
+        "sched_time": "03:00",
+        "sched_every": "6",
+        "sched_minute": "0",
+        "sched_dom": "1",
+        "sched_cron": "",
+    }
+    form: dict = {"schedule": "1", "schedule_rows": "1", "sched_row": [], "sched_day": []}
+    form |= {name: [] for name in FIELDS}
+    for key, spec in enumerate(specs):
+        form["sched_row"].append(str(key))
+        for name, value in defaults.items():
+            form[name].append(spec.get(name, value))
+        form["sched_day"] += [f"{key}:{day}" for day in spec.get("days", "0123456")]
+    return form
+
+
+def test_several_lines_fire_on_any_of_them() -> None:
+    now = datetime(2026, 11, 16, tzinfo=UTC)  # a Monday
+    until = now + timedelta(days=3)
+    both = trigger("0 3 * * *\n30 1 * * *", "UTC", until=until)
+    fires = [f"{f:%a %H:%M}" for f in scheduler.next_fires(both, now, 4)]
+    assert fires == ["Mon 01:30", "Mon 03:00", "Tue 01:30", "Tue 03:00"]
+    # Two lines naming the same minute fire once.
+    same = trigger("0 3 * * *\n0 3 * * 1", "UTC", until=until)
+    assert [f"{f:%a}" for f in scheduler.next_fires(same, now, 2)] == ["Mon", "Tue"]
+    with pytest.raises(CronError, match=re.escape(f"0 0 31 2 *: {NEVER}")):
+        scheduler.checked("0 3 * * *\n0 0 31 2 *", "UTC", now)
+    with pytest.raises(CronError, match="at most 10 schedules"):
+        trigger("\n".join(["0 3 * * *"] * 11), "UTC")
+    words = scheduler.describe("0 3 * * *\n0 12 * * 1-5")
+    assert words == "Every day at 03:00; Every Monday to Friday at 12:00"
+    assert scheduler.describe("0 3 * * *\n*/7 * * * *") is None
+
+
+@pytest.mark.parametrize(
+    ("line", "repeat", "canonical"),
+    [
+        ("0 3 * * *", "days", "0 3 * * *"),
+        ("15 2 * * 1-5", "days", "15 2 * * 1,2,3,4,5"),
+        ("0 4 * * sun", "days", "0 4 * * 0"),
+        ("30 */6 * * *", "hours", "30 */6 * * *"),
+        ("0 * * * 6,0", "hours", "0 * * * 0,6"),
+        ("0 3 15 * *", "monthly", "0 3 15 * *"),
+        ("0 3 31 * *", "cron", "0 3 31 * *"),
+        ("*/15 * * * *", "cron", "*/15 * * * *"),
+        ("0 */5 * * *", "cron", "0 */5 * * *"),
+        ("0 9-17 * * *", "cron", "0 9-17 * * *"),
+        ("0 4 * 6-8 *", "cron", "0 4 * 6-8 *"),
+    ],
+)
+def test_a_stored_line_opens_as_the_row_that_shows_it(
+    line: str, repeat: str, canonical: str
+) -> None:
+    row = Row.of(line)
+    assert row.repeat == repeat and row.line() == canonical
+    assert scheduler.describe(canonical) == scheduler.describe(line)
+
+
+@pytest.mark.parametrize(
+    ("row", "message"),
+    [
+        (Row("days", days=[]), "Tick at least one day"),
+        (Row("days", time="25:00"), "Enter a time of day"),
+        (Row("days", time="3:00; rm"), "Enter a time of day"),
+        (Row("hours", every="5"), "Choose every 1, 2"),
+        (Row("hours", minute="60"), "minute past the hour"),
+        (Row("monthly", dom="29"), "from 1 to 28"),
+        (Row("cron", cron=" "), "Enter a cron expression"),
+        (Row("weekly"), "Choose how often"),
+    ],
+)
+def test_a_row_says_what_is_wrong(row: Row, message: str) -> None:
+    with pytest.raises(CronError, match=message):
+        row.line()
+
+
+async def test_a_job_runs_on_every_one_of_its_schedules(admin: Browser) -> None:
+    job_id = await add_job(admin, "twice", **rows({}, {"sched_time": "12:30", "days": "12345"}))
+    assert stored_schedule(admin, job_id)[0] == "0 3 * * *\n30 12 * * 1,2,3,4,5"
+    fire = admin.app.state.scheduler.next_run_time(job_id)
+    assert fire is not None and f"{fire:%H:%M}" in ("03:00", "12:30")
+    page = (await admin.get(f"/jobs/{job_id}")).text
+    assert "Every day at 03:00; Every Monday to Friday at 12:30 (UTC). Next run" in page
+    edit = (await admin.get(f"/jobs/{job_id}/edit")).text
+    assert edit.count('name="sched_row"') == 2 and 'value="12:30"' in edit
+    assert 'value="1:6" aria-label="Sat">' in edit
+    assert 'value="1:5" aria-label="Fri" checked>' in edit
+    manual = await add_job(admin, "by hand", **rows())
+    assert stored_schedule(admin, manual)[0] is None
+
+
+async def test_add_and_remove_send_the_form_back_unsaved(admin: Browser) -> None:
+    form = {"name": "draft"} | rows({}, {"sched_time": "12:00"})
+    added = await admin.post("/jobs", form | {"add_schedule": "1"})
+    assert added.status_code == 200 and added.text.count('name="sched_row"') == 3
+    removed = await admin.post("/jobs", form | {"remove_schedule": "0"})
+    assert removed.status_code == 200 and removed.text.count('name="sched_row"') == 1
+    assert 'value="12:00"' in removed.text and 'value="03:00"' not in removed.text
+    job_id = await add_job(admin, "kept", **rows({}))
+    edited = await admin.post(f"/jobs/{job_id}", form | {"name": "kept", "add_schedule": "1"})
+    assert edited.status_code == 200 and edited.text.count('name="sched_row"') == 3
+    assert admin.sql("SELECT name, cron FROM jobs") == [("kept", "0 3 * * *")]
+
+
+async def test_the_preview_names_each_schedule_and_its_problems(admin: Browser) -> None:
+    monthly = {"sched_repeat": "monthly", "sched_dom": "15"}
+    hourly = {"sched_repeat": "hours", "sched_every": "12", "sched_minute": "5"}
+    for specs, text in (
+        ((monthly, hourly), "On the 15th of every month at 03:00; Every 12 hours at :05."),
+        (({}, {"days": ""}), "Schedule 2: Tick at least one day of the week."),
+        (({"sched_repeat": "cron", "sched_cron": "0 3 1 * 1"},), BOTH_DAYS),
+        (({},) * 11, "at most 10 schedules"),
+        ((), "runs only when started by hand"),
+    ):
+        response = await admin.get("/jobs/cron-preview", params=rows(*specs))
+        assert response.status_code == 200 and text in response.text, specs
+
+
+async def test_an_update_policy_takes_several_schedules(admin: Browser) -> None:
+    host_id = add_host(admin, "policy-host")
+    specs = ({"sched_time": "04:00", "days": "0"}, {"sched_repeat": "monthly", "sched_dom": "2"})
+    created = await admin.post("/updates", policy_form(host_id) | rows(*specs))
+    assert created.status_code == 303, created.text
+    assert admin.sql("SELECT cron FROM update_policies") == [("0 4 * * 0\n0 3 2 * *",)]
+    listed = (await admin.get("/updates")).text
+    assert "Every Sunday at 04:00; On the 2nd of every month at 03:00" in listed
+    empty = await admin.post("/updates", policy_form(host_id, name="none") | rows())
+    assert empty.status_code == 422 and "Add a schedule." in empty.text
+    more = policy_form(host_id, name="more") | rows() | {"add_schedule": "1"}
+    added = await admin.post("/updates", more)
+    assert added.status_code == 200 and added.text.count('name="sched_row"') == 1

@@ -1,0 +1,64 @@
+{# The schedule rows of the job and update policy forms (routes/schedule_rows.py). Add and
+   Remove send the form back with a row more or less; CSS shows each row's fields for its
+   kind (frontend/app.css). Every row sends every field, so the lists line up by position. #}
+{% macro schedule_fields(rows, prefix, sched, timezone, zones, default_tz, csp_nonce, empty_text) -%}
+<div id="{{ prefix }}-schedule" class="fieldset gap-2">
+  <input type="hidden" name="schedule" value="1">
+  <input type="hidden" name="schedule_rows" value="1">
+  <span class="fieldset-legend">Schedule</span>
+  <p class="label whitespace-normal">{% if rows|length > 1 %}Runs at every time any of these schedules names, once when two fall in the same minute.{% else %}Add several schedules to run at more than one time, such as 03:00 every day and 12:00 on working days.{% endif %}</p>
+  {% for row in rows %}
+  {% set n = loop.index %}
+  {% set key = loop.index0 %}
+  <fieldset class="flex flex-col gap-2 rounded-box border border-base-300 p-3" data-schedule-row>
+    <legend class="sr-only">Schedule {{ n }}</legend>
+    <input type="hidden" name="sched_row" value="{{ key }}">
+    <div class="flex flex-wrap items-center gap-2">
+      <select class="select w-60" name="sched_repeat" data-repeat aria-label="How schedule {{ n }} repeats">
+        {% for value, label in sched.REPEATS.items() %}<option value="{{ value }}"{% if row.repeat == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+      <span class="items-center gap-2" data-show="hours">
+        every
+        <select class="select w-28" name="sched_every" aria-label="Hours between the runs of schedule {{ n }}">
+          {% for h in sched.EVERY_HOURS %}<option value="{{ h }}"{% if row.every == h|string %} selected{% endif %}>{{ h }} hour{% if h > 1 %}s{% endif %}</option>{% endfor %}
+        </select>
+        at minute
+        <input type="number" class="input w-20" name="sched_minute" value="{{ row.minute }}" min="0" max="59" inputmode="numeric" aria-label="Minute past the hour of schedule {{ n }}">
+      </span>
+      <span class="items-center gap-2" data-show="monthly">
+        on day
+        <select class="select w-20" name="sched_dom" aria-label="Day of the month of schedule {{ n }}">
+          {% for d in sched.MONTH_DAYS %}<option value="{{ d }}"{% if row.dom == d|string %} selected{% endif %}>{{ d }}</option>{% endfor %}
+        </select>
+      </span>
+      <span class="items-center gap-2" data-show="days monthly">
+        at
+        <input type="time" class="input w-32" name="sched_time" value="{{ row.time }}" step="60" aria-label="Time of day of schedule {{ n }}">
+      </span>
+      <button type="submit" name="remove_schedule" value="{{ key }}" formnovalidate class="btn btn-ghost btn-sm ms-auto">Remove<span class="sr-only"> schedule {{ n }}</span></button>
+    </div>
+    <div class="flex-wrap gap-1" data-show="days hours" role="group" aria-label="Days of schedule {{ n }}">
+      {% for day, name in sched.WEEK %}<input type="checkbox" class="btn btn-sm w-14" name="sched_day" value="{{ key }}:{{ day }}" aria-label="{{ name }}"{% if day in row.days %} checked{% endif %}>{% endfor %}
+    </div>
+    <div class="flex-col gap-1" data-show="cron">
+      <input class="input w-full font-mono" name="sched_cron" value="{{ row.cron }}" autocomplete="off" maxlength="100" placeholder="0 3 * * 0" aria-label="Cron expression of schedule {{ n }}" aria-describedby="{{ prefix }}-cron-hint-{{ key }}">
+      <p id="{{ prefix }}-cron-hint-{{ key }}" class="label whitespace-normal">Five fields: minute, hour, day of month, month, day of week. 0 3 * * 0 runs on Sundays at 03:00. Day of week 0 and 7 are Sunday (sun to sat also work); restrict the day of the month or the day of the week, not both.</p>
+    </div>
+  </fieldset>
+  {% else %}
+  <p class="text-sm">{{ empty_text }}</p>
+  {% endfor %}
+  {% if rows|length < sched.MAX_SCHEDULES %}
+  <div><button type="submit" name="add_schedule" value="1" formnovalidate class="btn btn-outline btn-sm">Add a schedule</button></div>
+  {% endif %}
+  <label class="label text-sm" for="{{ prefix }}-timezone">Time zone</label>
+  <select id="{{ prefix }}-timezone" class="select w-full" name="timezone">
+    <option value=""{% if not timezone %} selected{% endif %}>Drydock's time zone ({{ default_tz }})</option>
+    {% if timezone and timezone not in zones %}<option value="{{ timezone }}" selected>{{ timezone }} (no longer listed)</option>{% endif %}
+    {% for zone in zones %}
+    <option value="{{ zone }}"{% if timezone == zone %} selected{% endif %}>{{ zone }}</option>
+    {% endfor %}
+  </select>
+  <div id="{{ prefix }}-cron-preview" class="text-sm" aria-live="polite" aria-busy="true" hx-get="/jobs/cron-preview" hx-trigger="load, change from:#{{ prefix }}-schedule, input delay:400ms from:#{{ prefix }}-schedule" hx-include="#{{ prefix }}-schedule" hx-target="this" hx-select="#cron-preview" hx-swap="innerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}"></div>
+</div>
+{%- endmacro %}
