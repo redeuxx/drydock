@@ -68,11 +68,10 @@ from drydock.archive import manifest as m
 from drydock.archive.writer import ArchiveResult, ArchiveWriter, Cancelled
 from drydock.crypto import Crypto
 from drydock.engine import compose_files
+from drydock.engine.stacks import COMPOSE_LABEL_PREFIX, set_at_create
 from drydock.hosts import helper
 from drydock.hosts.client import DockerHandle, api_tuple
 from drydock.hosts.inventory import PROJECT_LABEL, SERVICE_LABEL
-
-COMPOSE_LABEL_PREFIX = "com.docker.compose."
 
 DATA_CHUNK = 1024 * 1024  # get_archive and image chunks; cancellation is checked between them
 DEFAULT_NETWORKS = {"bridge", "host", "none", "default"}
@@ -273,16 +272,19 @@ def add_mounts(api, plan: Plan, container: dict[str, Any], log: Log) -> None:
 def compose_labels(container: dict[str, Any], image: dict[str, Any] | None, log: Log) -> dict:
     """The container's Compose labels, without any it inherits from its image.
 
-    Docker merges image labels into the container's, and Compose sets these labels only
-    on containers, so a value equal to the image's came from whoever built the image.
+    Docker merges image labels into the container's, so a value equal to the image's came
+    from whoever built the image. Compose labels the images it builds with their project
+    and service too: those two count when the container got Compose labels of its own when
+    it was created (stacks.set_at_create). Paths never do.
     """
     labels = container["Config"].get("Labels") or {}
     inherited = ((image or {}).get("Config") or {}).get("Labels") or {}
+    created = set_at_create(labels, inherited)
     own = {}
     for key, value in labels.items():
         if not key.startswith(COMPOSE_LABEL_PREFIX):
             continue
-        if inherited.get(key) == value:
+        if inherited.get(key) == value and not (created and key in (PROJECT_LABEL, SERVICE_LABEL)):
             name = container["Name"].lstrip("/")
             log(f"Ignored the label {key} of {name}: it comes from its image.")
         else:

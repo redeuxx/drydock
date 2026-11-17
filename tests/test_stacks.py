@@ -315,6 +315,51 @@ def test_discover_skips_oneoff_helpers_and_renamed_originals() -> None:
     assert api.calls == [{"all": True, "filters": {"label": "com.docker.compose.project=app"}}]
 
 
+class FakeImages(FakeContainers):
+    def __init__(self, summaries: list[dict[str, Any]], images: dict[str, dict]) -> None:
+        super().__init__(summaries)
+        self.images = images
+        self.inspected: list[str] = []
+
+    def inspect_image(self, image_id: str) -> dict[str, Any]:
+        self.inspected.append(image_id)
+        if image_id not in self.images:
+            raise docker.errors.NotFound("gone")
+        return {"Config": {"Labels": self.images[image_id]}}
+
+
+def test_discover_skips_containers_whose_compose_labels_all_came_from_the_image() -> None:
+    # Compose labels the images it builds with project and service, and the container
+    # with those plus labels no image gets (config-hash, container-number, oneoff).
+    built = {"com.docker.compose.project": PROJECT, "com.docker.compose.service": "web"}
+    own = built | {"com.docker.compose.config-hash": "abc", stacks.ONEOFF_LABEL: "False"}
+    # An image that ships every Compose label it needs, run without any of its own.
+    lure = built | {"com.docker.compose.config-hash": "abc", stacks.ONEOFF_LABEL: "False"}
+    summaries = [
+        summary("app-web-1", own) | {"ImageID": "sha256:built"},
+        summary("lure", lure) | {"ImageID": "sha256:lure"},
+        summary("lure-2", lure) | {"ImageID": "sha256:lure"},
+        summary("app-db-1", built) | {"ImageID": "sha256:pulled"},
+        summary("orphan", own) | {"ImageID": "sha256:removed"},
+    ]
+    api = FakeImages(
+        summaries,
+        {"sha256:built": built | {"com.docker.compose.version": "5.7.0"}, "sha256:lure": lure,
+         "sha256:pulled": {}},
+    )  # fmt: skip
+    found = stacks.discover(api, PROJECT, INSTANCE)
+    assert found == sorted([hexid("app-web-1"), hexid("app-db-1"), hexid("orphan")])
+    assert sorted(api.inspected) == sorted(set(api.inspected))  # each image once
+
+
+def test_set_at_create() -> None:
+    image = {"com.docker.compose.project": PROJECT, "maintainer": "x"}
+    assert not stacks.set_at_create(image | {"other": "1"}, image)
+    assert stacks.set_at_create(image | {"com.docker.compose.service": "web"}, image)
+    assert stacks.set_at_create({"com.docker.compose.project": "app2"}, image)
+    assert not stacks.set_at_create({}, image)
+
+
 def test_old_suffix_matches_the_restore_planner() -> None:
     assert stacks.OLD_SUFFIX == restore_plan.OLD_SUFFIX
 

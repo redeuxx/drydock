@@ -32,6 +32,7 @@ import requests
 from drydock.hosts.helper import is_helper
 from drydock.hosts.inventory import PROJECT_LABEL, SERVICE_LABEL
 
+COMPOSE_LABEL_PREFIX = "com.docker.compose."
 DEPENDS_ON_LABEL = "com.docker.compose.depends_on"
 ONEOFF_LABEL = "com.docker.compose.oneoff"
 NUMBER_LABEL = "com.docker.compose.container-number"
@@ -103,9 +104,40 @@ def parse_depends_on(value: object) -> list[Dependency]:
 # DISCOVERY
 
 
+def set_at_create(labels: dict[str, Any], image_labels: dict[str, Any]) -> bool:
+    """Whether whoever created the container gave it any Compose label of its own.
+
+    Docker merges the image's labels into the container's, and Compose labels the images it
+    builds with their project and service, so a project label equal to the image's proves
+    nothing by itself. Compose also writes labels it never puts on an image (config-hash,
+    container-number, oneoff), and an image cannot make a container's label differ from its
+    own: a container whose every Compose label equals its image's was given none."""
+    return any(
+        key.startswith(COMPOSE_LABEL_PREFIX) and image_labels.get(key) != value
+        for key, value in labels.items()
+    )
+
+
+def image_labels(api, image_id: str | None, cache: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """The labels of an image, {} when it is gone. Blocking."""
+    if not image_id:
+        return {}
+    if image_id not in cache:
+        try:
+            info = api.inspect_image(image_id)
+        except docker.errors.NotFound:
+            info = {}
+        cache[image_id] = labels_of(info)
+    return cache[image_id]
+
+
 def discover(api, project: str, instance_id: str) -> list[str]:
-    """The sorted IDs of the project's containers on this daemon. Blocking."""
+    """The sorted IDs of the project's containers on this daemon. Blocking.
+
+    A container whose Compose labels all came from its image (set_at_create) is not a
+    member: running someone's image must not add it to a stack."""
     found = []
+    images: dict[str, dict[str, Any]] = {}
     for raw in api.containers(all=True, filters={"label": f"{PROJECT_LABEL}={project}"}):
         labels = raw.get("Labels") or {}
         if labels.get(PROJECT_LABEL) != project:
@@ -113,6 +145,8 @@ def discover(api, project: str, instance_id: str) -> list[str]:
         if labels.get(ONEOFF_LABEL, "False") == "True" or is_helper(labels, instance_id):
             continue
         if primary_name(raw).endswith(OLD_SUFFIX):
+            continue
+        if not set_at_create(labels, image_labels(api, raw.get("ImageID"), images)):
             continue
         found.append(raw["Id"])
     return sorted(found)

@@ -589,6 +589,40 @@ def test_compose_files_and_binds(dind, tmp_path: Path) -> None:
     assert helpers_left(handle.client, TEST_INSTANCE) == []
 
 
+def test_compose_built_services_keep_their_project_but_never_image_paths() -> None:
+    """Compose labels the images it builds with project and service. A container Compose
+    created keeps them; a path label still counts only when the container has its own."""
+    image = {
+        "Config": {
+            "Labels": {
+                "com.docker.compose.project": "app",
+                "com.docker.compose.service": "web",
+                compose_files.ENVIRONMENT_FILE_LABEL: "/etc/shadow",
+            }
+        }
+    }
+    labels = image["Config"]["Labels"] | {
+        "com.docker.compose.config-hash": "abc",
+        compose_files.CONFIG_FILES_LABEL: "/srv/app/compose.yaml",
+    }
+    container = {"Name": "/app-web-1", "Config": {"Labels": labels}}
+    lines: list[str] = []
+    own = capture.compose_labels(container, image, lines.append)
+    assert own == {
+        "com.docker.compose.project": "app",
+        "com.docker.compose.service": "web",
+        "com.docker.compose.config-hash": "abc",
+        compose_files.CONFIG_FILES_LABEL: "/srv/app/compose.yaml",
+    }
+    assert lines == [
+        f"Ignored the label {compose_files.ENVIRONMENT_FILE_LABEL} of app-web-1:"
+        " it comes from its image."
+    ]
+    # Run without labels of its own, the image's project counts for nothing.
+    bare = {"Name": "/lure", "Config": {"Labels": image["Config"]["Labels"]}}
+    assert capture.compose_labels(bare, image, lambda _: None) == {}
+
+
 @needs_dind
 def test_compose_labels_inherited_from_the_image_are_ignored(dind, tmp_path: Path) -> None:
     """Docker merges image labels into the container's. An image that ships Compose labels
