@@ -9,11 +9,16 @@ inherited from its image, which capture filters out), so system locations are re
 
 Files are read with get_archive from a created (never started) helper that binds the
 parent directory read-only. The daemon reads the file, so ownership and modes on the host
-do not matter and the helper needs no capabilities.
+do not matter and the helper needs no capabilities. The daemon follows symbolic links in
+a bind's source, so each parent is first resolved on the host, like realpath (the restore
+probe, security/hostpaths.resolve), checked again, and bound by its resolved path: a link
+in a project directory cannot point a read at /etc. A link swapped in between the check
+and the bind is not caught (the restore apply has the same window).
 
 Blocking (docker-py). Call from async code through hosts.client.run_blocking.
 """
 
+import contextlib
 import io
 import posixpath
 import tarfile
@@ -187,8 +192,18 @@ def read_files(
             budget[0] -= 1
             by_parent.setdefault(posixpath.dirname(ref.host_path), []).append(ref)
     results: dict[str, CapturedFile | SkippedFile] = {}
+    real = resolve_dirs(client, image, instance_id, list(by_parent)) if by_parent else {}
     for parent, group in by_parent.items():
-        mounts = [Mount(MOUNT, parent, type="bind", read_only=True)]
+        resolved = real.get(parent)
+        if resolved is None:
+            for ref in group:
+                results[ref.host_path] = SkippedFile(ref, "directory not readable")
+            continue
+        if resolved != parent and path_problem(posixpath.join(resolved, "x")):
+            for ref in group:
+                results[ref.host_path] = SkippedFile(ref, f"refused location ({resolved})")
+            continue
+        mounts = [Mount(MOUNT, resolved, type="bind", read_only=True)]
         try:
             with helper.helper(client, image, instance_id, mounts=mounts) as box:
                 for ref in group:
@@ -208,6 +223,28 @@ def read_files(
         elif isinstance(result, SkippedFile):
             skip(ref, result.reason)
     return captured, skipped
+
+
+def resolve_dirs(
+    client: docker.DockerClient, image: str, instance_id: str, dirs: list[str]
+) -> dict[str, str | None]:
+    """Each directory with its symbolic links resolved on the host, through one helper that
+    mounts the host's / read-only; None for one that cannot be resolved."""
+    # Both import this module, so they are imported here.
+    from drydock.restore.apply import PROBE_ROOT, ApplyError, Probe
+    from drydock.security import hostpaths
+
+    resolved: dict[str, str | None] = dict.fromkeys(dirs)
+    mounts = [Mount(PROBE_ROOT, "/", type="bind", read_only=True)]
+    try:
+        with helper.helper(client, image, instance_id, mounts=mounts) as box:
+            probe = Probe(box)
+            for path in dirs:
+                with contextlib.suppress(hostpaths.HostPathError, ApplyError):
+                    resolved[path] = hostpaths.resolve(path, probe.lstat)
+    except docker.errors.DockerException, requests.RequestException:
+        pass
+    return resolved
 
 
 def read_one(box, ref: ComposeRef) -> CapturedFile | SkippedFile:

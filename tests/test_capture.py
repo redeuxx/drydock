@@ -697,6 +697,7 @@ def test_compose_files_are_capped(monkeypatch) -> None:
 
     monkeypatch.setattr(compose_files.helper, "helper", fake_helper)
     monkeypatch.setattr(compose_files, "read_one", fake_read_one)
+    monkeypatch.setattr(compose_files, "resolve_dirs", lambda c, i, n, dirs: {d: d for d in dirs})
     refs = [
         compose_files.ComposeRef("config_file", f"/srv/p{n}/compose.yaml")
         for n in range(compose_files.MAX_FILES + 5)
@@ -709,6 +710,38 @@ def test_compose_files_are_capped(monkeypatch) -> None:
     reasons = [s.reason for s in skipped]
     assert reasons.count(f"more than {compose_files.MAX_FILES} compose files") == 5
     assert reasons.count("compose files over 8 MiB in total") == compose_files.MAX_FILES - 2
+
+
+def test_a_compose_directory_that_links_to_a_system_location_is_refused(monkeypatch) -> None:
+    """The daemon follows links in a bind's source: the parent is resolved and checked first,
+    and bound by its resolved path."""
+    mounted: list[str] = []
+
+    @contextlib.contextmanager
+    def fake_helper(client, image, instance_id, mounts):
+        mounted.append(mounts[0]["Source"])
+        yield object()
+
+    real = {"/srv/app/link": "/etc", "/srv/app": "/data/app", "/srv/gone": None}
+    monkeypatch.setattr(compose_files.helper, "helper", fake_helper)
+    monkeypatch.setattr(compose_files, "resolve_dirs", lambda c, i, n, dirs: real)
+    monkeypatch.setattr(
+        compose_files, "read_one", lambda box, ref: compose_files.CapturedFile(ref, b"x")
+    )
+    refs = [
+        compose_files.ComposeRef("env_file", "/srv/app/link/shadow"),
+        compose_files.ComposeRef("config_file", "/srv/app/compose.yaml"),
+        compose_files.ComposeRef("config_file", "/srv/gone/compose.yaml"),
+    ]
+    _, log = collect()
+    budget = [compose_files.MAX_FILES, compose_files.MAX_TOTAL_BYTES]
+    captured, skipped = compose_files.read_files(None, IMAGE, TEST_INSTANCE, refs, log, budget)  # type: ignore[arg-type]
+    assert [c.ref.host_path for c in captured] == ["/srv/app/compose.yaml"]
+    assert mounted == ["/data/app"]
+    assert {s.ref.host_path: s.reason for s in skipped} == {
+        "/srv/app/link/shadow": "refused location (/etc)",
+        "/srv/gone/compose.yaml": "directory not readable",
+    }
 
 
 def test_env_file_entries_resolve_against_the_project_directory() -> None:
