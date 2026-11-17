@@ -116,8 +116,9 @@ def rows_of(cron: str | None) -> list[Row]:
 
 
 def typed(cron: str) -> list[Row]:
-    """The rows of cron lines from a client that sends no rows: kept as typed."""
-    return [Row("cron", cron=line) for line in scheduler.lines(cron)]
+    """The rows of cron lines from a client that sends no rows: kept as typed. One more than
+    MAX_SCHEDULES at most, so a long list is refused, never rendered row by row."""
+    return [Row("cron", cron=line) for line in scheduler.lines(cron)[: MAX_SCHEDULES + 1]]
 
 
 def sent(params: ImmutableMultiDict[str, Any]) -> list[Row] | None:

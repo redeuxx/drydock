@@ -646,6 +646,11 @@ async def test_add_and_remove_send_the_form_back_unsaved(admin: Browser) -> None
     edited = await admin.post(f"/jobs/{job_id}", form | {"name": "kept", "add_schedule": "1"})
     assert edited.status_code == 200 and edited.text.count('name="sched_row"') == 3
     assert admin.sql("SELECT name, cron FROM jobs") == [("kept", "0 3 * * *")]
+    # An older client's long cron list is refused, never rendered row by row.
+    many = "0 * * * *\n" * 2000  # under the 64 KiB body limit, urlencoded
+    legacy = {"name": "long", "schedule": "1", "cron": many, "add_schedule": "1"}
+    long = await admin.post("/jobs", legacy)
+    assert long.status_code == 200 and long.text.count('name="sched_row"') == 11
 
 
 async def test_the_preview_names_each_schedule_and_its_problems(admin: Browser) -> None:
