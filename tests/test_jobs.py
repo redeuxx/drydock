@@ -59,6 +59,10 @@ def test_run_log_redacts_secrets_and_escapes_control_characters(tmp_path: Path) 
     assert (
         log.redact("Pausing retrak-db-1 with s3cret-pass") == "Pausing retrak-db-1 with [redacted]"
     )
+    # A name too long to be real (a crafted archive's manifest) unmasks nothing.
+    log.add_secrets(["4821"])
+    log.add_public(["-".join(f"{n:04d}" for n in range(10_000))])
+    assert log.redact("pin 4821") == "pin [redacted]"
 
 
 def test_run_log_redacts_overlapping_secrets_whole(tmp_path: Path) -> None:

@@ -15,6 +15,7 @@ from pathlib import Path
 
 REDACTED = "[redacted]"
 MIN_SECRET_LEN = 4  # shorter values (flags, ports) would blank out ordinary words
+MAX_PUBLIC = 255  # longer than any container, project or image name in practice
 MAX_LINE = 4000
 READ_LIMIT = 256 * 1024  # per poll
 CONTROL_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
@@ -99,9 +100,11 @@ class RunLog:
     def add_public(self, values: Iterable[str]) -> None:
         """Names the UI shows anyway (job, host, project, container and image names). An
         environment value that is part of one, like POSTGRES_DB=<project>, is no secret,
-        and masking it would garble every line that names the project."""
+        and masking it would garble every line that names the project. One longer than
+        MAX_PUBLIC is ignored: a restored archive's manifest names them, and one long name
+        holding many short strings would otherwise unmask every secret among them."""
         with self._lock:
-            self._public.update(v for v in values if v)
+            self._public.update(v for v in values if v and len(v) <= MAX_PUBLIC)
 
     def secrets(self) -> list[str]:
         """The registered secrets, longest first, less those that are part of a public
