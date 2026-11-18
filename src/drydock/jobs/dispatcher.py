@@ -1749,7 +1749,11 @@ class Dispatcher:
         try:
             source = await run_blocking(self._load_restore, run_id)
             run_log.add_secrets(self._passphrases(source.archive, run_id))
-            storage = self._restore_storage(source, run_id, active.cancel, run_log)
+            # Off the loop: a local root's checks touch the filesystem, which may be a hung
+            # network mount.
+            storage = await run_blocking(
+                self._restore_storage, source, run_id, active.cancel, run_log
+            )
             loop = asyncio.get_running_loop()
             staged = await loop.run_in_executor(
                 self._executor,
@@ -2046,9 +2050,10 @@ class Dispatcher:
         locks are still held, then raises. The journal records the scope of the locks, so
         startup recovery takes the same ones."""
         run_id = active.run_id
+        storage = await run_blocking(self._restore_storage, source, run_id)
         opener = functools.partial(
             restore_verify.open_verified,
-            self._restore_storage(source, run_id),
+            storage,
             staged,
             self._crypto,
             active.cancel,
