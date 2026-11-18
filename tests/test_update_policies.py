@@ -275,8 +275,9 @@ async def test_the_containers_page_shows_what_updates_a_container(
         )
     ).status_code == 303
     page = (await admin.get(f"/containers?host={host_id}")).text
-    assert re.search(r'<span title="next [^"]+">nightly web</span>', page)
-    assert page.count(">app stack</span>") == 2, "db and cache"
+    # Each container's dialog names the policies that update it.
+    assert re.search(r"<dd>nightly web, next \d{4}-\d\d-\d\d \d\d:\d\d [^<]+</dd>", page)
+    assert page.count("<dd>app stack, next ") == 2, "db and cache"
     home = (await admin.get("/")).text
     assert 'href="/updates">Update: nightly web</a>' in home
 
