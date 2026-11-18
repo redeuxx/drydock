@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import quote
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from drydock.jobs.targets import MAX_TARGETS
@@ -155,13 +155,19 @@ def run_filters(user: User) -> list[Any]:
 
 # Container and host alerts (hosts/alerts.py): their own text, with a recovery in green.
 ALERT_PREFIX = "alert."
+# Every action starting with ALERT_PREFIX sorts in [ALERT_PREFIX, ALERT_END): a range the
+# action index serves, where startswith (a LIKE) scans the whole append-only table.
+ALERT_END = ALERT_PREFIX[:-1] + chr(ord(ALERT_PREFIX[-1]) + 1)
 
 
 def alert_query(user: User):
     if user.role < Role.admin:
         return None
     return select(AuditEvent).where(
-        or_(AuditEvent.action.in_(ALERTS), AuditEvent.action.startswith(ALERT_PREFIX))
+        or_(
+            AuditEvent.action.in_(ALERTS),
+            and_(AuditEvent.action >= ALERT_PREFIX, AuditEvent.action < ALERT_END),
+        )
     )
 
 
