@@ -57,6 +57,11 @@ RESERVE = 64 * 1024 * 1024  # never stage into the last 64 MiB of the disk
 STAGING = "the staging directory"
 OUTPUT = "the storage directory"  # where callers write archives (see jobs.dispatcher)
 ZSTD_LEVEL = 3
+# One zstd worker thread: compression runs beside the tar and hashing work instead of after
+# it, roughly doubling a run's write speed for ~50 MiB more memory per run. More workers
+# gain little more and cost ~25 MiB each, with two runs at once. 0 (no worker) for a
+# libzstd built without threads.
+ZSTD_WORKERS = min(1, zstd.CompressionParameter.nb_workers.bounds()[1])
 AGE_DIR = Path("/opt/age")  # age and age-plugin-batchpass, pinned and checksummed in the image
 # scrypt log2(N) for new archives. age's default of 18 stretches human passphrases and
 # costs 256 MiB of memory; drydock's passphrases are 256-bit HKDF outputs, which need no
@@ -336,11 +341,18 @@ class ArchiveWriter:
             options = {
                 zstd.CompressionParameter.compression_level: ZSTD_LEVEL,
                 zstd.CompressionParameter.checksum_flag: 1,
+                zstd.CompressionParameter.nb_workers: ZSTD_WORKERS,
             }
             self._compressed = HashingSink(self._age if self._age is not None else self._sink)
             self._zst = zstd.ZstdFile(self._compressed, "w", options=options)
             self._tar = tarfile.open(  # noqa: SIM115 (closed by close() or abort())
-                fileobj=self._zst, mode="w|", format=tarfile.PAX_FORMAT, copybufsize=CHUNK
+                fileobj=self._zst,
+                mode="w|",
+                format=tarfile.PAX_FORMAT,
+                # The stream's 10 KiB default re-slices each CHUNK write about 100 times.
+                # The bytes written are the same: the end padding uses RECORDSIZE.
+                bufsize=CHUNK,
+                copybufsize=CHUNK,
             )
         except BaseException:
             self.abort()
