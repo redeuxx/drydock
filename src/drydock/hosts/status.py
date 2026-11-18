@@ -24,6 +24,7 @@ import math
 import re
 import threading
 import time
+import zlib
 from collections import Counter, deque
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -48,10 +49,10 @@ log = logging.getLogger("drydock.hosts.status")
 INTERVAL = 10  # seconds between polls of a host
 WARM = 60  # a host is polled while a status page showed it this recently
 TIMEOUT = 8  # per Docker request
-THREADS = 4
+THREADS = 8  # one per host polled at once
 REFRESH_WAIT = 15  # seconds a page waits for a host's reading after an action
 # Restart counts need an inspect, which the container list lacks. A container is inspected
-# when it first shows up or changes state, and again after this many seconds.
+# when it first shows up or changes state, and again at most this many seconds later.
 INSPECT_EVERY = 60
 # Sparklines: the latest readings kept in memory, about 10 minutes of a host and 5 of a
 # container at INTERVAL. ponytail: lost on restart and while no page shows the host;
@@ -221,6 +222,19 @@ def started_of(inspect: dict[str, Any]) -> datetime | None:
         return None
 
 
+def phase(container_id: str) -> int:
+    """Seconds (0 to INSPECT_EVERY - 1), fixed per container."""
+    return zlib.crc32(container_id.encode()) % INSPECT_EVERY
+
+
+def due(container_id: str, last: float, now: float) -> bool:
+    """Whether an INSPECT_EVERY slot boundary passed since the last inspect. Each container's
+    slots are shifted by its phase, so a host's containers come due at different polls
+    instead of all in the same one (they were all first inspected together)."""
+    shift = phase(container_id)
+    return (now + shift) // INSPECT_EVERY != (last + shift) // INSPECT_EVERY
+
+
 def read(api, instance_id: str, inspected: dict[str, Inspected], now: float) -> Reading:
     """Blocking. Everything a snapshot needs from one daemon. inspected (what the last
     inspect of each container found) is kept between polls and updated here; containers
@@ -249,7 +263,7 @@ def read(api, instance_id: str, inspected: dict[str, Inspected], now: float) -> 
         # ponytail: a container that crashed and came back between two polls is "running"
         # both times, so its start time (the containers page's uptime sort) can be up to
         # INSPECT_EVERY old. Inspect on every poll if that ever matters.
-        if seen is None or seen.state != state or now - seen.at >= INSPECT_EVERY:
+        if seen is None or seen.state != state or due(cid, seen.at, now):
             try:
                 details = api.inspect_container(cid)
             except CONTAINER_ERRORS:

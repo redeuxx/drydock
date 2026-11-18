@@ -391,7 +391,11 @@ def test_read_skips_helpers_and_stats_of_stopped_or_vanished_containers() -> Non
     assert (result.volumes, result.networks) == (0, 2)
 
 
-def test_read_inspects_on_new_state_change_or_age_only() -> None:
+def test_read_inspects_on_new_state_change_or_age_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Every container's slots start at 100 here, so the next boundary is 100 + INSPECT_EVERY.
+    monkeypatch.setattr(
+        status, "phase", lambda cid: status.INSPECT_EVERY - 100 % status.INSPECT_EVERY
+    )
     api = FakeApi([summary("a", "a"), summary("b", "b")], restart_counts={"a": 1, "b": 0})
     inspected: dict[str, status.Inspected] = {}
     status.read(api, INSTANCE, inspected, 100.0)
@@ -409,12 +413,29 @@ def test_read_inspects_on_new_state_change_or_age_only() -> None:
 
     api.inspected.clear()
     result = status.read(api, INSTANCE, inspected, 100.0 + status.INSPECT_EVERY)
-    assert api.inspected == ["a"]
+    # A slot boundary passed: both are due, b although its state change was just inspected.
+    assert api.inspected == ["a", "b"]
     assert result.restarts["a"] == 2
 
     api.containers_list.pop()
     status.read(api, INSTANCE, inspected, 200.0)
     assert set(inspected) == {"a"}, "a removed container is forgotten"
+
+
+def test_a_hosts_containers_are_inspected_again_at_different_polls() -> None:
+    ids = [f"{i:064x}" for i in range(40)]
+    api = FakeApi([summary(cid, cid) for cid in ids])
+    inspected: dict[str, status.Inspected] = {}
+    status.read(api, INSTANCE, inspected, 1000.0)
+    assert len(api.inspected) == len(ids)
+
+    again: list[str] = []
+    for tick in range(1, status.INSPECT_EVERY // status.INTERVAL + 1):
+        api.inspected.clear()
+        status.read(api, INSTANCE, inspected, 1000.0 + tick * status.INTERVAL)
+        assert len(api.inspected) < len(ids) // 2, "spread over the polls"
+        again += api.inspected
+    assert sorted(again) == sorted(ids), "each one exactly once per INSPECT_EVERY"
 
 
 # THE COLLECTOR
