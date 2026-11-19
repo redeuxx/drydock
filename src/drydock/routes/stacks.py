@@ -13,6 +13,7 @@ policies and health checks usually cover a start; follow depends_on if that fall
 """
 
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Annotated, Any
@@ -44,6 +45,14 @@ Operator = Annotated[Auth, Depends(require_role(Role.operator))]
 
 STACK_ACTIONS = ("start", "stop", "restart", "remove")
 
+# The state filter, as the containers page's: each test takes (running, total, newer).
+STATUSES: dict[str, tuple[str, Callable[[int, int, int], bool]]] = {
+    "running": ("Running", lambda running, total, newer: running == total),
+    "partial": ("Partly running", lambda running, total, newer: 0 < running < total),
+    "stopped": ("Stopped", lambda running, total, newer: running == 0),
+    "updates": ("Update available", lambda running, total, newer: newer > 0),
+}
+
 
 @dataclass(frozen=True)
 class Stack:
@@ -69,9 +78,14 @@ def page(
     number: int = 1,
     outcomes: list[container_routes.Outcome] | None = None,
     notice: tuple[str, bool] | None = None,
+    status: str = "",
+    q: str = "",
 ) -> Response:
     """One host's stacks, or every enabled host's when host names none (routes/containers.py
-    pick_host), a page at a time."""
+    pick_host), a page at a time. status (STATUSES) and q (in the stack's name, its services
+    or images) filter them."""
+    status = status if status in STATUSES else ""
+    query = q.strip()[: container_routes.MAX_QUERY]
     collector = request.app.state.status
     collector.touch()
     hosts = list(db.scalars(select(Host).order_by(Host.name)))
@@ -88,6 +102,30 @@ def page(
                 groups[c.project].append(c)
         found += [(h, name, members, verdicts) for name, members in groups.items()]
     found.sort(key=lambda f: (f[1], f[0].name))
+    total = len(found)
+    newer = sum(  # stacks with a newer image, on every page
+        any(container_routes.is_newer(verdicts, c) for c in members)
+        for _, _, members, verdicts in found
+    )
+    if status:
+        test = STATUSES[status][1]
+        found = [
+            f
+            for f in found
+            if test(
+                sum(c.state == "running" for c in f[2]),
+                len(f[2]),
+                sum(container_routes.is_newer(f[3], c) for c in f[2]),
+            )
+        ]
+    if query:
+        needle = query.lower()
+        found = [
+            f
+            for f in found
+            if needle in f[1].lower()
+            or any(needle in (c.service or "").lower() or needle in c.image.lower() for c in f[2])
+        ]
     shown, number, pages = container_routes.paginate(found, number)
 
     scheduler = request.app.state.scheduler
@@ -147,14 +185,19 @@ def page(
         if chosen is None
         else [],
         stacks=stacks,
-        total=len(found),
-        newer=sum(  # stacks with a newer image, on every page
-            any(container_routes.is_newer(verdicts, c) for c in members)
-            for _, _, members, verdicts in found
-        ),
+        total=total,
+        matched=len(found),
+        newer=newer,
+        status=status,
+        q=query,
+        statuses=STATUSES,
         page=number,
         pages=pages,
-        page_url=f"/stacks?{urlencode({'host': host_value, 'page': ''})}",
+        page_url="/stacks?"
+        + urlencode(
+            {k: v for k, v in (("host", host_value), ("status", status), ("q", query)) if v}
+            | {"page": ""}
+        ),
         # A policy updates every stack on the (one) host.
         every=single and bool(of(chosen)[1][EVERY_STACK]),
         checks=request.app.state.updates.result(chosen.id) if chosen is not None else None,
@@ -170,9 +213,11 @@ def stacks(
     auth: Viewer,
     db: Session = Depends(get_db),
     host: str = "",
+    status: str = "",
+    q: str = "",
     number: Annotated[str, Query(alias="page")] = "1",
 ) -> Response:
-    return page(request, auth, db, host, container_routes.page_number(number))
+    return page(request, auth, db, host, container_routes.page_number(number), status=status, q=q)
 
 
 @router.post("/stacks/check-updates")

@@ -7,6 +7,7 @@ import uuid
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlencode
 
 import docker.errors
 import pytest
@@ -1173,7 +1174,18 @@ async def test_stacks_page_groups_the_cache_and_acts_on_every_member(
     _, host_id = await a_host_with_containers(admin, monkeypatch)
     page = (await admin.get(f"/stacks?host={host_id}")).text
     assert ">app</a>" in page and "1 of 2" in page  # db runs, cache exited
-    assert 'value="remove"' in page
+    assert 'value="remove"' in page and "1 stack</p>" in page
+
+    async def shown(**query: str) -> bool:
+        params = urlencode({"host": host_id} | query)
+        return ">app</a>" in (await admin.get(f"/stacks?{params}")).text
+
+    assert await shown(status="partial") and await shown(q="AP") and await shown(status="bogus")
+    assert not await shown(status="running") and not await shown(status="updates")
+    assert not await shown(q="nope")
+    filtered = (await admin.get(f"/stacks?host={host_id}&status=stopped")).text
+    assert "0 of 1 stacks" in filtered and "No stack matches the filters." in filtered
+    assert f"/stacks?host={host_id}&amp;status=stopped&amp;page=" in filtered, "polls keep it"
 
     calls = []
 

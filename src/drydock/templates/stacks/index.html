@@ -86,6 +86,18 @@
 <p class="text-sm opacity-70">No host is set up yet.{% if admin %} <a class="link" href="/hosts/new?kind=local">Add the local host</a> or <a class="link" href="/hosts/new?kind=ssh">an SSH host</a>.{% endif %}</p>
 {% else %}
 {{ host_picker("/stacks", hosts, chosen) }}
+{# As the containers page's toolbar: outside #stacks, so polls never touch what is being
+   typed; #stacks polls its own page_url, which carries these filters. #}
+<form id="stacks-filter" method="get" action="/stacks" role="search" class="mb-3 flex flex-wrap items-center gap-2"
+  hx-get="/stacks" hx-trigger="submit, input delay:300ms" hx-target="#stacks" hx-select="#stacks" hx-swap="outerHTML ignoreTitle:true" hx-replace-url="true" hx-sync="this:replace" hx-nonce="{{ csp_nonce }}">
+  <input type="hidden" name="host" value="{{ host_value }}">
+  <input type="search" name="q" value="{{ q }}" maxlength="100" class="input input-sm w-64" placeholder="Stack, service or image" aria-label="Search by stack, service or image">
+  <select name="status" class="select select-sm w-auto" aria-label="State">
+    <option value="">All states</option>
+    {% for key, entry in statuses.items() %}<option value="{{ key }}"{% if key == status %} selected{% endif %}>{{ entry[0] }}</option>{% endfor %}
+  </select>
+  <noscript><button type="submit" class="btn btn-sm">Apply</button></noscript>
+</form>
 {% if notice %}
 <div role="alert" class="alert {{ 'alert-success' if notice[1] else 'alert-warning' }} alert-soft mb-3 text-sm"><span>{{ notice[0] }}</span></div>
 {% endif %}
@@ -100,7 +112,7 @@
 {# Polls itself like the containers table; frontend/app.ts skips a poll while a dialog or a menu is open. #}
 {% set live = chosen.enabled if chosen else hosts|selectattr("enabled")|list|length > 0 %}
 <div id="stacks"
-  {%- if live %} data-poller="Stack status" hx-get="{{ page_url }}{{ page }}" hx-trigger="every 10s" hx-target="this" hx-select="#stacks" hx-swap="outerHTML ignoreTitle:true" hx-nonce="{{ csp_nonce }}"{% endif %}>
+  {%- if live %} data-poller="Stack status" hx-get="{{ page_url }}{{ page }}" hx-trigger="every 10s" hx-target="this" hx-select="#stacks" hx-swap="outerHTML ignoreTitle:true" hx-sync="#stacks-filter:drop" hx-nonce="{{ csp_nonce }}"{% endif %}>
 {% if chosen %}
 {% if not chosen.enabled %}
 <p class="text-sm opacity-70">Disabled: drydock does not connect to this host.</p>
@@ -123,6 +135,7 @@
 {% if admin and chosen and stacks and not every %}
 <p class="mb-2 text-sm"><a class="link" href="/updates/new?{{ {'host': chosen.id, 'type': 'stack', 'target': '*'}|urlencode }}">Schedule updates of every stack on {{ chosen.name }}</a></p>
 {% endif %}
+<p class="mb-2 text-sm opacity-70">{% if matched == total %}{{ total }} stack{{ "" if total == 1 else "s" }}{% else %}{{ matched }} of {{ total }} stacks{% endif %}</p>
 <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
   <table class="table table-zebra table-sm">
     <thead><tr><th scope="col" abbr="Stack">Stack {{ about_button("about-main", "A stack's main service") }}</th>{% if not chosen %}<th scope="col">Host</th>{% endif %}<th scope="col">Running</th><th scope="col" abbr="Tags" class="max-sm:hidden">Tags {{ about_button("about-tags", "The tags a stack follows") }}</th><th scope="col">Updates</th><th scope="col" class="max-md:hidden">Backup jobs</th><th scope="col" class="max-lg:hidden">Auto-update</th>{% if operator %}<th scope="col">Actions</th>{% endif %}</tr></thead>
@@ -152,7 +165,7 @@
         {% endif %}
       </tr>
       {% else %}
-      <tr><td colspan="{{ (7 if operator else 6) + (0 if chosen else 1) }}">No Compose stacks on {{ "this host" if chosen else "any host" }}.</td></tr>
+      <tr><td colspan="{{ (7 if operator else 6) + (0 if chosen else 1) }}">{% if total %}No stack matches the filters.{% else %}No Compose stacks on {{ "this host" if chosen else "any host" }}.{% endif %}</td></tr>
       {% endfor %}
     </tbody>
   </table>
