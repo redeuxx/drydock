@@ -35,7 +35,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -89,6 +89,7 @@ PROBE_RE = re.compile(r"\.drydock-test-[0-9a-f]{32}")
 OBSCURED_RE = re.compile(r"[A-Za-z0-9_-]{22,8192}")
 MAX_OBSCURED = 256  # cached obscured secrets
 MAX_ERROR_BODY = 64 * 1024
+STREAM_CHUNK = 1024 * 1024
 
 
 class RcloneUnavailable(Exception):
@@ -292,6 +293,25 @@ class RcloneDaemon:
                     body = read_some(response, MAX_ERROR_BODY, deadline)
                     raise RcloneError(response.status_code, error_text(body))
                 return read_some(response, max_bytes, deadline)  # a server may ignore Range
+        except httpx.HTTPError as exc:
+            raise RcloneUnavailable(f"rclone did not answer ({type(exc).__name__}).") from None
+        except RuntimeError:
+            raise RcloneUnavailable("rclone has stopped.") from None
+
+    def stream(self, fs: str, remote: str) -> Iterator[bytes]:
+        """All of remote in the inline remote fs, through --rc-serve, a chunk at a time (an
+        archive download). Each read waits at most CALL_TIMEOUT for bytes."""
+        if not SERVED_FS_RE.fullmatch(fs) or not NAME_RE.fullmatch(remote):
+            raise ValueError("Not an allowed read.")
+        self._wait_running()
+        path = "/" + quote(f"[{fs}]", safe="[]") + "/" + remote
+        try:
+            with self._client.stream("GET", path) as response:
+                if response.status_code != 200:
+                    deadline = time.monotonic() + CALL_TIMEOUT
+                    body = read_some(response, MAX_ERROR_BODY, deadline)
+                    raise RcloneError(response.status_code, error_text(body))
+                yield from response.iter_bytes(STREAM_CHUNK)
         except httpx.HTTPError as exc:
             raise RcloneUnavailable(f"rclone did not answer ({type(exc).__name__}).") from None
         except RuntimeError:

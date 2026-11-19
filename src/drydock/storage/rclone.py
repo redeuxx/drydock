@@ -709,19 +709,35 @@ class RcloneBackend:
         return self._read(name, max_bytes, PREVIEW_TIMEOUT)
 
     def _read(self, name: str, max_bytes: int, timeout: float = TIMEOUT) -> bytes:
-        root = self._root()  # before _settings, which calls rclone
-        conn = connection_string(self._kind, self._settings(), root)
-        if self._ca is not None:
-            # The ranged GET cannot carry _config: it reuses the connection an rc call with
-            # the certificate made under this same string (rclone writes a JSON fs as these
-            # sorted, quoted pairs). Made here first; without one, the GET fails closed.
-            self._stat(name, timeout)
+        conn = self._served(name, timeout)
         try:
             return self._daemon.read_range(conn, name, max_bytes, timeout)
         except RcloneUnavailable as exc:
             raise StorageError(str(exc)) from None
         except RcloneError as exc:
             raise self._error(exc, missing=name) from None
+
+    def stream(self, name: str) -> Iterator[bytes]:
+        """All of an archive, a chunk at a time, straight from the server (a download)."""
+        check_name(name)
+        conn = self._served(name, TIMEOUT)
+        try:
+            yield from self._daemon.stream(conn, name)
+        except RcloneUnavailable as exc:
+            raise StorageError(str(exc)) from None
+        except RcloneError as exc:
+            raise self._error(exc, missing=name) from None
+
+    def _served(self, name: str, timeout: float) -> str:
+        """The connection string a GET through --rc-serve reads name with."""
+        root = self._root()  # before _settings, which calls rclone
+        conn = connection_string(self._kind, self._settings(), root)
+        if self._ca is not None:
+            # The GET cannot carry _config: it reuses the connection an rc call with the
+            # certificate made under this same string (rclone writes a JSON fs as these
+            # sorted, quoted pairs). Made here first; without one, the GET fails closed.
+            self._stat(name, timeout)
+        return conn
 
     def open(self, name: str) -> BinaryIO:
         raise StorageError(NOT_IN_PLACE)

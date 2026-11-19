@@ -145,6 +145,12 @@ class LocalStorage:
         with self._dir() as fd:
             return open_regular(name, fd)
 
+    def stream(self, name: str) -> Iterator[bytes]:
+        """All of an archive, a chunk at a time (a download)."""
+        with self.open(name) as handle:
+            while chunk := handle.read(CHUNK):
+                yield chunk
+
     def list(self, prefix: str = "") -> list[StoredObject]:
         found = []
         with self._dir() as fd, os.scandir(fd) as entries:

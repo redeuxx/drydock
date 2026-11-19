@@ -95,7 +95,7 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 ### T6. A lower role gaining more power
 
 **Threat:** a viewer, operator or admin does something reserved for a higher role, or the last superadmin is removed.
-**Defence:** the role matrix is enforced on the server for every route. The last superadmin cannot be demoted, disabled or deleted. Hooks, users, notification targets, remote storage and passphrase reveals are superadmin only.
+**Defence:** the role matrix is enforced on the server for every route. The last superadmin cannot be demoted, disabled or deleted. Hooks, users, notification targets, remote storage and passphrase reveals are superadmin only. Downloading an archive is for admins.
 **Tests:**
 - `tests/test_smb_webdav_storage.py::test_only_a_superadmin_picks_the_share`
 - `tests/test_routes.py::test_role_matrix`
@@ -111,12 +111,13 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 
 ### T7. An unattended session doing something dangerous
 
-**Threat:** someone at an unlocked browser changes roles, reveals a passphrase, edits hooks or overwrites a container.
+**Threat:** someone at an unlocked browser changes roles, reveals a passphrase, downloads an archive, edits hooks or overwrites a container.
 **Defence:** these actions need the password re-entered within the last 10 minutes.
 **Tests:**
 - `tests/test_users.py::test_role_change_requires_recent_auth`
 - `tests/test_users.py::test_user_creation_requires_recent_auth`
 - `tests/test_jobs.py::test_passphrase_reveal_needs_superadmin_and_recent_auth`
+- `tests/test_backups_catalog.py::test_admins_download_an_archive_and_each_download_is_audited`
 - `tests/test_hosts_routes.py::test_changes_need_recent_auth`
 - `tests/test_remote_storage.py::test_remote_storage_is_changed_by_superadmins_with_recent_auth`
 - `tests/test_notify.py::test_targets_are_edited_by_superadmins_with_recent_auth`

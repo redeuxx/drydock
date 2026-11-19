@@ -1,12 +1,27 @@
 {% extends "base.html" %}
-{% from "_macros.html" import when %}
+{% from "_macros.html" import alerts, when %}
 {% block title %}Backups{% endblock %}
 {% block content %}
 <h1 class="mb-4 text-3xl font-bold">Backups</h1>
-<p class="mb-4 opacity-70">Archives drydock has stored. Each one is signed with the secret key; encrypted archives need the job's passphrase.</p>
+<p class="mb-4 opacity-70">Archives drydock has stored. Each one is signed with the secret key; encrypted archives need the job's passphrase.{% if auth.user.role >= Role.admin %} A downloaded archive can be restored by uploading it on the restore page, here or in another drydock (an encrypted one there with its passphrase).{% endif %}</p>
+{{ alerts([error] if error else []) }}
+<form id="backups-filter" method="get" action="/backups" role="search" class="mb-3 flex flex-wrap items-center gap-2"
+  hx-get="/backups" hx-trigger="submit, input delay:300ms" hx-target="#backups" hx-select="#backups" hx-swap="outerHTML ignoreTitle:true" hx-replace-url="true" hx-sync="this:replace" hx-nonce="{{ csp_nonce }}">
+  <input type="search" name="q" value="{{ q }}" maxlength="100" class="input input-sm w-64" placeholder="Archive or job name" aria-label="Search by archive or job name">
+  <select name="job" class="select select-sm w-auto" aria-label="Job">
+    <option value="">All jobs</option>
+    {% for id, name in jobs.items() %}<option value="{{ id }}"{% if id == job %} selected{% endif %}>{{ name }}</option>{% endfor %}
+  </select>
+  <select name="storage" class="select select-sm w-auto" aria-label="Storage">
+    <option value="">All storage</option>
+    {% for id, name in targets|dictsort(by="value") %}<option value="{{ id }}"{% if id == storage %} selected{% endif %}>{{ name }}</option>{% endfor %}
+  </select>
+  <noscript><button type="submit" class="btn btn-sm">Apply</button></noscript>
+</form>
+<div id="backups">
 <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
   <table class="table table-zebra table-sm">
-    <thead><tr><th scope="col">Created</th><th scope="col">Job</th><th scope="col">Storage</th><th scope="col">Archive</th><th scope="col">Size</th><th scope="col">Protection</th></tr></thead>
+    <thead><tr><th scope="col">Created</th><th scope="col">Job</th><th scope="col">Storage</th><th scope="col">Archive</th><th scope="col">Size</th><th scope="col">Protection</th>{% if auth.user.role >= Role.admin %}<th scope="col"><span class="sr-only">Download</span></th>{% endif %}</tr></thead>
     <tbody>
       {% for backup in backups %}
       <tr>
@@ -19,12 +34,22 @@
           {% if backup.signed %}<span class="badge badge-soft badge-success">signed</span>{% endif %}
           {% if backup.encrypted %}<span class="badge badge-soft badge-success">encrypted</span>{% else %}<span class="badge badge-soft badge-warning">not encrypted</span>{% endif %}
         </td>
+        {% if auth.user.role >= Role.admin %}
+        {# A plain form post: the response is the file, which the browser saves. #}
+        <td>
+          <form method="post" action="/backups/{{ backup.id }}/download">
+            <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+            <button type="submit" class="btn btn-ghost btn-xs">Download<span class="sr-only"> {{ backup.name }}</span></button>
+          </form>
+        </td>
+        {% endif %}
       </tr>
       {% else %}
-      <tr><td colspan="6">No backups yet.</td></tr>
+      <tr><td colspan="{{ 7 if auth.user.role >= Role.admin else 6 }}">{{ "No backup matches the filters." if filtered else "No backups yet." }}</td></tr>
       {% endfor %}
     </tbody>
   </table>
 </div>
-{% if next_before %}<p class="mt-4"><a class="btn btn-outline btn-sm" href="/backups?before={{ next_before }}">Older backups</a></p>{% endif %}
+{% if older_url %}<p class="mt-4"><a class="btn btn-outline btn-sm" href="{{ older_url }}">Older backups</a></p>{% endif %}
+</div>
 {% endblock %}

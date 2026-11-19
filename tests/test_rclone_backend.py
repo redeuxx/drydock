@@ -135,7 +135,11 @@ async def test_put_list_read_head_delete(
         assert await asyncio.to_thread(storage.list, "drydock-other") == []
         preview = await asyncio.to_thread(verify.preview, storage, name)
         assert preview.state == "manifest" and preview.manifest == manifest
+        streamed = await asyncio.to_thread(lambda: b"".join(storage.stream(name)))
+        assert streamed == local.read_bytes(), "a download, whole"
         await asyncio.to_thread(storage.delete, name)
+        with pytest.raises(StorageError, match="does not exist in storage"):
+            await asyncio.to_thread(lambda: next(storage.stream(name)))
         assert server.files() == []
         with pytest.raises(StorageError, match="does not exist in storage"):
             await asyncio.to_thread(storage.delete, name)

@@ -32,7 +32,7 @@ from drydock.security.rbac import Role, authenticated
 from drydock.storage import certs, gdrive_oauth
 from drydock.storage.rclone import RcloneBackend
 from drydock.updates.check import HostChecks
-from tests.conftest import PASSWORD, Browser, add_user
+from tests.conftest import PASSWORD, Browser, add_user, sqlite_ts
 from tests.rclone_support import certificate
 from tests.restore_support import build_archive, container_inspect, image_tar
 
@@ -84,6 +84,7 @@ EXPECTED_MIN_ROLE = [
     ({"POST"}, re.compile(r"^/notifications"), Role.superadmin),
     ({"GET"}, re.compile(r"^/notifications"), Role.admin),
     ({"POST"}, re.compile(r"^/jobs/[^/]+/passphrase$"), Role.superadmin),
+    ({"POST"}, re.compile(r"^/backups/[^/]+/download$"), Role.admin),
     ({"POST"}, re.compile(r"^/jobs/[^/]+/run$"), Role.operator),
     ({"POST"}, re.compile(r"^/runs/[^/]+/cancel$"), Role.operator),
     ({"POST"}, re.compile(r"^/runs/[^/]+/dismiss$"), Role.operator),
@@ -229,6 +230,7 @@ INVENTORY = {
     ("POST", "/runs/{run_id}/cancel"),
     ("POST", "/runs/{run_id}/dismiss"),
     ("GET", "/backups"),
+    ("POST", "/backups/{backup_id}/download"),
     ("GET", "/restore"),
     ("GET", "/restore/storage/{storage_id}"),
     ("POST", "/restore/from-storage"),
@@ -282,6 +284,7 @@ def fill(path: str, user_id: int, **ids: int) -> str:
         "upload_id",
         "container_id",
         "policy_id",
+        "backup_id",
     ):
         path = path.replace("{" + name + "}", str(ids.get(name, user_id)))
     return path.replace("{user_id}", str(user_id))
@@ -795,6 +798,7 @@ AUDITED_SUCCESS = [
     ),
     ("/restore/from-upload/{upload_id}", {}, "restore.verify", 303),
     ("/restore/from-path", {"path": "{storage_root}/{archive}"}, "restore.verify", 303),
+    ("/backups/{backup_id}/download", {}, "backup.download", 200),
     ("/hooks", hook_form("{host_id}"), "hook.create", 303),
     ("/hooks/{hook_id}", hook_form("{host_id}", timeout_s="60"), "hook.update", 303),
     ("/jobs", job_form("{host_id}", "{storage_id}", pre_hooks="dump"), "job.create", 303),
@@ -1048,6 +1052,13 @@ async def test_every_unsafe_route_audits_its_success(fresh: Browser, monkeypatch
                 path = path.replace("{storage_id}", str(ids["drive_id"]))
             if path == "/jobs/{job_id}/delete":
                 await fresh.app.state.dispatcher.wait(ids["run_id"])
+            if path == "/backups/{backup_id}/download":  # the archive, in the catalog
+                size = (root_path / archive).stat().st_size
+                ids["backup_id"] = fresh.sql(
+                    "INSERT INTO backups (storage_target_id, name, size, sha256, signed,"
+                    " encrypted, created_at) VALUES (?, ?, ?, ?, 1, 0, ?) RETURNING id",
+                    (ids["storage_id"], archive, size, "0" * 64, sqlite_ts(utcnow())),
+                )[0][0]
             if path == "/restore/runs/{restore_id}/plan":
                 await fresh.app.state.dispatcher.wait(ids["restore_id"])  # verified
             digest = ""
@@ -1075,6 +1086,9 @@ async def test_every_unsafe_route_audits_its_success(fresh: Browser, monkeypatch
             await fresh.app.state.dispatcher.wait(ids["restore_id"])
         if path == "/restore/uploads":
             ids["upload_id"] = response.json()["id"]
+        if path == "/backups/{backup_id}/download":
+            assert response.content == (root_path / archive).read_bytes()
+            fresh.sql("DELETE FROM backups")  # so the storage can be deleted
         if path in ("/restore/from-upload/{upload_id}", "/restore/from-path"):
             await fresh.app.state.dispatcher.wait(int(response.headers["location"].split("/")[3]))
         assert successes(fresh, action) == before + 1, f"POST {path} did not audit {action}"

@@ -153,6 +153,8 @@ age -d -o backup.tar.zst drydock-web-....tar.zst.age   # prompts for the passphr
 tar --zstd -xf backup.tar.zst
 ```
 
+**The Backups page** lists the catalog, filtered by job, by storage or by a search of archive and job names. An admin can **Download** an archive as stored, with the password from the last 10 minutes; each download is recorded in the audit log (`backup.download`). It streams straight from storage (a remote one through rclone, with no copy on drydock's disk) and is not verified on the way: compare its SHA-256 with the catalog's, or upload it on a restore page, which verifies it. Another drydock restores it from an upload: signed by its own secret key if it was started with this one's, otherwise as an unsigned archive, which only a superadmin restores, with the job's passphrase for an encrypted one.
+
 ## Images stored by reference
 
 The **Everything** scope saves every image by default. A job can instead store images "by reference only" when their registry still serves them. Drydock then asks the daemon to look up each of the image's registry digests (`GET /distribution/<repo>@<digest>/json`) and stores the image by reference only if the registry confirms that exact digest. Docker 29's default image store gives locally built and committed images a registry digest too, so a digest alone proves nothing. The image is saved in full whenever the lookup does not confirm it: a locally built image, a private registry the daemon cannot read without credentials, a digest the registry no longer has, or any error or timeout (10 seconds). The run log says which path each image took. A restore has to pull referenced images, so the registry must still serve them then.
