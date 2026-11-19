@@ -17,4 +17,25 @@
     </form>
   </div>
 </section>
+{% if auth.user.role >= Role.superadmin %}
+<section class="card mt-4 bg-base-100 shadow-sm" aria-labelledby="secret-key-heading">
+  <div class="card-body">
+    <h2 id="secret-key-heading" class="card-title">Secret key</h2>
+    <p class="max-w-prose text-sm">The key that signs every archive and decrypts the encrypted ones. Another drydock started with this key file restores this one's archives (upload them on its restore page, or point its storage at them) and reads its encrypted settings. Keep a copy offline, never next to the archives. Revealing it needs your password from the last 10 minutes and is recorded in the audit log.</p>
+    {% if secret_keys %}
+    <div role="status" class="alert alert-warning alert-soft" data-focus-result>
+      <div class="w-full">
+        <p>Anyone with this key can read every encrypted archive and forge signed ones. Put it in the new drydock's key file (<code>DRYDOCK_SECRET_KEY_FILE</code>) exactly as shown{% if secret_keys|length > 1 %}: the current key first, then the older ones archives made before a rotation need{% endif %}.</p>
+        <pre class="mt-2 whitespace-pre-wrap break-all select-all"><code>{{ secret_keys|join("\n") }}</code></pre>
+      </div>
+    </div>
+    {% else %}
+    <form method="post" action="/settings/secret-key" hx-post="/settings/secret-key" hx-nonce="{{ csp_nonce }}" class="card-actions">
+      <input type="hidden" name="csrf_token" value="{{ auth.csrf_token }}">
+      {{ submit("Reveal secret key", "btn-warning btn-outline") }}
+    </form>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
 {% endblock %}

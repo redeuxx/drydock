@@ -153,7 +153,7 @@ age -d -o backup.tar.zst drydock-web-....tar.zst.age   # prompts for the passphr
 tar --zstd -xf backup.tar.zst
 ```
 
-**The Backups page** lists the catalog, filtered by job, by storage or by a search of archive and job names. An admin can **Download** an archive as stored, with the password from the last 10 minutes; each download is recorded in the audit log (`backup.download`). It streams straight from storage (a remote one through rclone, with no copy on drydock's disk) and is not verified on the way: compare its SHA-256 with the catalog's, or upload it on a restore page, which verifies it. Another drydock restores it from an upload: signed by its own secret key if it was started with this one's, otherwise as an unsigned archive, which only a superadmin restores, with the job's passphrase for an encrypted one.
+**The Backups page** lists the catalog, filtered by job, by storage or by a search of archive and job names. An admin can **Download** an archive as stored, with the password from the last 10 minutes; each download is recorded in the audit log (`backup.download`). It streams straight from storage (a remote one through rclone, with no copy on drydock's disk) and is not verified on the way: compare its SHA-256 with the catalog's, or upload it on a restore page, which verifies it. Another drydock restores it from an upload: signed by its own secret key if it was started with this one's (a superadmin reveals the key under **Settings**), otherwise as an unsigned archive, which only a superadmin restores, with the job's passphrase for an encrypted one.
 
 ## Images stored by reference
 

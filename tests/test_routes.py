@@ -108,6 +108,7 @@ EXPECTED_MIN_ROLE = [
     ({"GET"}, re.compile(r"^/containers/[^/]+/[^/]+/inspect$"), Role.admin),
     ({"GET"}, re.compile(r"^/logs"), Role.admin),
     ({"POST"}, re.compile(r"^/activity/clear$"), Role.admin),
+    ({"POST"}, re.compile(r"^/settings/secret-key$"), Role.superadmin),
     ({"GET", "POST"}, re.compile(r"^/settings$"), Role.admin),
     ({"GET", "POST"}, re.compile(r"^/updates/new$"), Role.admin),
     ({"POST"}, re.compile(r"^/updates/[^/]+/run$"), Role.operator),
@@ -131,6 +132,7 @@ INVENTORY = {
     ("GET", "/stacks"),
     ("GET", "/settings"),
     ("POST", "/settings"),
+    ("POST", "/settings/secret-key"),
     ("POST", "/stacks/actions"),
     ("POST", "/stacks/check-updates"),
     ("POST", "/images/check-updates"),
@@ -710,6 +712,7 @@ AUDITED_SUCCESS = [
     ("/containers/check-updates", {"host": "{host_id}"}, "container.check_updates", 303),
     ("/stacks/check-updates", {"host": "{host_id}"}, "container.check_updates", 303),
     ("/settings", {"update_check_hours": "12"}, "settings.update", 303),
+    ("/settings/secret-key", {}, "settings.secret_key_reveal", 200),
     ("/images/check-updates", {"host": "{host_id}"}, "container.check_updates", 303),
     # Docker's side faked (Dispatcher.submit_update): a run starts.
     ("/containers/update", {"host": "{host_id}", "container": "c" * 64}, "container.update", 303),

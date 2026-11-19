@@ -6,7 +6,7 @@ Drydock never backs up its own deployment: stopping itself or its socket proxy w
 
 | What | Why |
 |---|---|
-| `secrets/drydock_secret_key` | The only key to every encrypted archive. Losing it cannot be undone. Copy it once into a password manager or offline, never next to the archives. |
+| `secrets/drydock_secret_key` | The only key to every encrypted archive. Losing it cannot be undone. Copy it once into a password manager or offline, never next to the archives. A superadmin can also show it under **Settings > Reveal secret key**, with the password from the last 10 minutes (audited as `settings.secret_key_reveal`). |
 | `.env` and `compose.override.yaml` | The address and the mounts. Small; keep them with the key. |
 | The `drydock-data` volume | Users, hosts, storage, jobs and history. Losing it loses no archive: a new drydock with the same key restores them all, after hosts and storage are added again. |
 

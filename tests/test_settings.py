@@ -1,5 +1,7 @@
 """The settings page and the update checker's interval."""
 
+import base64
+
 import pytest
 
 from drydock.updates.check import CHECK_EVERY
@@ -34,3 +36,28 @@ async def test_admins_set_how_often_updates_are_checked(admin: Browser) -> None:
     assert (await admin.get("/settings")).status_code == 403
     assert (await admin.post("/settings", {"update_check_hours": "1"})).status_code == 403
     assert 'href="/settings"' not in (await admin.get("/")).text
+
+
+async def test_a_superadmin_reveals_the_secret_key_with_a_recent_password(
+    admin: Browser,
+) -> None:
+    key = base64.urlsafe_b64encode(admin.settings.secret_keys[0]).decode()
+    page = (await admin.get("/settings")).text
+    assert 'action="/settings/secret-key"' in page and key not in page
+
+    admin.sql("UPDATE sessions SET reauth_at = NULL")
+    stale = await admin.post("/settings/secret-key")
+    assert stale.status_code == 403 and "Re-enter your password" in stale.text
+    assert key not in stale.text
+
+    await admin.login("admin")
+    shown = await admin.post("/settings/secret-key")
+    assert shown.status_code == 200 and key in shown.text
+    assert admin.sql(
+        "SELECT actor, details FROM audit_events WHERE action = 'settings.secret_key_reveal'"
+    ) == [("admin", '{"count": 1}')]
+
+    await add_user(admin, "boss", "admin")
+    await admin.login("boss")
+    assert "secret-key" not in (await admin.get("/settings")).text
+    assert (await admin.post("/settings/secret-key")).status_code == 403
