@@ -137,7 +137,7 @@ def home(request: Request, auth: Viewer, db: Session = Depends(get_db)) -> Respo
     # (when, name, link): jobs and update policies together.
     upcoming = sorted(
         [
-            (when, job.name, f"/jobs/{job.id}")
+            (when, f"Backup: {job.name}", f"/jobs/{job.id}")
             for job in jobs
             if job.enabled and job.cron and (when := scheduler.next_run_time(job.id)) is not None
         ]

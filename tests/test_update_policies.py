@@ -278,8 +278,12 @@ async def test_the_containers_page_shows_what_updates_a_container(
     # Each container's dialog names the policies that update it.
     assert re.search(r"<dd>nightly web, next \d{4}-\d\d-\d\d \d\d:\d\d [^<]+</dd>", page)
     assert page.count("<dd>app stack, next ") == 2, "db and cache"
+    job_id = await add_job(
+        admin, "web nightly", host_id=str(host_id), schedule="1", cron_preset="0 3 * * *"
+    )
     home = (await admin.get("/")).text
     assert 'href="/updates">Update: nightly web</a>' in home
+    assert f'href="/jobs/{job_id}">Backup: web nightly</a>' in home
 
 
 async def test_hosts_and_backup_jobs_in_use_are_not_deleted(admin: Browser) -> None:
