@@ -49,9 +49,9 @@
         <ul class="menu menu-horizontal gap-1 p-0">
           <li><a href="/"{% if current == "/" %} class="menu-active" aria-current="page"{% endif %}>Dashboard</a></li>
           {{ dropdown("Docker", docker_menu) }}
+          {{ dropdown("Backups", backups_menu) }}
           <li><a href="/activity"{% if current == "/activity" %} class="menu-active" aria-current="page"{% endif %}>Activity</a></li>
           {{ dropdown("Logs", logs_menu) }}
-          {{ dropdown("Backups", backups_menu) }}
         </ul>
       </nav>
       {% endif %}
