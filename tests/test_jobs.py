@@ -65,6 +65,20 @@ def test_run_log_redacts_secrets_and_escapes_control_characters(tmp_path: Path) 
     assert log.redact("pin 4821") == "pin [redacted]"
 
 
+def test_run_log_public_names_exempt_only_whole_parts(tmp_path: Path) -> None:
+    log = runlog.RunLog(tmp_path / "1.log")
+    log.add_secrets(["retrak", "1234", "4821"])
+    log.add_public(["retrak-db-1"])
+    assert log.redact("retrak db") == "retrak db"
+    # A crafted manifest's names unmask no string that is only inside one of their parts,
+    log.add_public(["pass1234word"])
+    assert log.redact("pin 1234") == "pin [redacted]"
+    # nor every 4-digit value through many names of short parts: only the first parts count.
+    names = ["-".join(f"{n:04d}" for n in range(at, at + 50)) for at in range(0, 10_000, 50)]
+    log.add_public(names)
+    assert log.redact("pin 4821") == "pin [redacted]"
+
+
 def test_run_log_redacts_overlapping_secrets_whole(tmp_path: Path) -> None:
     log = runlog.RunLog(tmp_path / "1.log")
     log.add_secrets(["abcdXY", "XYzwvu"])

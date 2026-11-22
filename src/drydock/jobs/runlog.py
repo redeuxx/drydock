@@ -16,6 +16,8 @@ from pathlib import Path
 REDACTED = "[redacted]"
 MIN_SECRET_LEN = 4  # shorter values (flags, ports) would blank out ordinary words
 MAX_PUBLIC = 255  # longer than any container, project or image name in practice
+MAX_PUBLIC_PARTS = 1024  # far more than a real run's names hold, see RunLog.add_public
+PUBLIC_SPLIT_RE = re.compile(r"[-_./:]")
 MAX_LINE = 4000
 READ_LIMIT = 256 * 1024  # per poll
 CONTROL_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
@@ -99,22 +101,32 @@ class RunLog:
 
     def add_public(self, values: Iterable[str]) -> None:
         """Names the UI shows anyway (job, host, project, container and image names). An
-        environment value that is part of one, like POSTGRES_DB=<project>, is no secret,
-        and masking it would garble every line that names the project. One longer than
-        MAX_PUBLIC is ignored: a restored archive's manifest names them, and one long name
-        holding many short strings would otherwise unmask every secret among them."""
+        environment value that is one of them or a whole part of one (retrak in
+        retrak-db-1), like POSTGRES_DB=<project>, is no secret, and masking it would garble
+        every line that names the project.
+
+        A restored archive's manifest names them, so a crafted one could list guesses at
+        short secrets. Hence a secret is exempt only when it equals a name or a part
+        between "-", "_", ".", "/" and ":" (never any substring), a name longer than
+        MAX_PUBLIC is ignored, and only the first MAX_PUBLIC_PARTS of them count: later
+        ones are masked like any secret, which costs nothing but legibility."""
         with self._lock:
-            self._public.update(v for v in values if v and len(v) <= MAX_PUBLIC)
+            for value in values:
+                if not value or len(value) > MAX_PUBLIC:
+                    continue
+                for part in (value, *PUBLIC_SPLIT_RE.split(value)):
+                    if len(part) >= MIN_SECRET_LEN and len(self._public) < MAX_PUBLIC_PARTS:
+                        self._public.add(part)
 
     def secrets(self) -> list[str]:
-        """The registered secrets, longest first, less those that are part of a public
-        name.
+        """The registered secrets, longest first, less those that are a public name or a
+        whole part of one.
 
         Hook output (jobs/hooks.OutputLog) searches for every one of them before it cuts
         a long output line, so a secret never straddles two lines.
         """
         with self._lock:
-            kept = (s for s in self._secrets if not any(s in name for name in self._public))
+            kept = (s for s in self._secrets if s not in self._public)
             return sorted(kept, key=len, reverse=True)
 
     def redact(self, text: str) -> str:

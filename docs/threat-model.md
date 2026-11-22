@@ -210,6 +210,7 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 - `tests/test_rclone_backend.py::test_storage_errors_never_quote_rclone`
 - `tests/test_rclone_rc.py::test_no_secret_on_the_command_line_and_a_clean_environment`
 - `tests/test_rclone_rc.py::test_the_input_dump_in_rclones_log_is_redacted`
+- `tests/test_jobs.py::test_run_log_public_names_exempt_only_whole_parts`
 - `tests/test_hooks.py::test_secret_across_a_cut_is_redacted`
 - `tests/test_hooks.py::test_output_is_not_logged_by_default`
 - `tests/test_hooks_docker.py::test_output_is_redacted_and_capped`
