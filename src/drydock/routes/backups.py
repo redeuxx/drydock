@@ -7,6 +7,7 @@ storage as stored, unverified; its SHA-256 is in the catalog, and the restore pa
 or another drydock verifies it on upload.
 """
 
+import re
 from collections.abc import Iterator
 from itertools import chain
 from typing import Annotated
@@ -93,12 +94,17 @@ def list_backups(
     request: Request,
     auth: Viewer,
     before: int | None = Query(default=None, ge=1),
-    job: int | None = Query(default=None, ge=1),
-    storage: int | None = Query(default=None, ge=1),
+    job: str = "",
+    storage: str = "",
     q: str = "",
     db: Session = Depends(get_db),
 ) -> Response:
-    return list_page(request, auth, db, before, job, storage, q)
+    """job and storage are text: their "All" options send them empty."""
+    return list_page(request, auth, db, before, id_of(job), id_of(storage), q)
+
+
+def id_of(value: str) -> int | None:
+    return int(value) if re.fullmatch(r"[1-9][0-9]{0,8}", value) else None
 
 
 @router.post("/{backup_id}/download")

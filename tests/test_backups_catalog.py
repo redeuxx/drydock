@@ -39,6 +39,9 @@ async def test_the_catalog_filters_by_job_storage_and_name(admin: Browser) -> No
     assert await shown() == {web_archive, db_archive}
     assert await shown(job=str(web)) == {web_archive}
     assert await shown(storage=str(other)) == {db_archive}
+    assert await shown(job="", storage="", q="web") == {web_archive}, "the All options"
+    assert await shown(job=str(db), storage="") == {db_archive}
+    assert await shown(job="x", storage="-1") == {web_archive, db_archive}, "ignored"
     assert await shown(q="DB HOUR") == {db_archive}, "a job's name"
     assert await shown(q=web_archive[:20]) == {web_archive}, "an archive's name"
     assert await shown(q="%") == set(), "LIKE wildcards are literal"
