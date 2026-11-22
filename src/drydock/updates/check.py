@@ -22,7 +22,7 @@ import logging
 import re
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Literal
 
@@ -39,6 +39,7 @@ from drydock.hosts import client
 from drydock.hosts.helper import is_helper
 from drydock.hosts.manager import HostManager, HostUnavailable
 from drydock.models import Host, Installation, utcnow
+from drydock.updates.versions import Platform, describe, image_version, registry_version
 
 log = logging.getLogger("drydock.updates")
 
@@ -48,6 +49,7 @@ MIN_GAP = 60  # seconds between checks of a host asked for from the page
 LOOP_EVERY = 300
 TIMEOUT = 30
 THREADS = 2
+MAX_VERSIONS = 2000  # versions of new digests kept
 IMAGE_ID_RE = re.compile(r"(sha256:)?[0-9a-f]{12,64}")
 LOOKUP_ERRORS = (docker.errors.DockerException, requests.RequestException)
 READ_ERRORS = (client.DockerUnavailable, HostUnavailable, *LOOKUP_ERRORS, OSError)
@@ -61,6 +63,14 @@ class Verdict:
     reason: str  # safe to show to every role
     ref: str = ""  # the tag reference checked, normalized
     latest: str = ""  # the digest the registry serves for it now
+    digest: str = ""  # the digest the container's image was pulled as
+    version: str = ""  # its image's version (updates/versions.py), "" when unknown
+    new_version: str = ""  # the version of latest, for an update, "" when unknown
+
+    @property
+    def moves(self) -> str:
+        """'old -> new' for an update."""
+        return describe(self.version, self.digest, self.new_version, self.latest)
 
 
 def reference(image: str) -> str | None:
@@ -116,6 +126,42 @@ def local_image(api: Any, ref: str) -> str | None:
         return None
 
 
+def with_versions(
+    api: Any,
+    found: Verdict,
+    image: dict[str, Any],
+    newer_version: Callable[[str, str, Platform], str] | None,
+) -> Verdict:
+    """Blocking. The verdict with its image's version and digest, and for an update the
+    version it brings: from the newer image when it is on the host already (latest is
+    its ID), else from newer_version."""
+    if not found.ref:
+        return found
+    repository = found.ref.rpartition(":")[0]
+    own = [d.partition("@")[2] for d in image.get("RepoDigests") or [] if isinstance(d, str)]
+    mine = [d for d in image.get("RepoDigests") or [] if str(d).startswith(repository + "@")]
+    digest = (mine[0].partition("@")[2] if mine else "") or (own[0] if own else "")
+    new_version = ""
+    if found.state == "update" and found.latest.startswith("sha256:"):
+        if found.reason.startswith("A newer"):  # on the host: latest is its image ID
+            with contextlib.suppress(docker.errors.NotFound):
+                newer = api.inspect_image(found.latest).get("Config")
+                new_version = image_version(newer, repository)
+        elif newer_version is not None:
+            platform = (
+                str(image.get("Os") or ""),
+                str(image.get("Architecture") or ""),
+                str(image.get("Variant") or ""),
+            )
+            new_version = newer_version(found.ref, found.latest, platform)
+    return replace(
+        found,
+        digest=digest,
+        version=image_version(image.get("Config"), repository),
+        new_version=new_version,
+    )
+
+
 @dataclass
 class Cached:
     at: float
@@ -128,12 +174,15 @@ def check(
     cache: dict[tuple[str, str], Cached],
     now: float,
     max_age: float = CHECK_EVERY,
+    newer_version: Callable[[str, str, Platform], str] | None = None,
 ) -> dict[str, Verdict]:
     """Blocking. Container ID to verdict for every container but this installation's
     helpers. cache maps (image ID, reference) to a verdict reused for max_age seconds;
-    errors are not kept, and entries no container uses any more are dropped."""
+    errors are not kept, and entries no container uses any more are dropped.
+    newer_version(ref, digest, platform) gives the version an update brings."""
     verdicts: dict[str, Verdict] = {}
     digests: dict[str, list[str]] = {}
+    images: dict[str, dict[str, Any]] = {}
     used: set[tuple[str, str]] = set()
     asked: dict[str, str | BaseException] = {}  # one lookup per reference and pass
 
@@ -163,10 +212,10 @@ def check(
                 continue
             if image_id not in digests:
                 try:
-                    image_info = api.inspect_image(image_id)
-                    digests[image_id] = list(image_info.get("RepoDigests") or [])
+                    images[image_id] = api.inspect_image(image_id)
                 except docker.errors.NotFound:
-                    digests[image_id] = []
+                    images[image_id] = {}
+                digests[image_id] = list(images[image_id].get("RepoDigests") or [])
             found = verdict(image, digests[image_id], registry)
             if found.state == "skipped" and found.ref:
                 # No registry digest: built locally, or (containerd's image store) its tag
@@ -177,6 +226,7 @@ def check(
                     found = Verdict(
                         "update", f"A newer {found.ref} is already on the host.", found.ref, newer
                     )
+            found = with_versions(api, found, images[image_id], newer_version)
         except docker.errors.NotFound:
             continue  # removed since the list
         except docker.errors.APIError as exc:
@@ -215,6 +265,8 @@ class UpdateChecker:
         self._busy: dict[int, asyncio.Task[HostChecks]] = {}
         self._task: asyncio.Task[None] | None = None
         self._every = CHECK_EVERY  # seconds between checks; 0: never by itself
+        # (repository, digest, platform): its version. A digest's never changes.
+        self._versions: dict[tuple[str, str, Platform], str] = {}
 
     @property
     def running(self) -> bool:
@@ -294,7 +346,21 @@ class UpdateChecker:
                 cache,
                 time.monotonic(),
                 self._every or CHECK_EVERY,
+                self._newer_version,
             )
+
+    def _newer_version(self, ref: str, digest: str, platform: Platform) -> str:
+        """Blocking. registry_version, asked once per digest and platform; a failed ask
+        is asked again at the next check."""
+        key = (ref.rpartition(":")[0], digest, platform)
+        if key not in self._versions:
+            found = registry_version(ref, digest, platform)
+            if found is None:
+                return ""
+            if len(self._versions) >= MAX_VERSIONS:
+                self._versions.clear()  # ponytail: drop all; an LRU if this ever churns
+            self._versions[key] = found
+        return self._versions[key]
 
     async def _run(self) -> None:
         await asyncio.sleep(FIRST_CHECK)

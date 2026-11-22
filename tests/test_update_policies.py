@@ -373,3 +373,41 @@ async def test_a_policy_for_every_stack(admin: Browser, monkeypatch, tmp_path) -
     assert children == ["a", "c"], "b has nothing to update: no run"
     log = (tmp_path / "run.log").read_text()
     assert "Stacks on web-host: a, b, c." in log and "Stack b: nothing to update." in log
+
+
+async def test_the_runs_pages_show_what_an_update_moved(admin: Browser) -> None:
+    digest = "sha256:" + "ab" * 32
+    changes = [
+        {
+            "name": "web",
+            "old": "sha256:" + "12" * 32,
+            "new": digest,
+            "old_ref": "nginx:1.27",
+            "new_ref": "nginx:1.27",
+            "old_version": "1.27.2",
+            "new_version": "<b>1.27.3</b>",
+        },
+        {
+            "name": "db",
+            "old": "",
+            "new": digest,
+            "old_ref": "postgres:16",
+            "new_ref": "postgres:17",
+            "old_version": "",
+            "new_version": "",
+        },
+        "junk",
+    ]
+    with admin.app.state.sessionmaker() as db, db.begin():
+        run = Run(
+            kind="update",
+            status="done",
+            target_label="stack app",
+            plan=json.dumps({"update": {}, "changes": changes}),
+        )
+        db.add(run)
+        db.flush()
+        run_id = run.id
+    for page in ((await admin.get("/runs")).text, (await admin.get(f"/runs/{run_id}")).text):
+        assert "web: 1.27.2 → &lt;b&gt;1.27.3&lt;/b&gt;" in page
+        assert "db: 16 unknown → 17 abababababab" in page

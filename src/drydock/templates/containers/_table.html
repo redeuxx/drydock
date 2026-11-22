@@ -175,7 +175,7 @@
         {% if operator %}<td><input type="checkbox" form="container-actions" name="id" value="{{ r.host.id }}:{{ c.id }}" class="checkbox checkbox-xs relative z-10" data-select aria-label="Select {{ c.name }}"></td>{% endif %}
         {% set v = r.verdict %}
         <td>
-          <div class="flex min-w-0 items-center gap-1 font-semibold"><button type="button" class="truncate cursor-pointer after:absolute after:inset-0" commandfor="ctr-{{ loop.index }}" command="show-modal" aria-haspopup="dialog" title="{{ c.name }}">{{ c.name }}</button>{% if v and v.state == "update" %}<span class="badge badge-soft badge-info badge-xs shrink-0" title="{{ v.reason }}">update</span>{% endif %}</div>
+          <div class="flex min-w-0 items-center gap-1 font-semibold"><button type="button" class="truncate cursor-pointer after:absolute after:inset-0" commandfor="ctr-{{ loop.index }}" command="show-modal" aria-haspopup="dialog" title="{{ c.name }}">{{ c.name }}</button>{% if v and v.state == "update" %}<span class="badge badge-soft badge-info badge-xs shrink-0" title="{{ v.reason }} {{ v.moves }}">update</span>{% endif %}</div>
           {# On a phone the State column folds in here. #}
           <div class="flex min-w-0 items-center gap-1 text-xs"><span class="badge badge-soft badge-xs sm:hidden {{ state_tones.get(c.state, 'badge-neutral') }}">{{ c.state }}{% if c.health %}, {{ c.health }}{% endif %}</span>{% if c.project %}<span class="truncate opacity-60" title="Stack {{ c.project }}">{{ c.project }}</span>{% endif %}</div>
         </td>
@@ -234,6 +234,8 @@
       <dt class="font-semibold">Tag</dt><dd>{{ tag_badge(c.image) }} {{ about_button("about-tag", "The tag a container follows") }} <span class="text-xs opacity-70">{% if c.image|tag %}Updates bring the newest image of this tag.{% else %}It never changes by itself.{% endif %}</span></dd>
       {% set v = r.verdict %}
       <dt class="font-semibold">Updates</dt><dd>{% if v %}{{ v.reason }}{% if v.latest %} <span class="font-mono text-xs opacity-70">({{ v.latest[7:19] }})</span>{% endif %}{% else %}Not checked yet.{% endif %}</dd>
+      {% if v and v.version %}<dt class="font-semibold">Version</dt><dd class="break-words">{{ v.version }}</dd>{% endif %}
+      {% if v and v.state == "update" %}<dt class="font-semibold">Update</dt><dd class="break-words">{{ v.moves }}</dd>{% endif %}
       <dt class="font-semibold">State</dt><dd>{{ c.state }}{% if c.health %}, {{ c.health }}{% endif %}</dd>
       <dt class="font-semibold">Status</dt><dd>{{ c.status }}</dd>
       <dt class="font-semibold">Started</dt><dd>{{ c.started_at|stamp }}</dd>

@@ -1378,7 +1378,16 @@ async def test_refresh_waits_for_a_reading_however_it_starts(collector) -> None:
 
 async def test_stacks_and_images_pages_check_for_updates(admin: Browser, monkeypatch) -> None:
     _, host_id = await a_host_with_containers(admin, monkeypatch)
-    newer = {"b" * 64: Verdict("update", "newer", "postgres:17", "sha256:" + "2" * 64)}
+    newer = {
+        "b" * 64: Verdict(
+            "update",
+            "newer",
+            "postgres:17",
+            "sha256:" + "2" * 64,
+            version="17.1",
+            new_version="17.2",
+        )
+    }
 
     async def check_now(host) -> HostChecks:
         found = HostChecks(datetime.now(UTC), newer)
@@ -1403,6 +1412,7 @@ async def test_stacks_and_images_pages_check_for_updates(admin: Browser, monkeyp
     done = await admin.post("/stacks/check-updates", {"host": str(host_id)}, headers=htmx)
     assert "1 container with a newer image." in done.text
     assert "1 stack with a newer image" in done.text
+    assert ": 17.1 → 17.2</li>" in (await admin.get(f"/stacks?host={host_id}")).text
     assert done.headers["HX-Replace-Url"] == f"/stacks?host={host_id}"
     done = await admin.post("/images/check-updates", {"host": str(host_id)}, headers=htmx)
     assert done.status_code == 200 and "Check for updates" in done.text

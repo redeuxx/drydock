@@ -61,6 +61,7 @@ class Stack:
     total: int
     running: int
     newer: int  # members with a newer image, as the update checker last saw
+    moves: list[str]  # "member: old -> new" for each of them
     tags: list[str]  # the tags its members follow; "pinned" for a digest or image ID
     main: str | None  # its main service (updates/switch.py), as the cache shows it
     main_tag: str | None  # the tag main follows; None when pinned
@@ -158,6 +159,11 @@ def page(
                 len(members),
                 sum(c.state == "running" for c in members),
                 sum(container_routes.is_newer(verdicts, c) for c in members),
+                [
+                    f"{c.name}: {verdicts[c.id].moves}"
+                    for c in sorted(members, key=lambda c: c.name)
+                    if container_routes.is_newer(verdicts, c)
+                ],
                 sorted({followed_tag(c.image) or "pinned" for c in members}),
                 (main.service or names[main.id]) if main is not None else None,
                 followed_tag(main.image) if main is not None else None,

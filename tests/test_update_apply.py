@@ -12,6 +12,7 @@ import requests
 from drydock.hosts.helper import helper_labels
 from drydock.restore.apply import ApplyError
 from drydock.updates import apply as update_apply
+from drydock.updates import versions
 from drydock.updates.apply import UpdateError, plan_update, settled
 from drydock.updates.check import HostChecks, Verdict
 from tests.conftest import Browser, add_user
@@ -92,7 +93,9 @@ def test_the_plan_pulls_by_digest_and_makes_the_container_again() -> None:
         "name:3:project:app",
         "name:3:image:nginx:1.27",
     }
-    assert planned.changes == (("caaaa", OLD, NEW),)
+    (change,) = planned.changes
+    assert (change.name, change.old, change.new) == ("caaaa", OLD, NEW)
+    assert (change.old_ref, change.new_ref, change.new_version) == ("nginx:1.27",) * 2 + ("",)
     assert plan.bind_sources == () and plan.data == () and plan.wipes == ()
 
 
@@ -383,3 +386,25 @@ def test_every_stack_is_named_once_and_drydocks_own_is_left_out() -> None:
             ]
 
     assert update_apply.stack_names(Listing(), frozenset({"4"})) == ["db", "web"]
+
+
+def test_versions_come_from_the_image_labels() -> None:
+    label = versions.VERSION_LABEL
+
+    class Labelled(Api):
+        def inspect_image(self, image_id: str) -> dict[str, Any]:
+            version = "1.27.3" if image_id == f"nginx@{NEW}" else "1.27.2"
+            return {"RepoDigests": [f"nginx@{OLD}"], "Config": {"Labels": {label: version}}}
+
+    api = Labelled({WEB: inspect(WEB)})
+    (change,) = plan_update(api, 3, [WEB], frozenset(), "1.47").changes
+    assert (change.old_version, change.new_version) == ("1.27.2", "")
+    (after,) = update_apply.versions_after(api, [change])
+    assert after.new_version == "1.27.3"
+
+    class Broken(Api):
+        def inspect_image(self, image_id: str) -> dict[str, Any]:
+            raise docker.errors.APIError("down")
+
+    (after,) = update_apply.versions_after(Broken({}), [change])
+    assert after.new_version == "", "a label it cannot read never fails the update"

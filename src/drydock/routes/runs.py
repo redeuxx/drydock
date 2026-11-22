@@ -39,6 +39,7 @@ from drydock.routes.auth import client_ip
 from drydock.security.rbac import Role, require_role
 from drydock.security.sessions import Auth
 from drydock.templating import is_htmx, render, see_other
+from drydock.updates.versions import describe
 
 router = APIRouter(prefix="/runs")
 
@@ -48,6 +49,7 @@ Operator = Annotated[Auth, Depends(require_role(Role.operator))]
 PAGE_SIZE = 100
 PAGE_LOG_LIMIT = 1024 * 1024  # the run page shows at most this much; polling continues after
 UNFINISHED = ("failed", "cancelled", "interrupted")  # ended without finishing the restore
+UPDATE_FIELDS = ("name", "old", "new", "old_ref", "new_ref", "old_version", "new_version")
 
 
 def get_run(db: Session, run_id: int) -> Run:
@@ -135,6 +137,29 @@ def compose_warning(run: Run, doc: dict[str, Any]) -> str | None:
     return None
 
 
+def update_changes(run: Run) -> list[str]:
+    """What an update moved each container from and to, one line each
+    (updates/versions.py describe)."""
+    if run.kind != "update":
+        return []
+    entries = json_object(run.plan).get("changes")
+    lines = []
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        get = {k: v if isinstance(v := entry.get(k), str) else "" for k in UPDATE_FIELDS}
+        moved = describe(
+            get["old_version"],
+            get["old"],
+            get["new_version"],
+            get["new"],
+            get["old_ref"],
+            get["new_ref"],
+        )
+        lines.append(f"{get['name']}: {moved}")
+    return lines
+
+
 def job_names(db: Session, runs: list[Run]) -> dict[int, str]:
     ids = {r.job_id for r in runs if r.job_id is not None}
     return dict(db.execute(select(Job.id, Job.name).where(Job.id.in_(ids))).all())
@@ -163,6 +188,7 @@ def list_runs(
         auth=auth,
         runs=runs,
         jobs=job_names(db, runs),
+        changes={run.id: update_changes(run) for run in runs},
         next_before=next_before,
         statuses=RUN_STATUSES,
         chosen=chosen,
@@ -196,6 +222,7 @@ def run_page(
         job=db.get(Job, run.job_id) if run.job_id is not None else None,
         restore_doc=json_object(run.plan) if run.kind == "restore" else None,
         restore_warning=restore_warning(run),
+        changes=update_changes(run),
         siblings=list(
             db.scalars(select(Run).where(Run.first_run_id == run.first_run_id).order_by(Run.id))
         )

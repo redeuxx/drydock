@@ -109,9 +109,9 @@ import time
 import uuid
 import zoneinfo
 from collections import defaultdict
-from collections.abc import Callable, Coroutine, Sequence
+from collections.abc import Callable, Coroutine, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -1937,12 +1937,16 @@ class Dispatcher:
                     raise Cancelled("The run was cancelled.")
                 for line in planned.plan.warnings:
                     run_log(line)
-                for name, old, new in planned.changes:
+                for change in planned.changes:
                     run_log(
-                        f"Updating {name}: {old[:19] or 'an image with no digest'} to {new[:19]}."
+                        f"Updating {change.name}: "
+                        f"{change.old[:19] or 'an image with no digest'} to {change.new[:19]}."
                     )
+                await run_blocking(self._set_changes, run_id, planned.changes)
                 await run_blocking(self._mark_running, run_id)
                 await self._apply_update(active, handle, planned.plan, scope, run_log)
+                changes = await run_blocking(update_apply.versions_after, api, planned.changes)
+                await run_blocking(self._set_changes, run_id, changes)
                 await run_blocking(self._finish, run_id, run_log, "done", None)
             finally:
                 self._release(held)
@@ -2940,6 +2944,15 @@ class Dispatcher:
             run = db.get(Run, run_id)
             doc = json_object(run.plan if run is not None else None).get("update")
         return doc if isinstance(doc, dict) else {}
+
+    def _set_changes(self, run_id: int, changes: Iterable[update_apply.Change]) -> None:
+        """Keeps what the update moves from and to in the run's plan, for the run pages."""
+        with self._sessions() as db, db.begin():
+            run = db.get(Run, run_id)
+            if run is not None:
+                doc = json_object(run.plan)
+                doc["changes"] = [asdict(c) for c in changes]
+                run.plan = json.dumps(doc)
 
     def _job_run_statuses(self, first_run_id: int) -> list[tuple[int, str]]:
         with self._sessions() as db:

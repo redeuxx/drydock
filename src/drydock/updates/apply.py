@@ -29,7 +29,7 @@ Compose labels stay, so a later `docker compose up` on the host sees its own con
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import docker.errors
@@ -54,6 +54,7 @@ from drydock.restore.plan import (
 )
 from drydock.updates import switch as tag_switch
 from drydock.updates.check import lookup_error, reference
+from drydock.updates.versions import image_version
 
 HEALTH_WAIT = stacks.HEALTH_WAIT  # seconds a container with a healthcheck may take, at least
 MAX_HEALTH_WAIT = 900  # its own healthcheck timing may ask for more, up to this
@@ -66,10 +67,23 @@ class UpdateError(Exception):
 
 
 @dataclass(frozen=True)
+class Change:
+    """One container an update moves to a new image, for the run pages."""
+
+    name: str
+    old: str  # digest, or "" for an image with none
+    new: str  # digest
+    old_ref: str  # repository:tag it was made from ("" for an image ID)
+    new_ref: str  # repository:tag it is made from now (another one for a switch)
+    old_version: str = ""  # the images' version labels, "" when they have none
+    new_version: str = ""  # known once pulled (versions_after)
+
+
+@dataclass(frozen=True)
 class Planned:
     plan: RestorePlan | None  # None: nothing to update
     notes: tuple[str, ...]  # what was left out and why, for the run log
-    changes: tuple[tuple[str, str, str], ...]  # (name, old digest or "", new digest)
+    changes: tuple[Change, ...]
 
 
 def image_info(api: Any, ref: str) -> dict[str, Any]:
@@ -77,6 +91,21 @@ def image_info(api: Any, ref: str) -> dict[str, Any]:
         return api.inspect_image(ref)
     except docker.errors.NotFound:
         return {}
+
+
+def versions_after(api: Any, changes: Iterable[Change]) -> tuple[Change, ...]:
+    """Blocking. The changes with the version labels of their pulled images. Never raises:
+    an image that cannot be read keeps no version."""
+    out = []
+    for change in changes:
+        repository, _ = docker.utils.parse_repository_tag(change.new_ref)
+        try:
+            pulled = image_info(api, f"{repository}@{change.new}")
+            version = image_version(pulled.get("Config"), repository)
+        except Exception:  # only a label for the run pages: never fail the update over it
+            version = ""
+        out.append(replace(change, new_version=version))
+    return tuple(out)
 
 
 def repo_digests(info: dict[str, Any]) -> list[tuple[str, str]]:
@@ -242,7 +271,7 @@ def plan_update(
     projects: set[str] = set()
     notes: list[str] = []
     warnings: list[str] = []
-    changes: list[tuple[str, str, str]] = []
+    changes: list[Change] = []
     pulls: dict[str, ImageStep] = {}  # one pull per reference
 
     def skip(name: str, why: str) -> None:
@@ -272,6 +301,7 @@ def plan_update(
             n for cid, n in planned.items() if cid in refs or cid[:12] in refs or n in refs
         )
         ref = reference(str((info.get("Config") or {}).get("Image") or ""))
+        old_ref = ref or ""
         moving_to = (switch or {}).get(info["Id"])
         moving_to = moving_to if moving_to != ref else None
         latest = None
@@ -320,7 +350,16 @@ def plan_update(
             keys.add(f"name:{host_id}:image:{ref}")
             own_repo = [d for r, d in repo_digests(old_image) if r == repository]
             current = sorted(d for _, d in repo_digests(old_image))
-            changes.append((name, (own_repo or current or [""])[0], latest))
+            changes.append(
+                Change(
+                    name=name,
+                    old=(own_repo or current or [""])[0],
+                    new=latest,
+                    old_ref=old_ref,
+                    new_ref=ref,
+                    old_version=image_version(old_image.get("Config"), repository),
+                )
+            )
         else:
             notes.append(
                 f"{name}: made again with its own image, since it uses {', '.join(follows)}."

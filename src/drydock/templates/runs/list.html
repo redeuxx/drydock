@@ -11,9 +11,9 @@
   <button type="submit" class="btn btn-sm">Filter</button>
   {% if chosen %}<a class="link text-sm" href="/runs">Show all</a>{% endif %}
 </form>
-{# Fixed layout and one truncated line per cell keep every row the same height and the
-   table inside the page; the full text is in each cell's title. Narrow screens drop the
-   least needed columns. #}
+{# Fixed layout keeps the table inside the page: the short columns hold one truncated
+   line (the full text in each cell's title), the job column wraps so its full name and an
+   update's versions show. Narrow screens drop the least needed columns. #}
 <div class="overflow-hidden rounded-box border border-base-300 bg-base-100">
   <table class="table table-zebra table-fixed w-full">
     <thead><tr>
@@ -30,13 +30,16 @@
       <tr>
         <td class="truncate"><a class="link" href="/runs/{{ run.id }}">#{{ run.id }}</a></td>
         {% if run.kind == "restore" %}
-        <td class="truncate" title="Restore of {{ run.archive_name }}">Restore of
+        <td class="break-words">Restore of
           {%- if run.status == "awaiting_confirmation" and auth.user.role >= Role.admin %} <a class="link font-mono text-xs" href="/restore/runs/{{ run.id }}/plan">{{ run.archive_name }}</a>
-          {%- else %} <span class="font-mono text-xs">{{ run.archive_name }}</span>{% endif %}</td>
+          {%- else %} <span class="font-mono text-xs break-all">{{ run.archive_name }}</span>{% endif %}</td>
         {% elif run.kind == "update" %}
-        <td class="truncate" title="Update of {{ run.target_label or '' }}">Update of {{ run.target_label or "" }}</td>
+        <td class="break-words">Update of {{ run.target_label or "" }}
+          {%- if changes[run.id] %}
+          <ul class="text-xs opacity-70">{% for line in changes[run.id] %}<li>{{ line }}</li>{% endfor %}</ul>
+          {%- endif %}</td>
         {% else %}
-        <td class="truncate" title="{{ jobs.get(run.job_id, 'deleted job') }}{% if run.kind == "backup" and run.target_label %}: {{ run.target_label }}{% endif %}">
+        <td class="break-words">
           {%- if run.job_id in jobs %}<a class="link" href="/jobs/{{ run.job_id }}">{{ jobs[run.job_id] }}</a>
           {%- else %}<span class="opacity-70">deleted job</span>{% endif -%}
           {%- if run.kind == "backup" and run.target_label %} <span class="text-xs opacity-70">{{ run.target_label }}</span>{% endif %}</td>
