@@ -771,6 +771,21 @@ def test_resolve_follows_symlinks_like_realpath() -> None:
         hostpaths.resolve("/srv/../etc", lstat)
 
 
+def test_resolve_refuses_dotdot_after_a_missing_component() -> None:
+    """The kernel fails at a missing component; going back up from it would leave b, a link
+    to /etc, appended unresolved, and the daemon would follow it."""
+    tree: dict[str, tuple[str, str | None]] = {
+        "/home": ("dir", None),
+        "/home/u": ("dir", None),
+        "/home/u/a": ("link", "nope/../b"),
+        "/home/u/b": ("link", "/etc"),
+        "/etc": ("dir", None),
+    }
+    with pytest.raises(HostPathError, match="through a missing path"):
+        hostpaths.resolve("/home/u/a/shadow", tree.get)
+    assert hostpaths.resolve("/home/u/nope/x/y", tree.get) == "/home/u/nope/x/y"
+
+
 def test_host_backed_volumes_count_as_host_paths() -> None:
     bind_opts = {"type": "none", "o": "bind", "device": "/etc"}
     assert hostpaths.host_volume_device("local", bind_opts) == "/etc"

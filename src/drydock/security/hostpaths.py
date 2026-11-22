@@ -139,8 +139,11 @@ def resolve(path: str, lstat: Lstat) -> str:
     """The path with every symbolic link resolved, like realpath on the host.
 
     lstat(p) describes one absolute, already resolved path. From the first component that
-    does not exist on, the rest of the path is appended without lookups. Link text may hold
-    '..' (resolved against the walk, as the kernel does); the path itself may not.
+    does not exist on, the rest of the path is appended without lookups, so it may hold only
+    plain names. Link text may hold '..' (resolved against the walk, as the kernel does); the
+    path itself may not. A '..' after a missing component is refused: the kernel stops there
+    with ENOENT, while going back up would land on an existing directory whose later names
+    were never looked up, a link among them.
     """
     pending = deque(part for part in normalize(path).split("/") if part)
     current = "/"
@@ -151,6 +154,8 @@ def resolve(path: str, lstat: Lstat) -> str:
         if part == ".":
             continue
         if part == "..":
+            if missing:
+                raise HostPathError(f"Host path {path} has a symbolic link through a missing path.")
             current = posixpath.dirname(current)
             continue
         candidate = posixpath.join(current, part)

@@ -229,7 +229,8 @@ def resolve_dirs(
     client: docker.DockerClient, image: str, instance_id: str, dirs: list[str]
 ) -> dict[str, str | None]:
     """Each directory with its symbolic links resolved on the host, through one helper that
-    mounts the host's / read-only; None for one that cannot be resolved."""
+    mounts the host's / read-only; None for one that cannot be resolved or does not resolve
+    to an existing directory (a missing one could appear as a link before it is bound)."""
     # Both import this module, so they are imported here.
     from drydock.restore.apply import PROBE_ROOT, ApplyError, Probe
     from drydock.security import hostpaths
@@ -241,7 +242,9 @@ def resolve_dirs(
             probe = Probe(box)
             for path in dirs:
                 with contextlib.suppress(hostpaths.HostPathError, ApplyError):
-                    resolved[path] = hostpaths.resolve(path, probe.lstat)
+                    real = hostpaths.resolve(path, probe.lstat)
+                    if probe.lstat(real) == ("dir", None):
+                        resolved[path] = real
     except docker.errors.DockerException, requests.RequestException:
         pass
     return resolved

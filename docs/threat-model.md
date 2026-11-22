@@ -443,6 +443,7 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 - `tests/test_capture.py::test_compose_built_services_keep_their_project_but_never_image_paths`
 - `tests/test_capture.py::test_compose_paths_in_system_locations_are_refused`
 - `tests/test_capture.py::test_a_compose_directory_that_links_to_a_system_location_is_refused`
+- `tests/test_restore_plan.py::test_resolve_refuses_dotdot_after_a_missing_component`
 - `tests/test_capture.py::test_compose_files_are_capped`
 
 ### T30. Containers left down after a crash
