@@ -147,10 +147,15 @@ def page_number(text: str) -> int:
     return int(text) if text.isascii() and text.isdigit() and len(text) < 7 else 1
 
 
-def back_url(path: str, back: str, number: int) -> str:
+def back_url(path: str, back: str, number: int, **filters: str) -> str:
     """Where an action on a Docker page returns to: back is the host the page showed (an
-    ID, or anything else for every host), number its page."""
-    query = ({"host": back} if back.isdigit() else {}) | ({"page": number} if number > 1 else {})
+    ID, or anything else for every host), number its page and filters the page's own
+    (status, q), so the page comes back as it was. Empty ones are left out."""
+    query = (
+        ({"host": back} if back.isdigit() else {})
+        | {k: v for k, v in filters.items() if v}
+        | ({"page": number} if number > 1 else {})
+    )
     return f"{path}?{urlencode(query)}" if query else path
 
 

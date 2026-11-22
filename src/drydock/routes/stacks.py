@@ -54,6 +54,15 @@ STATUSES: dict[str, tuple[str, Callable[[int, int, int], bool]]] = {
 }
 
 
+def filters(status: str, q: str) -> dict[str, str]:
+    """The state filter and search as the page applies them: an unknown state is none, the
+    search trimmed and capped. The actions carry them back, so the page stays filtered."""
+    return {
+        "status": status if status in STATUSES else "",
+        "q": q.strip()[: container_routes.MAX_QUERY],
+    }
+
+
 @dataclass(frozen=True)
 class Stack:
     host: Host
@@ -85,8 +94,8 @@ def page(
     """One host's stacks, or every enabled host's when host names none (routes/containers.py
     pick_host), a page at a time. status (STATUSES) and q (in the stack's name, its services
     or images) filter them."""
-    status = status if status in STATUSES else ""
-    query = q.strip()[: container_routes.MAX_QUERY]
+    shown_filters = filters(status, q)
+    status, query = shown_filters["status"], shown_filters["q"]
     collector = request.app.state.status
     collector.touch()
     hosts = list(db.scalars(select(Host).order_by(Host.name)))
@@ -228,9 +237,15 @@ def stacks(
 
 @router.post("/stacks/check-updates")
 def check_updates(
-    request: Request, auth: Operator, host: Annotated[int, Form()], db: Session = Depends(get_db)
+    request: Request,
+    auth: Operator,
+    host: Annotated[int, Form()],
+    db: Session = Depends(get_db),
+    status: Annotated[str, Form()] = "",
+    q: Annotated[str, Form()] = "",
 ) -> Response:
-    """The containers page's Check for updates, shown on this page."""
+    """The containers page's Check for updates, shown on this page with its filters."""
+    shown = filters(status, q)
     target_host, notice, error = container_routes.ask_registries(request, db, host)
     audit.record(
         db,
@@ -242,10 +257,12 @@ def check_updates(
         details={"host": target_host.name} | ({} if error is None else {"error": error}),
     )
     db.commit()
-    url = f"/stacks?host={host}"
+    url = container_routes.back_url("/stacks", str(host), 1, **shown)
     if not is_htmx(request):
         return see_other(request, url)
-    response = page(request, auth, db, str(host), notice=notice)
+    response = page(
+        request, auth, db, str(host), notice=notice, status=shown["status"], q=shown["q"]
+    )
     response.headers["HX-Replace-Url"] = url
     return response
 
@@ -260,10 +277,13 @@ def stack_actions(
     db: Session = Depends(get_db),
     shown: Annotated[str | None, Form(alias="view")] = None,
     number: Annotated[str, Form(alias="page")] = "1",
+    status: Annotated[str, Form()] = "",
+    q: Annotated[str, Form()] = "",
 ) -> Response:
     """Runs action on every container of the stack, as the cache last saw them. Audited
     once for the stack, with each container's outcome. view is the host the page showed
-    ("all" for every host); the stack's own host if not given."""
+    ("all" for every host), the stack's own host if not given; page, status and q are its
+    page and filters, so the answer is that same page."""
     if action not in STACK_ACTIONS:
         raise HTTPException(status_code=422)
     if action == "remove":
@@ -290,11 +310,11 @@ def stack_actions(
     anyio.from_thread.run(request.app.state.status.refresh, target_host.id)
     back = shown or str(target_host.id)
     shown_page = container_routes.page_number(number)
-    url = container_routes.back_url("/stacks", back, shown_page)
+    url = container_routes.back_url("/stacks", back, shown_page, **filters(status, q))
     if not is_htmx(request):
         return see_other(request, url)
     if not back.isdigit():  # every host: the outcomes say which host
         outcomes = [replace(o, host=target_host.name) for o in outcomes]
-    response = page(request, auth, db, back, shown_page, outcomes=outcomes)
+    response = page(request, auth, db, back, shown_page, outcomes=outcomes, status=status, q=q)
     response.headers["HX-Replace-Url"] = url
     return response

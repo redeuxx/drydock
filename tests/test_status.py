@@ -1279,6 +1279,40 @@ async def test_stacks_page_groups_the_cache_and_acts_on_every_member(
     assert (await admin.post("/stacks/actions", data)).status_code == 403
 
 
+async def test_stack_actions_and_check_for_updates_keep_the_filters(
+    admin: Browser, monkeypatch
+) -> None:
+    """An action or Check for updates on a filtered stacks page answers with that same
+    filtered page, not every stack; an unknown state is dropped, as the page drops it."""
+    _, host_id = await a_host_with_containers(admin, monkeypatch)
+    page = (await admin.get(f"/stacks?host={host_id}&status=partial&q=ap")).text
+    assert page.count('type="hidden" name="status" value="partial"') >= 2, "actions and check"
+    assert page.count('type="hidden" name="q" value="ap"') >= 2
+
+    monkeypatch.setattr(
+        containers,
+        "run_actions",
+        lambda request, auth, host, verb, chosen: [containers.Outcome(verb, "cache")],
+    )
+    htmx = {"HX-Request": "true"}
+    data = {"host": str(host_id), "stack": "app", "action": "start", "status": "partial"}
+    kept = f"/stacks?host={host_id}&status=partial&q=ap"
+    done = await admin.post("/stacks/actions", data | {"q": " ap "}, headers=htmx)
+    assert done.headers["HX-Replace-Url"] == kept
+    assert '<option value="partial" selected>' in done.text
+    plain = await admin.post("/stacks/actions", data | {"q": "ap"})
+    assert plain.status_code == 303 and plain.headers["location"] == kept
+
+    async def check_now(host) -> HostChecks:
+        return HostChecks(datetime.now(UTC), {})
+
+    monkeypatch.setattr(admin.app.state.updates, "check_now", check_now)
+    asked = {"host": str(host_id), "status": "bogus", "q": "ap"}
+    done = await admin.post("/stacks/check-updates", asked, headers=htmx)
+    assert done.headers["HX-Replace-Url"] == f"/stacks?host={host_id}&q=ap"
+    assert 'type="hidden" name="q" value="ap"' in done.text
+
+
 async def test_stacks_page_shows_each_stacks_update_policies(admin: Browser, monkeypatch) -> None:
     _, host_id = await a_host_with_containers(admin, monkeypatch)
     page = (await admin.get(f"/stacks?host={host_id}")).text
