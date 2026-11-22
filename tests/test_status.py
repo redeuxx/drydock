@@ -975,6 +975,32 @@ async def test_the_last_backup_and_a_missing_schedule_are_shown(
     assert "No schedule: no backup job covers it." in page, "the dialog says why"
 
 
+async def test_the_last_backup_is_the_runs_of_the_targets_that_cover_the_container(
+    admin: Browser, monkeypatch
+) -> None:
+    """app-all's own target (stack app) failed 2 hours ago and its second target (cache)
+    succeeded an hour ago. db is only in the stack, so the cache backup is not its own."""
+    _, host_id = await a_host_with_containers(admin, monkeypatch)
+    jobs = add_jobs(admin, host_id)
+    now = datetime.now(UTC)
+    with admin.app.state.sessionmaker() as db, db.begin():
+        cache = db.scalar(select(JobTarget.uuid).where(JobTarget.job_id == jobs["app-all"]))
+        for status_, hours, target_uuid in [("failed", 2, None), ("done", 1, cache)]:
+            db.add(
+                Run(
+                    job_id=jobs["app-all"],
+                    kind="backup",
+                    status=status_,
+                    target_uuid=target_uuid,
+                    finished_at=now - timedelta(hours=hours, minutes=1),
+                )
+            )
+    page = (await admin.get(f"/containers?host={host_id}")).text
+    assert "Failed 2 hours ago" in row_of(page, "db") and "1 hour ago" not in row_of(page, "db")
+    cache_row = row_of(page, "cache")  # in the stack and a target of its own: both count
+    assert "1 hour ago" in cache_row and "Failed" not in cache_row
+
+
 async def test_containers_sort_by_an_allowed_column_only(admin: Browser, monkeypatch) -> None:
     _, host_id = await a_host_with_containers(admin, monkeypatch)
     by_name_page = await shown(admin, f"host={host_id}")

@@ -167,23 +167,39 @@ def matches(c: ContainerStatus, query: str, values: bool) -> bool:
     return any(query in k.lower() or (values and query in v.lower()) for k, v in c.labels)
 
 
-def covering_jobs(db: Session, host_id: int) -> dict[tuple[str, str], list[Job]]:
-    """("container", name) or ("stack", project) to the host's jobs that back it up."""
+Cover = tuple[Job, str | None]  # a job and its target that covers: None for its own
+
+
+def covering_targets(db: Session, host_id: int) -> dict[tuple[str, str], list[Cover]]:
+    """("container", name) or ("stack", project) to the host's jobs that back it up, each
+    with the target that does: None for the job's own, else the job_targets row's UUID.
+    Each target's runs carry that UUID (target_uuid), so a row's last backup is read from
+    the runs of the targets that back it up, not the newest run of any of the job's."""
     jobs = {j.id: j for j in db.scalars(select(Job).where(Job.host_id == host_id))}
-    covers: dict[tuple[str, str], list[Job]] = defaultdict(list)
+    covers: dict[tuple[str, str], list[Cover]] = defaultdict(list)
     for job in jobs.values():
-        covers[(job.target_type, job.target)].append(job)
+        covers[(job.target_type, job.target)].append((job, None))
     extra = db.execute(
-        select(JobTarget.job_id, JobTarget.target_type, JobTarget.target).where(
+        select(JobTarget.job_id, JobTarget.uuid, JobTarget.target_type, JobTarget.target).where(
             JobTarget.job_id.in_(jobs)
         )
     )
-    for job_id, kind, name in extra:
-        if jobs[job_id] not in covers[(kind, name)]:
-            covers[(kind, name)].append(jobs[job_id])
+    for job_id, target_uuid, kind, name in extra:
+        covers[(kind, name)].append((jobs[job_id], target_uuid))
     for found in covers.values():
-        found.sort(key=lambda j: j.name.lower())
+        found.sort(key=lambda cover: cover[0].name.lower())
     return covers
+
+
+def unique_jobs(covers: list[Cover]) -> list[Job]:
+    """The jobs of covers, each once, in order."""
+    return list({j.id: j for j, _ in covers}.values())
+
+
+def covering_jobs(db: Session, host_id: int) -> dict[tuple[str, str], list[Job]]:
+    """("container", name) or ("stack", project) to the host's jobs that back it up."""
+    found = covering_targets(db, host_id)
+    return defaultdict(list, {key: unique_jobs(covers) for key, covers in found.items()})
 
 
 @dataclass(frozen=True)
@@ -201,24 +217,30 @@ class Backups:
         return self.failed is not None and (self.last is None or self.failed > self.last)
 
 
-def last_runs(db: Session, job_ids: set[int], statuses: tuple[str, ...]) -> dict[int, datetime]:
-    """Each job's newest backup run to finish with one of statuses, from its run history
-    (which keeps runs for the run history days)."""
+RunKey = tuple[int, str | None]  # a job ID and the target_uuid of its runs
+
+
+def last_runs(db: Session, job_ids: set[int], statuses: tuple[str, ...]) -> dict[RunKey, datetime]:
+    """Each job target's newest backup run to finish with one of statuses, from its run
+    history (which keeps runs for the run history days)."""
     if not job_ids:
         return {}
     found = db.execute(
-        select(Run.job_id, func.max(Run.finished_at))
+        select(Run.job_id, Run.target_uuid, func.max(Run.finished_at))
         .where(Run.job_id.in_(job_ids), Run.kind == "backup", Run.status.in_(statuses))
-        .group_by(Run.job_id)
+        .group_by(Run.job_id, Run.target_uuid)
     )
-    return {job_id: when for job_id, when in found if when is not None}
+    return {(job_id, target): when for job_id, target, when in found if when is not None}
 
 
-def backups(jobs: list[Job], done: dict[int, datetime], bad: dict[int, datetime]) -> Backups:
-    def newest(found: dict[int, datetime]) -> datetime | None:
-        return max((found[j.id] for j in jobs if j.id in found), default=None)
+def backups(
+    covers: list[Cover], done: dict[RunKey, datetime], bad: dict[RunKey, datetime]
+) -> Backups:
+    def newest(found: dict[RunKey, datetime]) -> datetime | None:
+        keys = {(j.id, target_uuid) for j, target_uuid in covers}
+        return max((found[k] for k in keys if k in found), default=None)
 
-    return Backups(any(j.enabled and j.cron for j in jobs), newest(done), newest(bad))
+    return Backups(any(j.enabled and j.cron for j, _ in covers), newest(done), newest(bad))
 
 
 def port_base(request: Request, host: Host, admin: bool) -> str | None:
@@ -335,11 +357,11 @@ def page(
     scheduler = request.app.state.scheduler
     facts: dict[int, Any] = {}  # per host of a row: its jobs, policies, sparklines, ports
     rows = []
-    covered: list[tuple[Host, ContainerStatus, list[Job]]] = []
+    covered: list[tuple[Host, ContainerStatus, list[Cover]]] = []
     for h, c in shown:
         if h.id not in facts:
             facts[h.id] = (
-                covering_jobs(db, h.id),
+                covering_targets(db, h.id),
                 [
                     (p, scheduler.next_update_time(p.id) if p.enabled else None)
                     for p in db.scalars(select(UpdatePolicy).where(UpdatePolicy.host_id == h.id))
@@ -348,12 +370,13 @@ def page(
                 port_base(request, h, admin),
             )
         covers = facts[h.id][0]
-        jobs = covers[("container", c.name)] + (covers[("stack", c.project)] if c.project else [])
-        covered.append((h, c, list({j.id: j for j in jobs}.values())))
-    job_ids = {j.id for _, _, jobs in covered for j in jobs}
+        targets = list(covers[("container", c.name)])  # a copy: += must not change covers
+        targets += covers[("stack", c.project)] if c.project else []
+        covered.append((h, c, targets))
+    job_ids = {j.id for _, _, targets in covered for j, _ in targets}
     done = last_runs(db, job_ids, ("done",))
     bad = last_runs(db, job_ids, ("failed", "interrupted"))
-    for h, c, jobs in covered:
+    for h, c, targets in covered:
         _, policies, history, base = facts[h.id]
         mine = (("container", c.name), ("stack", c.project))
         mine += (("stack", EVERY_STACK),) if c.project else ()
@@ -363,10 +386,10 @@ def page(
                 c,
                 verdicts[h.id].get(c.id),
                 history.containers.get(c.id, ([], [])),
-                jobs,
+                unique_jobs(targets),
                 [(p, when) for p, when in policies if (p.target_type, p.target) in mine],
                 base,
-                backups(jobs, done, bad),
+                backups(targets, done, bad),
             )
         )
     host_value = str(chosen.id) if chosen is not None else ""
