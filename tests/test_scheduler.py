@@ -130,6 +130,19 @@ def test_skipped_and_repeated_local_times() -> None:
     ]
 
 
+def test_a_skipped_time_keeps_another_lines_earlier_run() -> None:
+    """02:30 is skipped on 2026-03-29 and runs at 03:30, after the other line's 03:15: both
+    run, in that order, instead of the 02:30 hiding the 03:15 by its wall time."""
+    now = datetime(2026, 3, 29, tzinfo=UTC)
+    cron = trigger("30 2 * * *\n15 3 * * *", "Europe/Berlin", until=now + scheduler.HORIZON)
+    fires = scheduler.next_fires(cron, now, 3)
+    assert [f.astimezone(UTC).strftime("%m-%d %H:%M") for f in fires] == [
+        "03-29 01:15",
+        "03-29 01:30",
+        "03-30 00:30",
+    ]
+
+
 @pytest.mark.parametrize(
     ("tz", "change"),
     [

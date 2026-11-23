@@ -166,7 +166,52 @@ def trigger(expr: str, tz: str, *, until: datetime | None = None) -> CronTrigger
             raise CronError(f"The cron expression is not valid: {exc}") from None
         cron.end_date = until
         triggers.append(cron)
-    return triggers[0] if len(triggers) == 1 else OrTrigger(triggers)
+    return triggers[0] if len(triggers) == 1 else AnyOf(triggers)
+
+
+class AnyOf(OrTrigger):
+    """The earliest fire of any line, by the instant rather than the wall clock.
+
+    CronTrigger returns a fire in a skipped hour as that wall time (02:30 that is really
+    03:30), and aware datetimes sharing a tzinfo compare by wall clock, so OrTrigger would
+    pick it before a 03:15 that comes first. Each line also searches from the wall time of
+    the last fire of any line, so after that 03:15 the 02:30 behind it was never found: one
+    line's run was lost on the day the clocks go forward."""
+
+    __slots__ = ()
+
+    def get_next_fire_time(
+        self, previous_fire_time: datetime | None, now: datetime
+    ) -> datetime | None:
+        # The instant every line searches from, as CronTrigger computes it.
+        start = now.astimezone(UTC)
+        if previous_fire_time is not None:
+            start = min(start, previous_fire_time.astimezone(UTC) + timedelta(microseconds=1))
+        fires = [t.get_next_fire_time(previous_fire_time, now) for t in self.triggers]
+        fires += [skipped_fire(t, start) for t in self.triggers]
+        return min(
+            (f for f in fires if f is not None), key=lambda f: f.astimezone(UTC), default=None
+        )
+
+
+def skipped_fire(cron: CronTrigger, start: datetime) -> datetime | None:
+    """The line's first fire in a skipped hour that is not earlier than start (UTC) but lies
+    behind start's wall time, so a search from start misses it; None when there is none.
+
+    Such a fire exists only in the day after the clocks go forward. A skipped wall time
+    stands for the instant it names in the old offset, so the search runs from start read
+    in that offset, and keeps only a fire at or after start."""
+    tz = cron.timezone
+    before = (start - timedelta(days=1)).astimezone(tz).utcoffset()
+    after = start.astimezone(tz).utcoffset()
+    if before is None or after is None or before >= after:
+        return None
+    # Rounded up to the second here: CronTrigger rounds in UTC, which would move a wall time
+    # in the gap back to the new offset. fold 0 reads a time in the gap in the old offset.
+    second = start + timedelta(microseconds=-start.microsecond % 1_000_000)
+    wall = (second + before).replace(tzinfo=tz)
+    fire: datetime | None = cron.get_next_fire_time(None, wall)
+    return fire if fire is not None and fire.astimezone(UTC) >= start else None
 
 
 def checked(expr: str, tz: str, now: datetime) -> None:
