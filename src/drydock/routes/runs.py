@@ -156,7 +156,9 @@ def update_changes(run: Run) -> list[str]:
             get["old_ref"],
             get["new_ref"],
         )
-        lines.append(f"{get['name']}: {moved}")
+        # All or nothing: a run that did not finish put every container back.
+        undone = " (not applied)" if run.status in UNFINISHED else ""
+        lines.append(f"{get['name']}: {moved}{undone}")
     return lines
 
 

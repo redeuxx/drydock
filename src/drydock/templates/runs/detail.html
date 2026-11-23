@@ -43,7 +43,7 @@
       <dt class="opacity-70">Signature</dt><dd>{{ "signed by this drydock" if restore_doc.get("signed") is sameas true else "not signed by this drydock" if restore_doc.get("signed") is sameas false else "not verified yet" }}</dd>
       {% elif run.kind == "update" %}
       <dt class="opacity-70">Update of</dt><dd class="break-all">{{ run.target_label or "" }}</dd>
-      {% if changes %}<dt class="opacity-70">Versions</dt><dd class="break-words"><ul>{% for line in changes %}<li>{{ line }}</li>{% endfor %}</ul></dd>{% endif %}
+      {% if changes %}<dt class="opacity-70">{{ "Versions" if run.status == "done" else "Planned" }}</dt><dd class="break-words"><ul>{% for line in changes %}<li>{{ line }}</li>{% endfor %}</ul></dd>{% endif %}
       {% else %}
       <dt class="opacity-70">Job</dt><dd>{% if job %}<a class="link" href="/jobs/{{ job.id }}">{{ job.name }}</a>{% else %}deleted job{% endif %}</dd>
       {% if run.target_label %}<dt class="opacity-70">Target</dt><dd class="break-all">{{ run.target_label }}</dd>{% endif %}

@@ -18,16 +18,37 @@ CONFIG = "sha256:" + "4" * 64
 PLATFORM = ("linux", "amd64", "")
 
 
-def test_the_version_is_the_label_else_the_official_variable() -> None:
+def test_the_version_is_the_official_variable_else_the_label() -> None:
     label = {"Labels": {versions.VERSION_LABEL: " 4.0.9 "}, "Env": ["NGINX_VERSION=1.27.3"]}
-    assert image_version(label, "nginx") == "4.0.9"
-    assert image_version({"Env": ["PATH=/bin", "NGINX_VERSION=1.27.3"]}, "nginx") == "1.27.3"
+    assert image_version(label, "nginx") == "1.27.3"
+    assert image_version(label, "sonarr") == "4.0.9"
     assert image_version({"Env": ["PG_VERSION=17.2"]}, "library/postgres") == "17.2"
     assert image_version({"Env": ["NGINX_VERSION=1"]}, "redis") == ""
     assert image_version(None) == "" and image_version({"Labels": "x"}) == ""
-    spoof = {"Labels": {versions.VERSION_LABEL: "1.2‮3\x1b[31m" + "9" * 200}}
+    assert image_version({"Env": [7, None, "NGINX_VERSION="]}, "nginx") == "", "junk entries"
+    base = {versions.VERSION_LABEL: "22.04", versions.REF_NAME_LABEL: "ubuntu"}
+    mongo = {"Labels": base, "Env": ["MONGO_VERSION=7.0.6"]}
+    assert image_version(mongo, "mongo") == "7.0.6"
+    assert image_version({"Labels": base}, "ghcr.io/x/app") == "", "the base image's label"
+    assert image_version({"Labels": base}, "ubuntu") == "22.04"
+    rlo, esc = chr(0x202E), chr(0x1B)
+    spoof = {"Labels": {versions.VERSION_LABEL: f"1.2{rlo}3{esc}[31m" + "9" * 200}}
     shown = image_version(spoof)
-    assert "‮" not in shown and "\x1b" not in shown and len(shown) == versions.MAX_VERSION
+    assert rlo not in shown and esc not in shown and len(shown) == versions.MAX_VERSION
+
+
+def test_the_old_digest_is_the_one_of_its_own_repository() -> None:
+    mirror, hub = "sha256:" + "a" * 64, "sha256:" + "b" * 64
+    digests = [f"mirror.local/nginx@{mirror}", f"docker.io/library/nginx@{hub}"]
+    assert versions.own_digest(digests, "nginx") == hub
+    assert versions.own_digest([f"nginx@{hub}"], "docker.io/library/nginx") == hub
+    assert versions.own_digest(digests, "ghcr.io/x/y") == mirror, "else the first"
+    assert versions.own_digest(None, "nginx") == ""
+
+
+def test_a_slow_registry_gives_up(session, monkeypatch) -> None:
+    monkeypatch.setattr(versions, "DEADLINE", -1)
+    assert registry_version("nginx:latest", INDEX, PLATFORM) is None
 
 
 def test_describe() -> None:
@@ -167,3 +188,16 @@ def test_the_check_shows_both_versions() -> None:
     assert web.moves == "1.27.2 → 1.27.3"
     assert set(asked) == {("nginx:1.27", NEW, ("linux", "amd64", ""))}
     assert found[f"{3:064x}"].new_version == "", "an image that is current asks nothing"
+
+
+def test_a_pinned_container_shows_its_version() -> None:
+    class Pinned(FakeApi):
+        def inspect_container(self, container_id: str) -> dict[str, Any]:
+            return {"Image": "sha256:" + "a" * 64, "Config": {"Image": f"nginx@{OLD}"}}
+
+        def inspect_image(self, image_id: str) -> dict[str, Any]:
+            return {"RepoDigests": [f"nginx@{OLD}"], "Config": {"Env": ["NGINX_VERSION=1.27.2"]}}
+
+    found = check.check(Pinned("me"), "me", {}, now=0.0)
+    (pinned, *_) = found.values()
+    assert (pinned.state, pinned.version, pinned.digest) == ("skipped", "1.27.2", OLD)

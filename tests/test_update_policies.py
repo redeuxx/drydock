@@ -411,3 +411,7 @@ async def test_the_runs_pages_show_what_an_update_moved(admin: Browser) -> None:
     for page in ((await admin.get("/runs")).text, (await admin.get(f"/runs/{run_id}")).text):
         assert "web: 1.27.2 → &lt;b&gt;1.27.3&lt;/b&gt;" in page
         assert "db: 16 unknown → 17 abababababab" in page
+    with admin.app.state.sessionmaker() as db, db.begin():
+        db.get(Run, run_id).status = "failed"
+    page = (await admin.get(f"/runs/{run_id}")).text
+    assert "Planned" in page and "1.27.2 \u2192 &lt;b&gt;1.27.3&lt;/b&gt; (not applied)" in page

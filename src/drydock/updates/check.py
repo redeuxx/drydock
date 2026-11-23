@@ -39,7 +39,13 @@ from drydock.hosts import client
 from drydock.hosts.helper import is_helper
 from drydock.hosts.manager import HostManager, HostUnavailable
 from drydock.models import Host, Installation, utcnow
-from drydock.updates.versions import Platform, describe, image_version, registry_version
+from drydock.updates.versions import (
+    Platform,
+    describe,
+    image_version,
+    own_digest,
+    registry_version,
+)
 
 log = logging.getLogger("drydock.updates")
 
@@ -50,6 +56,7 @@ LOOP_EVERY = 300
 TIMEOUT = 30
 THREADS = 2
 MAX_VERSIONS = 2000  # versions of new digests kept
+VERSION_BUDGET = 60  # seconds one host's check may spend reading new versions
 IMAGE_ID_RE = re.compile(r"(sha256:)?[0-9a-f]{12,64}")
 LOOKUP_ERRORS = (docker.errors.DockerException, requests.RequestException)
 READ_ERRORS = (client.DockerUnavailable, HostUnavailable, *LOOKUP_ERRORS, OSError)
@@ -129,22 +136,24 @@ def local_image(api: Any, ref: str) -> str | None:
 def with_versions(
     api: Any,
     found: Verdict,
+    created_from: str,
     image: dict[str, Any],
     newer_version: Callable[[str, str, Platform], str] | None,
 ) -> Verdict:
-    """Blocking. The verdict with its image's version and digest, and for an update the
-    version it brings: from the newer image when it is on the host already (latest is
-    its ID), else from newer_version."""
-    if not found.ref:
-        return found
-    repository = found.ref.rpartition(":")[0]
-    own = [d.partition("@")[2] for d in image.get("RepoDigests") or [] if isinstance(d, str)]
-    mine = [d for d in image.get("RepoDigests") or [] if str(d).startswith(repository + "@")]
-    digest = (mine[0].partition("@")[2] if mine else "") or (own[0] if own else "")
+    """Blocking. The verdict with its image's version and digest (a pinned container's
+    too), and for an update the version it brings: from the newer image when it is on
+    the host already (latest is its ID), else from newer_version. Reading a version
+    never changes the verdict."""
+    if found.ref:
+        repository = found.ref.rpartition(":")[0]
+    elif IMAGE_ID_RE.fullmatch(created_from):
+        repository = ""  # made from an image ID: no repository names it
+    else:
+        repository = docker.utils.parse_repository_tag(created_from.partition("@")[0])[0]
     new_version = ""
     if found.state == "update" and found.latest.startswith("sha256:"):
         if found.reason.startswith("A newer"):  # on the host: latest is its image ID
-            with contextlib.suppress(docker.errors.NotFound):
+            with contextlib.suppress(*LOOKUP_ERRORS):
                 newer = api.inspect_image(found.latest).get("Config")
                 new_version = image_version(newer, repository)
         elif newer_version is not None:
@@ -156,7 +165,7 @@ def with_versions(
             new_version = newer_version(found.ref, found.latest, platform)
     return replace(
         found,
-        digest=digest,
+        digest=own_digest(image.get("RepoDigests"), repository),
         version=image_version(image.get("Config"), repository),
         new_version=new_version,
     )
@@ -183,6 +192,14 @@ def check(
     verdicts: dict[str, Verdict] = {}
     digests: dict[str, list[str]] = {}
     images: dict[str, dict[str, Any]] = {}
+    budget = time.monotonic() + VERSION_BUDGET
+
+    def version_of(ref: str, digest: str, platform: Platform) -> str:
+        """newer_version, until this pass has spent VERSION_BUDGET on them."""
+        if newer_version is None or time.monotonic() > budget:
+            return ""
+        return newer_version(ref, digest, platform)
+
     used: set[tuple[str, str]] = set()
     asked: dict[str, str | BaseException] = {}  # one lookup per reference and pass
 
@@ -226,7 +243,7 @@ def check(
                     found = Verdict(
                         "update", f"A newer {found.ref} is already on the host.", found.ref, newer
                     )
-            found = with_versions(api, found, images[image_id], newer_version)
+            found = with_versions(api, found, image, images[image_id], version_of)
         except docker.errors.NotFound:
             continue  # removed since the list
         except docker.errors.APIError as exc:
@@ -353,14 +370,15 @@ class UpdateChecker:
         """Blocking. registry_version, asked once per digest and platform; a failed ask
         is asked again at the next check."""
         key = (ref.rpartition(":")[0], digest, platform)
-        if key not in self._versions:
+        found = self._versions.get(key)
+        if found is None:
             found = registry_version(ref, digest, platform)
             if found is None:
                 return ""
             if len(self._versions) >= MAX_VERSIONS:
                 self._versions.clear()  # ponytail: drop all; an LRU if this ever churns
             self._versions[key] = found
-        return self._versions[key]
+        return found
 
     async def _run(self) -> None:
         await asyncio.sleep(FIRST_CHECK)

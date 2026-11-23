@@ -54,7 +54,7 @@ from drydock.restore.plan import (
 )
 from drydock.updates import switch as tag_switch
 from drydock.updates.check import lookup_error, reference
-from drydock.updates.versions import image_version
+from drydock.updates.versions import image_version, own_digest
 
 HEALTH_WAIT = stacks.HEALTH_WAIT  # seconds a container with a healthcheck may take, at least
 MAX_HEALTH_WAIT = 900  # its own healthcheck timing may ask for more, up to this
@@ -348,12 +348,10 @@ def plan_update(
                 images.append(step)
             # The tag too: two updates of one image never move it at once.
             keys.add(f"name:{host_id}:image:{ref}")
-            own_repo = [d for r, d in repo_digests(old_image) if r == repository]
-            current = sorted(d for _, d in repo_digests(old_image))
             changes.append(
                 Change(
                     name=name,
-                    old=(own_repo or current or [""])[0],
+                    old=own_digest(old_image.get("RepoDigests"), repository),
                     new=latest,
                     old_ref=old_ref,
                     new_ref=ref,

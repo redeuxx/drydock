@@ -36,7 +36,7 @@
         {% elif run.kind == "update" %}
         <td class="break-words">Update of {{ run.target_label or "" }}
           {%- if changes[run.id] %}
-          <ul class="text-xs opacity-70">{% for line in changes[run.id] %}<li>{{ line }}</li>{% endfor %}</ul>
+          <ul class="text-xs opacity-70 max-sm:hidden">{% for line in changes[run.id] %}<li>{{ line }}</li>{% endfor %}</ul>
           {%- endif %}</td>
         {% else %}
         <td class="break-words">

@@ -1,8 +1,10 @@
 """Which version an image is, for the pages that show updates.
 
-An image's version is its org.opencontainers.image.version label, else the <NAME>_VERSION
-environment variable Docker's official images set (NGINX_VERSION for nginx, PG_VERSION
-for postgres). With neither, the pages show the short digest.
+An image's version is the <NAME>_VERSION environment variable Docker's official images
+set (NGINX_VERSION for nginx, PG_VERSION for postgres), else its
+org.opencontainers.image.version label, unless that label came with a base image (its
+ref.name label names another image: mongo inherits ubuntu's 22.04). With neither, the
+pages show the short digest.
 
 The version an update brings is in the new image's config, which the daemon's
 distribution lookup (updates/check.py) does not give. registry_version reads it from the
@@ -16,6 +18,7 @@ drydock's address; the checker asks once per digest.
 import json
 import logging
 import re
+import time
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
@@ -27,9 +30,10 @@ import requests
 log = logging.getLogger("drydock.updates")
 
 VERSION_LABEL = "org.opencontainers.image.version"
+REF_NAME_LABEL = "org.opencontainers.image.ref.name"
 MAX_VERSION = 80  # characters of a version kept
 # Control and bidirectional characters: a label must not reorder the line it is shown in.
-UNSHOWN_RE = re.compile(r"[\x00-\x1f\x7f-\x9f‎‏‪-‮⁦-⁩]")
+UNSHOWN_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u200e\u200f\u202a-\u202e\u2066-\u2069]")
 # ponytail: official images whose variable is not <NAME>_VERSION; add more as they turn up.
 ENV_NAMES = {"postgres": "PG_VERSION"}
 
@@ -54,7 +58,8 @@ MANIFESTS = ", ".join(
 )
 DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
 REPOSITORY_RE = re.compile(r"[a-z0-9]+(?:[._-]+[a-z0-9]+)*(?:/[a-z0-9]+(?:[._-]+[a-z0-9]+)*)*")
-TIMEOUT = 10
+TIMEOUT = 10  # seconds per connection or read
+DEADLINE = 20  # seconds one registry_version may take in all
 MAX_BODY = 4 * 1024 * 1024
 MAX_REDIRECTS = 3
 
@@ -70,16 +75,41 @@ def image_version(config: Any, repository: str = "") -> str:
     config) names, or ""."""
     if not isinstance(config, dict):
         return ""
-    labels = config.get("Labels")
-    value = labels.get(VERSION_LABEL) if isinstance(labels, dict) else None
-    if isinstance(value, str) and clean(value):
-        return clean(value)
     name = repository.rpartition("/")[2]
     variable = ENV_NAMES.get(name, re.sub(r"[^A-Z0-9]", "_", name.upper()) + "_VERSION")
     for entry in config.get("Env") or []:
-        if isinstance(entry, str) and entry.startswith(variable + "="):
-            return clean(entry.partition("=")[2])
-    return ""
+        key, _, found = entry.partition("=") if isinstance(entry, str) else ("", "", "")
+        if key == variable and (value := clean(found)):
+            return value
+    labels = config.get("Labels")
+    labels = labels if isinstance(labels, dict) else {}
+    label, ref_name = labels.get(VERSION_LABEL), labels.get(REF_NAME_LABEL)
+    if isinstance(ref_name, str) and ref_name and ref_name.rpartition("/")[2] != name:
+        return ""  # the base image's
+    return clean(label) if isinstance(label, str) else ""
+
+
+def repository_key(repository: str) -> tuple[str, str]:
+    """(registry, name) of a repository however it is written: nginx,
+    docker.io/library/nginx and index.docker.io/library/nginx are one."""
+    try:
+        index, name = docker.auth.resolve_repository_name(repository)
+    except docker.errors.DockerException:
+        return ("", repository)
+    if index == "docker.io" and "/" not in name:
+        name = f"library/{name}"
+    return (index, name)
+
+
+def own_digest(repo_digests: Any, repository: str) -> str:
+    """The digest an image was pulled as from repository (its RepoDigests entry for it),
+    else its first one, else ""."""
+    entries = [d for d in repo_digests or [] if isinstance(d, str) and "@" in d]
+    key = repository_key(repository)
+    for entry in entries:
+        if repository_key(entry.partition("@")[0]) == key:
+            return entry.partition("@")[2]
+    return entries[0].partition("@")[2] if entries else ""
 
 
 def short_digest(digest: str) -> str:
@@ -115,10 +145,16 @@ class Reader:
         self.base = f"https://{host}/v2/{name}/"
         self.realms = realms
         self.token: str | None = None
+        self.deadline = time.monotonic() + DEADLINE
+
+    def in_time(self) -> None:
+        if time.monotonic() > self.deadline:
+            raise TimeoutError("the registry took too long")
 
     def get(self, url: str, headers: dict[str, str]) -> requests.Response:
         """Follows redirects by hand: HTTPS only, the token only to the same host."""
         for _ in range(MAX_REDIRECTS + 1):
+            self.in_time()
             response = self.session.get(
                 url, headers=headers, timeout=TIMEOUT, allow_redirects=False, stream=True
             )
@@ -138,6 +174,7 @@ class Reader:
             response.raise_for_status()
             data = b""
             for chunk in response.iter_content(65536):
+                self.in_time()
                 data += chunk
                 if len(data) > MAX_BODY:
                     raise ValueError("answer too large")
@@ -166,6 +203,7 @@ class Reader:
             or where.hostname not in self.realms
         ):
             raise ValueError("unexpected token realm")
+        self.in_time()
         response = self.session.get(
             realm,
             params={k: fields[k] for k in ("service", "scope") if k in fields},
@@ -202,15 +240,10 @@ def registry_version(ref: str, digest: str, platform: Platform) -> str | None:
     for the platform; "" when it names none or the registry is not a public one drydock
     asks; None when asking failed. Never raises."""
     repository, _ = docker.utils.parse_repository_tag(ref)
-    try:
-        index, name = docker.auth.resolve_repository_name(repository)
-    except docker.errors.DockerException:
-        return ""
+    index, name = repository_key(repository)
     known = REGISTRIES.get(index)
     if known is None or not DIGEST_RE.fullmatch(digest) or not REPOSITORY_RE.fullmatch(name):
         return ""
-    if index == "docker.io" and "/" not in name:
-        name = f"library/{name}"
     try:
         with requests.Session() as session:
             reader = Reader(session, known[0], known[1], name)

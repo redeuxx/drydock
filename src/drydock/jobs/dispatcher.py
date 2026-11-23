@@ -1945,9 +1945,12 @@ class Dispatcher:
                 await run_blocking(self._set_changes, run_id, planned.changes)
                 await run_blocking(self._mark_running, run_id)
                 await self._apply_update(active, handle, planned.plan, scope, run_log)
-                changes = await run_blocking(update_apply.versions_after, api, planned.changes)
-                await run_blocking(self._set_changes, run_id, changes)
                 await run_blocking(self._finish, run_id, run_log, "done", None)
+                try:  # only labels for the run pages: after "done", never in its way
+                    changes = await run_blocking(update_apply.versions_after, api, planned.changes)
+                    await run_blocking(self._set_changes, run_id, changes)
+                except Exception:
+                    log.warning("Run %d: recording the new versions failed", run_id, exc_info=True)
             finally:
                 self._release(held)
                 await run_blocking(handle.close)
