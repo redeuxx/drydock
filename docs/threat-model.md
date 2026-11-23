@@ -435,12 +435,13 @@ Drydock backs up and restores containers on Docker hosts it reaches through a so
 ### T29. Backups acting on the wrong container
 
 **Threat:** a job name or a compose label makes drydock stop, read or capture drydock itself or an unrelated container, or read host files outside the project.
-**Defence:** names never fall back to ID prefixes, drydock's own deployment is refused, compose labels inherited from an image are ignored (a container whose every compose label came from its image is not a stack member, and an image's compose paths are never read), and compose paths in system locations are refused and capped in size. A compose file's directory is resolved on the host (symbolic links followed, as the daemon would) and checked again before it is read, so a link in a project directory cannot lead to /etc.
+**Defence:** names never fall back to ID prefixes, drydock's own deployment is refused, compose labels inherited from an image are ignored (a container whose every compose label came from its image is not a stack member for backups, updates, the stacks page or stack actions, and an image's compose paths are never read), and compose paths in system locations are refused and capped in size. A compose file's directory is resolved on the host (symbolic links followed, as the daemon would) and checked again before it is read, so a link in a project directory cannot lead to /etc.
 **Tests:**
 - `tests/test_runs_docker.py::test_a_name_never_falls_back_to_an_id_prefix`
 - `tests/test_stack_dispatch.py::test_own_deployment_is_refused_in_every_mode`
 - `tests/test_capture.py::test_compose_labels_inherited_from_the_image_are_ignored`
 - `tests/test_stacks.py::test_discover_skips_containers_whose_compose_labels_all_came_from_the_image`
+- `tests/test_status.py::test_compose_labels_that_all_came_from_the_image_make_no_stack_member`
 - `tests/test_capture.py::test_compose_built_services_keep_their_project_but_never_image_paths`
 - `tests/test_capture.py::test_compose_paths_in_system_locations_are_refused`
 - `tests/test_capture.py::test_a_compose_directory_that_links_to_a_system_location_is_refused`

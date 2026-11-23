@@ -38,6 +38,7 @@ import requests
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from drydock.engine import stacks
 from drydock.hosts import client
 from drydock.hosts.helper import is_helper
 from drydock.hosts.inventory import PROJECT_LABEL, SERVICE_LABEL
@@ -203,6 +204,8 @@ class Reading:
     health: dict[str, str | None] = field(default_factory=dict)  # from the last inspect
     images: dict[str, str] = field(default_factory=dict)  # Config.Image, from it too
     bound: dict[str, bool] = field(default_factory=dict)  # binds a host port, from it too
+    # Containers whose every Compose label came from their image: no stack members.
+    inherited: set[str] = field(default_factory=set)
 
 
 def health_in(inspect: dict[str, Any]) -> str | None:
@@ -235,10 +238,25 @@ def due(container_id: str, last: float, now: float) -> bool:
     return (now + shift) // INSPECT_EVERY != (last + shift) // INSPECT_EVERY
 
 
-def read(api, instance_id: str, inspected: dict[str, Inspected], now: float) -> Reading:
+def read(
+    api,
+    instance_id: str,
+    inspected: dict[str, Inspected],
+    now: float,
+    image_labels: dict[str, dict[str, Any]] | None = None,
+) -> Reading:
     """Blocking. Everything a snapshot needs from one daemon. inspected (what the last
-    inspect of each container found) is kept between polls and updated here; containers
-    that are gone are dropped from it."""
+    inspect of each container found) and image_labels (by image ID) are kept between polls
+    and updated here; containers and images no longer in use are dropped from them.
+
+    A container someone ran from an image Compose built carries the image's project label
+    without being part of that project. Like stacks.discover, which backups and updates go
+    by, the snapshot gives such a container no project, so the stacks page, stack actions
+    and the containers page's covering jobs never count it. An image is inspected once
+    while containers use it (its ID is its content, so its labels never change), and only
+    for containers with a project label."""
+    if image_labels is None:
+        image_labels = {}
     info = api.info()
     containers = [
         c for c in api.containers(all=True) if not is_helper(c.get("Labels") or {}, instance_id)
@@ -249,11 +267,20 @@ def read(api, instance_id: str, inspected: dict[str, Inspected], now: float) -> 
     health: dict[str, str | None] = {}
     images: dict[str, str] = {}
     bound: dict[str, bool] = {}
+    inherited: set[str] = set()
     # ponytail: one request per container, one after another. Fine for tens of containers
     # per host; send them concurrently (bounded by the collector's threads) if a host's
     # poll ever takes close to INTERVAL.
     for c in containers:
         cid = c["Id"]
+        labels = c.get("Labels") or {}
+        if labels.get(PROJECT_LABEL):
+            try:
+                own = stacks.image_labels(api, c.get("ImageID"), image_labels)
+            except CONTAINER_ERRORS:
+                own = None  # unknown: no member this time (fail closed), asked again next poll
+            if own is None or not stacks.set_at_create(labels, own):
+                inherited.add(cid)
         if c.get("State") in STATS_STATES:
             # Removed or stopped since the list, or too slow to answer: no stats this time.
             with contextlib.suppress(*CONTAINER_ERRORS):
@@ -287,6 +314,8 @@ def read(api, instance_id: str, inspected: dict[str, Inspected], now: float) -> 
         bound[cid] = seen.bound
     for gone in inspected.keys() - {c["Id"] for c in containers}:
         del inspected[gone]
+    for gone in image_labels.keys() - {c.get("ImageID") for c in containers}:
+        del image_labels[gone]
     return Reading(
         info=info,
         containers=containers,
@@ -298,6 +327,7 @@ def read(api, instance_id: str, inspected: dict[str, Inspected], now: float) -> 
         health=health,
         images=images,
         bound=bound,
+        inherited=inherited,
     )
 
 
@@ -412,6 +442,7 @@ def summarize(
         stats = reading.stats.get(cid)
         labels = c.get("Labels") or {}
         names = c.get("Names") or []
+        member = cid not in reading.inherited  # of the Compose project its labels name
         cpu_percent = mem = limit = None
         rx = tx = block_read = block_write = None
         if stats is not None:
@@ -441,8 +472,8 @@ def summarize(
                 # leaves it out (before API 1.52), until someone acknowledges it.
                 health=health_of(c)
                 or (reading.health.get(cid) if c.get("State") == "exited" else None),
-                project=labels.get(PROJECT_LABEL),
-                service=labels.get(SERVICE_LABEL),
+                project=labels.get(PROJECT_LABEL) if member else None,
+                service=labels.get(SERVICE_LABEL) if member else None,
                 restarts=reading.restarts.get(cid),
                 started_at=reading.started.get(cid),
                 cpu_percent=cpu_percent,
@@ -530,6 +561,7 @@ class HostCache:
     handle: client.DockerHandle | None = None
     samples: dict[str, Sample] = field(default_factory=dict)
     inspected: dict[str, Inspected] = field(default_factory=dict)
+    image_labels: dict[str, dict[str, Any]] = field(default_factory=dict)  # by image ID
     # (CPU %, memory %) of the host, and (CPU %, memory bytes) of each container, per
     # reading; None where a reading had no value.
     history: deque[tuple[float | None, float | None]] = field(
@@ -793,6 +825,7 @@ class StatusCollector:
                     self._hosts.instance_id,
                     cache.inspected,
                     time.monotonic(),
+                    cache.image_labels,
                 )
             except READ_ERRORS as exc:
                 cache.close_handle()

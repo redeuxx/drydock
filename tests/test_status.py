@@ -312,6 +312,8 @@ class FakeApi:
     restart_counts: dict[str, Any] = field(default_factory=dict)
     started: dict[str, Any] = field(default_factory=dict)
     inspected: list[str] = field(default_factory=list)
+    image_labels: dict[str, Any] = field(default_factory=dict)  # by image ID, or an error
+    images_inspected: list[str] = field(default_factory=list)
 
     def info(self) -> dict[str, Any]:
         return INFO
@@ -336,6 +338,15 @@ class FakeApi:
             "RestartCount": found,
             "State": {"StartedAt": self.started.get(cid, "2026-11-03T10:00:00.123456789Z")},
         }
+
+    def inspect_image(self, image_id: str) -> dict[str, Any]:
+        self.images_inspected.append(image_id)
+        found = self.image_labels.get(image_id)
+        if found is None:
+            raise docker.errors.NotFound("no such image")
+        if isinstance(found, Exception):
+            raise found
+        return {"Config": {"Labels": found}}
 
     def volumes(self) -> dict[str, Any]:
         return {"Volumes": None}
@@ -390,6 +401,35 @@ def test_read_skips_helpers_and_stats_of_stopped_or_vanished_containers() -> Non
     with pytest.raises(requests.ConnectionError):
         status.read(api, INSTANCE, {}, 100.0)
     assert (result.volumes, result.networks) == (0, 2)
+
+
+def test_compose_labels_that_all_came_from_the_image_make_no_stack_member() -> None:
+    """lure runs an image Compose built for app, so it carries app's labels from the image;
+    like stacks.discover, the snapshot makes it no member. app-web-1 was given labels of its
+    own. An image that cannot be read makes no member either, and is asked again."""
+    built = {status.PROJECT_LABEL: "app", status.SERVICE_LABEL: "web"}
+    own = built | {"com.docker.compose.config-hash": "abc"}
+    api = FakeApi(
+        [
+            summary("lure", "lure", labels=built, ImageID="sha256:built"),
+            summary("web", "app-web-1", labels=own, ImageID="sha256:built"),
+            summary("odd", "odd", labels=own, ImageID="sha256:broken"),
+            summary("plain", "plain", ImageID="sha256:plain"),
+        ],
+        image_labels={"sha256:built": built, "sha256:broken": docker.errors.APIError("boom")},
+    )
+    cache: dict[str, dict[str, Any]] = {"sha256:removed": {}}
+    snapshot, _ = status.summarize(1, status.read(api, INSTANCE, {}, 100.0, cache), {}, NOW)
+    found = by_name(snapshot)
+    assert (found["app-web-1"].project, found["app-web-1"].service) == ("app", "web")
+    for name in ("lure", "odd"):
+        assert (found[name].project, found[name].service) == (None, None), name
+    assert dict(found["lure"].labels)[status.PROJECT_LABEL] == "app", "its labels stay"
+    assert snapshot.stacks == (1, 0, 0)
+    assert api.images_inspected == ["sha256:built", "sha256:broken"], "once, with a project"
+    assert set(cache) == {"sha256:built"}, "unused images are forgotten, errors not kept"
+    status.read(api, INSTANCE, {}, 110.0, cache)
+    assert api.images_inspected[2:] == ["sha256:broken"]
 
 
 def test_read_inspects_on_new_state_change_or_age_only(monkeypatch: pytest.MonkeyPatch) -> None:
