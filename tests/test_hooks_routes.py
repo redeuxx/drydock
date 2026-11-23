@@ -337,7 +337,7 @@ async def test_only_a_superadmin_moves_a_host_that_hooks_are_bound_to(
     admin: Browser, monkeypatch
 ) -> None:
     """A hook runs where a superadmin bound it, so an admin cannot point its host elsewhere,
-    nor trust a new host key for it."""
+    nor trust a host key for it, the first one included."""
     host_id = add_host(admin)
     await add_hook(admin, host_id)
     moved = {"name": "local", "enabled": "1", "docker_url": "tcp://10.0.0.5:2375"}
@@ -353,7 +353,7 @@ async def test_only_a_superadmin_moves_a_host_that_hooks_are_bound_to(
     await admin.login("admin")
     assert (await admin.post(f"/hosts/{host_id}", moved)).status_code == 303
     assert admin.sql("SELECT name, docker_url FROM hosts") == [("local", "tcp://10.0.0.5:2375")]
-    # A new key at the same address may be another machine: only a superadmin re-pins it.
+    # A key at that address may be another machine's: only a superadmin trusts one.
     server = {"key": asyncssh.generate_private_key("ssh-ed25519")}
 
     async def scan(address: str, port: int) -> tuple[str, str]:
@@ -364,16 +364,21 @@ async def test_only_a_superadmin_moves_a_host_that_hooks_are_bound_to(
     await add_hook(admin, ssh_id, "remote-dump")
     trust, first = f"/hosts/{ssh_id}/trust-hostkey", ssh.fingerprint(server["key"])
     await admin.login("host-admin")
-    assert (await admin.post(trust, {"fingerprint": first})).status_code == 303  # first trust
+    pinned = "SELECT host_key_fingerprint FROM hosts WHERE id = ?"
+    assert (await admin.post(trust, {"fingerprint": first})).status_code == 409, "first trust"
+    assert admin.sql(pinned, (ssh_id,)) == [(None,)]
+    await admin.login("admin")
+    assert (await admin.post(trust, {"fingerprint": first})).status_code == 303
+    await admin.login("host-admin")
+    assert (await admin.post(trust, {"fingerprint": first})).status_code == 303, "the same key"
     server["key"] = asyncssh.generate_private_key("ssh-ed25519")
     second = ssh.fingerprint(server["key"])
     response = await admin.post(trust, {"fingerprint": second})
     assert response.status_code == 409, response.text
     assert "Hooks are bound to this host: remote-dump. A superadmin must" in response.text
-    pinned = "SELECT host_key_fingerprint FROM hosts WHERE id = ?"
     assert admin.sql(pinned, (ssh_id,)) == [(first,)]
     denied = "SELECT COUNT(*) FROM audit_events WHERE action = ? AND outcome = 'denied'"
-    assert admin.sql(denied, ("host.hostkey_trust",)) == [(1,)]
+    assert admin.sql(denied, ("host.hostkey_trust",)) == [(2,)]
     await admin.login("admin")
     assert (await admin.post(trust, {"fingerprint": second})).status_code == 303
     assert admin.sql(pinned, (ssh_id,)) == [(second,)]
