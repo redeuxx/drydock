@@ -5,12 +5,15 @@ job save and every hook edit, and what viewers see."""
 import json
 import re
 
+import asyncssh
 import pytest
 
 from drydock.engine import stacks
+from drydock.hosts import ssh
 from drydock.jobs import hooks
 from drydock.routes import jobs as job_routes
 from tests.conftest import PASSWORD, Browser, add_user
+from tests.test_hosts_routes import SSH_FORM
 from tests.test_jobs import add_host, add_job, add_storage
 from tests.test_routes import hook_form, job_form, snapshot
 
@@ -330,8 +333,11 @@ async def test_host_with_hooks_cannot_be_deleted(admin: Browser) -> None:
     assert admin.sql("SELECT COUNT(*) FROM hosts") == [(0,)]
 
 
-async def test_only_a_superadmin_moves_a_host_that_hooks_are_bound_to(admin: Browser) -> None:
-    """A hook runs where a superadmin bound it, so an admin cannot point its host elsewhere."""
+async def test_only_a_superadmin_moves_a_host_that_hooks_are_bound_to(
+    admin: Browser, monkeypatch
+) -> None:
+    """A hook runs where a superadmin bound it, so an admin cannot point its host elsewhere,
+    nor trust a new host key for it."""
     host_id = add_host(admin)
     await add_hook(admin, host_id)
     moved = {"name": "local", "enabled": "1", "docker_url": "tcp://10.0.0.5:2375"}
@@ -347,6 +353,30 @@ async def test_only_a_superadmin_moves_a_host_that_hooks_are_bound_to(admin: Bro
     await admin.login("admin")
     assert (await admin.post(f"/hosts/{host_id}", moved)).status_code == 303
     assert admin.sql("SELECT name, docker_url FROM hosts") == [("local", "tcp://10.0.0.5:2375")]
+    # A new key at the same address may be another machine: only a superadmin re-pins it.
+    server = {"key": asyncssh.generate_private_key("ssh-ed25519")}
+
+    async def scan(address: str, port: int) -> tuple[str, str]:
+        return ssh.known_host_line(address, port, server["key"]), ssh.fingerprint(server["key"])
+
+    monkeypatch.setattr(ssh, "scan_host_key", scan)
+    ssh_id = new_id(await admin.post("/hosts", SSH_FORM))
+    await add_hook(admin, ssh_id, "remote-dump")
+    trust, first = f"/hosts/{ssh_id}/trust-hostkey", ssh.fingerprint(server["key"])
+    await admin.login("host-admin")
+    assert (await admin.post(trust, {"fingerprint": first})).status_code == 303  # first trust
+    server["key"] = asyncssh.generate_private_key("ssh-ed25519")
+    second = ssh.fingerprint(server["key"])
+    response = await admin.post(trust, {"fingerprint": second})
+    assert response.status_code == 409, response.text
+    assert "Hooks are bound to this host: remote-dump. A superadmin must" in response.text
+    pinned = "SELECT host_key_fingerprint FROM hosts WHERE id = ?"
+    assert admin.sql(pinned, (ssh_id,)) == [(first,)]
+    denied = "SELECT COUNT(*) FROM audit_events WHERE action = ? AND outcome = 'denied'"
+    assert admin.sql(denied, ("host.hostkey_trust",)) == [(1,)]
+    await admin.login("admin")
+    assert (await admin.post(trust, {"fingerprint": second})).status_code == 303
+    assert admin.sql(pinned, (ssh_id,)) == [(second,)]
 
 
 async def test_viewers_see_hook_names_but_never_argv(admin: Browser) -> None:

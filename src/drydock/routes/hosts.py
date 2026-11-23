@@ -675,7 +675,8 @@ def trust_hostkey(
     """Pins the key the server presents now, but only if it is the one the admin confirmed.
 
     With a password, drydock then logs in once against that pinned key and adds its own
-    public key to the user's authorized_keys. The password is never stored or logged."""
+    public key to the user's authorized_keys. The password is never stored or logged.
+    Replacing the pinned key of a host that hooks are bound to needs a superadmin."""
     require_recent_auth(auth)
     host = get_ssh_host(db, host_id)
     confirmed = fingerprint.strip()
@@ -710,6 +711,29 @@ def trust_hostkey(
     host = get_ssh_host(db, host_id)
     accepted = presented == confirmed and (host.address, host.port) == (address, port)
     previous = host.host_key_fingerprint
+    if (
+        accepted
+        and host.known_host_line
+        and presented != previous
+        and auth.user.role < Role.superadmin
+    ):
+        # A hook runs where a superadmin bound it, and a new key may be another machine
+        # answering at the same address: re-pinning is theirs to do, as moving the host is.
+        bound = db.scalars(select(Hook.name).where(Hook.host_id == host.id).order_by(Hook.name))
+        if names := bound.all():
+            error = (
+                f"Hooks are bound to this host: {', '.join(names)}. A superadmin must trust"
+                " a new host key for it."
+            )
+            record(
+                host,
+                "denied",
+                error=error,
+                confirmed_fingerprint=confirmed,
+                presented_fingerprint=presented,
+                previous_fingerprint=previous,
+            )
+            return edit_page(request, auth, host, 409, error=error)
     if accepted:
         host.known_host_line = line
         host.host_key_fingerprint = presented
