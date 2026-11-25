@@ -149,7 +149,7 @@
         {% if not chosen %}<td>{{ s.host.name }}</td>{% endif %}
         <td>{{ s.running }} of {{ s.total }}</td>
         <td class="max-sm:hidden break-words">{{ s.version }}</td>
-        <td class="max-sm:hidden">{% for t in s.tags %}<span class="badge badge-soft badge-neutral badge-sm mr-1">{{ t }}</span>{% endfor %}</td>
+        <td class="max-sm:hidden"><div class="flex flex-wrap gap-1">{% for t in s.tags %}<span class="badge badge-soft badge-neutral badge-sm h-auto min-h-5 max-w-full break-all">{{ t }}</span>{% endfor %}</div></td>
         <td>{% if s.newer %}<span class="badge badge-soft badge-info badge-sm whitespace-nowrap" title="{{ s.newer }} of its containers {{ 'has' if s.newer == 1 else 'have' }} a newer image">{{ s.newer }} newer</span>
           <ul class="mt-1 text-xs opacity-70 break-words">{% for line in s.moves %}<li>{{ line }}</li>{% endfor %}</ul>{% endif %}</td>
         <td class="max-md:hidden">{% for job in s.jobs %}<a class="link" href="/jobs/{{ job.id }}">{{ job.name }}</a>{% if not job.enabled %} (disabled){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</td>
