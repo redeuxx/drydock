@@ -12,7 +12,7 @@
   </form>
   {% endif %}
 </div>
-<p class="mb-4 opacity-70">Finished runs{% if auth.user.role >= Role.admin %}, missed schedules, host key mismatches and storage that needs reconnecting{% endif %}, newest first. Messages to external services are set up under <a class="link" href="/notifications">Notification targets</a>{% if auth.user.role < Role.admin %} by an admin{% endif %}.</p>
+<p class="mb-4 opacity-70">Finished runs{% if auth.user.role >= Role.admin %}, missed schedules, host key mismatches and storage that needs reconnecting{% endif %}, newest first. Messages to external services are set up under <a class="link" href="/notifications">Notification targets</a>{% if auth.user.role < Role.superadmin %} by a superadmin{% endif %}.</p>
 <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
   <table class="table">
     <thead><tr><th scope="col">What</th><th scope="col">When</th><th scope="col"><span class="sr-only">Unread</span></th></tr></thead>
