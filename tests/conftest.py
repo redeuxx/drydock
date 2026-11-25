@@ -140,6 +140,23 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
+@pytest.hookimpl(tryfirst=True)  # before pytest-xdist reads the groups into the test IDs
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Tests on the sshhost dind daemon (the dind fixture, or needs_dind for those that get
+    it dynamically) join the SSH tests on one pytest-xdist worker: a restore there locks
+    every container whose mount overlaps what it writes, other workers' helpers included,
+    so their comings and goings make it plan again. See docker_support.on_sshhost."""
+    from tests.docker_support import on_sshhost
+
+    for item in items:
+        dind = "dind" in getattr(item, "fixturenames", ()) or any(
+            mark.kwargs.get("reason") == "needs the sshhost service"
+            for mark in item.iter_markers("skipif")
+        )
+        if dind and not any(item.iter_markers("xdist_group")):
+            item.add_marker(on_sshhost)
+
+
 @pytest.fixture(autouse=True)
 def no_registry_waits() -> Iterator[None]:
     """Registry lookups are still asked again, without the waits between. Its own

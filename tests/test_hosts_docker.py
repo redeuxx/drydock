@@ -39,12 +39,13 @@ from tests.docker_support import (
     insert_host,
     needs_docker,
     needs_ssh,
+    on_sshhost,
     sh,
     sshhost,
     wait_until,
 )
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, on_sshhost]
 
 IMAGE = DEFAULT_HELPER_IMAGE
 
@@ -324,6 +325,12 @@ async def test_authorized_key_options_refuse_commands(admin: Browser) -> None:
     assert "ran" not in str(result.stdout) and "uid=" not in str(result.stdout)
 
 
+def worker_temp(admin: Browser) -> tuple[Path, ...]:
+    """Every pytest-xdist worker's temp tree, this test's own data directory scanned
+    by itself."""
+    return tuple(p for p in admin.settings.data_dir.parents if p.name.startswith("pytest-of-"))
+
+
 @needs_ssh
 async def test_no_key_material_on_disk_after_connecting(admin: Browser) -> None:
     host_id = await add_ssh_host(admin)
@@ -333,7 +340,7 @@ async def test_no_key_material_on_disk_after_connecting(admin: Browser) -> None:
     await docker_client.run_blocking(handle.close)
 
     roots = [Path("/data"), Path("/tmp"), Path("/run"), admin.settings.data_dir]  # noqa: S108
-    assert find_key_material([r for r in roots if r.exists()]) == []
+    assert find_key_material([r for r in roots if r.exists()], worker_temp(admin)) == []
     stored = admin.sql("SELECT ssh_key_enc FROM hosts WHERE id = ?", (host_id,))[0][0]
     assert stored.startswith("gAAAAA"), "the key is stored only as a Fernet token"
 
@@ -530,7 +537,7 @@ async def test_ssh_host_through_the_ui(admin: Browser) -> None:
         assert marker.decode() not in page.text
     assert "gAAAAA" not in page.text
     roots = [Path("/data"), Path("/tmp"), Path("/run"), admin.settings.data_dir]  # noqa: S108
-    assert find_key_material([r for r in roots if r.exists()]) == []
+    assert find_key_material([r for r in roots if r.exists()], worker_temp(admin)) == []
 
 
 # JOB FORM SUGGESTIONS

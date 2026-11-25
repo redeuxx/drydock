@@ -37,10 +37,11 @@ from tests.docker_support import (
     insert_host,
     needs_docker,
     needs_ssh,
+    on_sshhost,
     wait_until,
 )
 
-pytestmark = [pytest.mark.anyio, pytest.mark.slow]
+pytestmark = [pytest.mark.anyio, pytest.mark.slow, on_sshhost]
 
 SIZE_MIB = int(os.environ.get("DRYDOCK_PROBE_MIB", "1024"))
 PLAIN_URL = os.environ.get("DRYDOCK_TEST_SSHHOST_PLAIN_URL", "")

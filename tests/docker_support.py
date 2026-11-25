@@ -50,6 +50,10 @@ needs_docker = pytest.mark.skipif(
 needs_ssh = pytest.mark.skipif(
     not (DOCKER_URL and SSH_HOST), reason="needs the sshhost service from compose.test.yaml"
 )
+# Tests that reach sshhost over SSH run on one pytest-xdist worker (--dist loadgroup), one
+# at a time: each authorize() replaces its authorized_keys and one test restarts sshd,
+# which would cut another worker's tunnel. Its dind daemon over TCP needs no such care.
+on_sshhost = pytest.mark.xdist_group("sshhost")
 
 KEY_MARKERS = (b"PRIVATE KEY-----", b"openssh-key-v1", b"b3BlbnNzaC1rZXktdjE")
 
@@ -206,10 +210,13 @@ def archive_and_exec_roundtrip(handle: docker_client.DockerHandle, instance_id: 
         volume.remove(force=True)
 
 
-def find_key_material(roots: list[Path]) -> list[str]:
+def find_key_material(roots: list[Path], skip: tuple[Path, ...] = ()) -> list[str]:
+    """Files under roots holding private key material; directories in skip are left out
+    (another pytest-xdist worker's temp files, such as an SFTP test server's host key)."""
     hits = []
     for root in roots:
-        for dirpath, _dirnames, filenames in os.walk(root):
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if Path(dirpath, d) not in skip]
             for name in filenames:
                 path = Path(dirpath) / name
                 try:

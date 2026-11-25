@@ -71,6 +71,7 @@ from tests.docker_support import (
     insert_host,
     needs_docker,
     needs_ssh,
+    on_sshhost,
     sh,
     wait_until,
 )
@@ -716,14 +717,15 @@ async def test_volume_only_archive_into_an_existing_volume_and_into_a_containers
 
 
 def made(targets: RestoreTargets) -> set[str]:
-    """The containers, volumes and networks a restore could have made here: labelled
-    drydock.restore.run or named after this test's objects. Not the whole daemon, which
-    other tests share."""
+    """The containers, volumes and networks named after this test's objects, which a
+    restore of them would make. Not the whole daemon, nor everything labelled
+    drydock.restore.run: other pytest-xdist workers restore there at the same time, under
+    the same small run IDs. What the restore asks Docker to create is checked on its own."""
     client = targets.client
-    found = [(c.name, c.labels) for c in client.containers.list(all=True)]
-    found += [(v.name, v.attrs.get("Labels")) for v in client.volumes.list()]
-    found += [(n.name, n.attrs.get("Labels")) for n in client.networks.list()]
-    return {name for name, labels in found if RESTORE_LABEL in (labels or {}) or targets.ours(name)}
+    found = [c.name for c in client.containers.list(all=True, ignore_removed=True)]
+    found += [v.name for v in client.volumes.list()]
+    found += [n.name for n in client.networks.list()]
+    return {name for name in found if targets.ours(name)}
 
 
 @needs_dind
@@ -776,6 +778,7 @@ async def test_image_only_archive_loads_images_and_creates_nothing_else(
 
 @needs_ssh
 @needs_dind
+@on_sshhost
 async def test_restore_across_hosts(
     settings: Settings, targets: RestoreTargets, remote: tuple[RestoreTargets, Any, str]
 ) -> None:

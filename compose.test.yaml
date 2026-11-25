@@ -105,7 +105,7 @@ services:
         uv sync --locked
         && uv run --no-sync ruff check .
         && uv run --no-sync ruff format --check .
-        && uv run --no-sync pytest
+        && uv run --no-sync pytest -n 8 --dist loadgroup
 
   # The production image with the same hardening as compose.yaml. State lives on a tmpfs.
   app:

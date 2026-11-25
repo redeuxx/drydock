@@ -703,8 +703,9 @@ async def test_drydock_killed_mid_backup(
             status = browser.sql("SELECT status, error FROM runs")
             assert status == [("interrupted", "Drydock stopped before the run finished.")]
             assert staged_files(settings) == []
+            # It stops a helper mid-copy of 1 GiB: slow while other tests load the daemon.
             await wait_until(
-                lambda: not helpers_left(targets.client, instance_id), 30, "the reaper"
+                lambda: not helpers_left(targets.client, instance_id), 120, "the reaper"
             )
             assert "Interrupted" in log_path.read_text()
         assert stored_files(settings) == []
@@ -801,17 +802,31 @@ def rss_bytes(pid: int | str) -> int:
     return 0
 
 
-def age_rss() -> int:
-    total = 0
+def age_rss(root: int) -> int:
+    """The RSS of the age processes below root: not other pytest-xdist workers' ones,
+    which run in the same container."""
+    parents: dict[int, int] = {}
+    cmdlines: dict[int, bytes] = {}
     for entry in Path("/proc").iterdir():
         if entry.name.isdigit():
             try:
-                cmdline = (entry / "cmdline").read_bytes()
+                stat_line = (entry / "stat").read_text()
+                cmdlines[int(entry.name)] = (entry / "cmdline").read_bytes()
             except OSError:
                 continue
-            if b"/age\0" in cmdline or b"age-plugin-batchpass" in cmdline:
-                total += rss_bytes(entry.name)
-    return total
+            # The fields after the name, which may hold spaces and parentheses.
+            parents[int(entry.name)] = int(stat_line.rpartition(")")[2].split()[1])
+    below = {root}
+    for _ in range(len(parents)):
+        grown = below | {pid for pid, parent in parents.items() if parent in below}
+        if grown == below:
+            break
+        below = grown
+    return sum(
+        rss_bytes(str(pid))
+        for pid in below - {root}
+        if b"/age\0" in cmdlines.get(pid, b"") or b"age-plugin-batchpass" in cmdlines.get(pid, b"")
+    )
 
 
 @pytest.mark.slow
@@ -828,7 +843,7 @@ async def test_rss_during_a_5_gib_encrypted_backup(
 
     def sample() -> None:
         while not done.wait(0.1):
-            python, age = rss_bytes(proc.pid), age_rss()
+            python, age = rss_bytes(proc.pid), age_rss(proc.pid)
             peaks["drydock"] = max(peaks["drydock"], python)
             peaks["age"] = max(peaks["age"], age)
             peaks["both"] = max(peaks["both"], python + age)

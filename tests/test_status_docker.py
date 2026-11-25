@@ -30,10 +30,11 @@ from tests.docker_support import (
     insert_host,
     needs_docker,
     needs_ssh,
+    on_sshhost,
     wait_until,
 )
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, on_sshhost]
 
 IMAGE = DEFAULT_HELPER_IMAGE
 BUSY = ["sh", "-c", "while :; do :; done"]  # keeps one core busy, so CPU shows

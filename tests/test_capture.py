@@ -45,6 +45,10 @@ PLAIN_URL = os.environ.get("DRYDOCK_TEST_SSHHOST_PLAIN_URL", "")
 needs_dind = pytest.mark.skipif(not PLAIN_URL, reason="needs the sshhost service")
 SENTINEL = "SENTINEL-c2d81f-env-secret"
 IMAGE = DEFAULT_HELPER_IMAGE
+# On everything this module makes. The dind fixture removes what carries this process's
+# run label, never another pytest-xdist worker's containers on the same daemon.
+RUN_LABEL = "drydock.test.run"
+LABELS = {TEST_LABEL: "1", RUN_LABEL: uuid.uuid4().hex}
 # Runs as root with Docker's default capabilities (it must chown); test only, never a helper.
 POPULATE = (
     "printf 'volume data' > /v/secret.txt && chown 999:999 /v/secret.txt"
@@ -318,7 +322,7 @@ def local_target() -> Iterator[tuple[docker_client.DockerHandle, dict]]:
     handle = host_docker()
     client = handle.client
     suffix = uuid.uuid4().hex[:10]
-    labels = {TEST_LABEL: "1"}
+    labels = dict(LABELS)
     volume = client.volumes.create(f"drydock-test-cap-{suffix}", labels=labels)
     network = client.networks.create(f"drydock-test-net-{suffix}", labels=labels)
     created = []
@@ -512,10 +516,12 @@ def dind() -> Iterator[tuple[docker_client.DockerHandle, object, str]]:
         yield handle, box, root
     finally:
         for container in handle.client.containers.list(
-            all=True, filters={"label": f"{TEST_LABEL}=1"}
+            all=True, filters={"label": f"{RUN_LABEL}={LABELS[RUN_LABEL]}"}
         ):
             container.remove(force=True)
-        for image in handle.client.images.list(filters={"label": f"{TEST_LABEL}=1"}):
+        for image in handle.client.images.list(
+            filters={"label": f"{RUN_LABEL}={LABELS[RUN_LABEL]}"}
+        ):
             handle.client.images.remove(image.id, force=True)
         sh(box, 'rm -rf "$1"', root)
         handle.close()
@@ -553,7 +559,7 @@ def test_compose_files_and_binds(dind, tmp_path: Path) -> None:
         for name in ("compose.yaml", "fifo.yaml", "dir.yaml", "link.yml", "missing.yaml")
     )
     labels = {
-        TEST_LABEL: "1",
+        **LABELS,
         "com.docker.compose.project": "drydocktest",
         "com.docker.compose.service": "web",
         compose_files.CONFIG_FILES_LABEL: config_files + ",relative/compose.yaml",
@@ -676,11 +682,11 @@ def test_compose_labels_inherited_from_the_image_are_ignored(dind, tmp_path: Pat
         compose_files.CONFIG_FILES_LABEL: f"{root}/secret.yaml",
         compose_files.WORKING_DIR_LABEL: root,
     }
-    base = handle.client.containers.create(IMAGE, ["true"], labels={TEST_LABEL: "1"})
+    base = handle.client.containers.create(IMAGE, ["true"], labels=LABELS)
     tag = f"drydock-test/lure:{uuid.uuid4().hex[:8]}"
     repository, version = tag.split(":")
-    base.commit(repository=repository, tag=version, conf={"Labels": {TEST_LABEL: "1", **lure}})
-    container = handle.client.containers.create(tag, ["true"], labels={TEST_LABEL: "1"})
+    base.commit(repository=repository, tag=version, conf={"Labels": {**LABELS, **lure}})
+    container = handle.client.containers.create(tag, ["true"], labels=LABELS)
     assert container.labels[compose_files.CONFIG_FILES_LABEL] == f"{root}/secret.yaml"
     env = make_env(handle, tmp_path, Crypto((os.urandom(32),)), "sshhost")
     manifest, _, lines = run(env, job("config"), [container.id], tmp_path / "a.tar.zst")
@@ -696,12 +702,12 @@ def test_images_are_deduplicated_and_reference_only_is_optional(dind, tmp_path: 
     handle, _box, _root = dind
     client = handle.client
     tag = f"drydock-test/local:{uuid.uuid4().hex[:8]}"
-    base = client.containers.create(IMAGE, ["true"], labels={TEST_LABEL: "1"})
+    base = client.containers.create(IMAGE, ["true"], labels=LABELS)
     repository, version = tag.split(":")
-    local = base.commit(repository=repository, tag=version, conf={"Labels": {TEST_LABEL: "1"}})
-    first = client.containers.create(tag, ["true"], labels={TEST_LABEL: "1"})
-    second = client.containers.create(tag, ["true"], labels={TEST_LABEL: "1"})
-    pullable = client.containers.create(IMAGE, ["true"], labels={TEST_LABEL: "1"})
+    local = base.commit(repository=repository, tag=version, conf={"Labels": LABELS})
+    first = client.containers.create(tag, ["true"], labels=LABELS)
+    second = client.containers.create(tag, ["true"], labels=LABELS)
+    pullable = client.containers.create(IMAGE, ["true"], labels=LABELS)
     busybox = client.images.get(IMAGE)
     assert busybox.attrs.get("RepoDigests")
     crypto = Crypto((os.urandom(32),))
@@ -858,7 +864,7 @@ def test_a_skipped_bind_records_its_owner_and_mode_but_no_data(dind, tmp_path: P
         cache,
     )
     container = handle.client.containers.create(
-        IMAGE, ["true"], labels={TEST_LABEL: "1"}, volumes=[f"{cache}:/cache"]
+        IMAGE, ["true"], labels=LABELS, volumes=[f"{cache}:/cache"]
     )
     try:
         env = make_env(handle, tmp_path, Crypto((os.urandom(32),)), "sshhost")
@@ -883,7 +889,7 @@ def test_a_missing_skipped_bind_only_loses_its_owner(dind, tmp_path: Path) -> No
     kept, gone = f"{root}/kept", f"{root}/gone"
     sh(box, 'mkdir -p "$1" "$2" && echo x > "$1/f"', kept, gone)
     container = handle.client.containers.create(
-        IMAGE, ["true"], labels={TEST_LABEL: "1"}, volumes=[f"{kept}:/kept", f"{gone}:/gone"]
+        IMAGE, ["true"], labels=LABELS, volumes=[f"{kept}:/kept", f"{gone}:/gone"]
     )
     sh(box, 'rm -rf "$1"', gone)
     try:
@@ -936,8 +942,26 @@ def listing(data: bytes) -> dict[str, tuple]:
         }
 
 
-def dangling(handle) -> set[str]:
-    return {v.name for v in handle.client.volumes.list(filters={"dangling": True})}
+def stage_volumes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The names of the volumes copy-first helpers mount at STAGE_ROOT, recorded as they
+    start. The tests check these are gone afterwards, not that the daemon's dangling
+    volumes are unchanged, which other pytest-xdist workers change all the time."""
+    names: list[str] = []
+    real = helper.helper
+
+    @contextlib.contextmanager
+    def recording(client, image, instance_id, **options):
+        with real(client, image, instance_id, **options) as box:
+            mounts = client.api.inspect_container(box.id).get("Mounts") or []
+            names.extend(m["Name"] for m in mounts if m.get("Destination") == capture.STAGE_ROOT)
+            yield box
+
+    monkeypatch.setattr(helper, "helper", recording)
+    return names
+
+
+def gone(handle, names: list[str]) -> bool:
+    return not [n for n in names if handle.client.api.volumes(filters={"name": n})["Volumes"]]
 
 
 def test_copy_first_applies_to_stop_and_pause_with_data_only() -> None:
@@ -950,7 +974,7 @@ def test_copy_first_applies_to_stop_and_pause_with_data_only() -> None:
 
 @needs_dind
 def test_copy_first_archives_the_same_data_and_resumes_before_reading_it(
-    dind, tmp_path: Path
+    dind, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     handle, box, root = dind
     sh(box, STAGE_TREE, root)
@@ -963,11 +987,11 @@ def test_copy_first_archives_the_same_data_and_resumes_before_reading_it(
         container = handle.client.containers.create(
             IMAGE,
             ["true"],
-            labels={TEST_LABEL: "1"},
+            labels=LABELS,
             volumes=[f"{root}/d:/d", f"{root}/file:/file", f"{volume.name}:/v"],
         )
         env = make_env(handle, tmp_path, Crypto((os.urandom(32),)), "sshhost")
-        before = dangling(handle)
+        stages = stage_volumes(monkeypatch)
         direct = tmp_path / "direct.tar.zst"
         run(env, job("data"), [container.id], direct)
         staged = tmp_path / "staged.tar.zst"
@@ -1007,7 +1031,7 @@ def test_copy_first_archives_the_same_data_and_resumes_before_reading_it(
     assert any(line.startswith("Saving bind mount") for line in order[after:])
     # The copy went with its helper.
     assert helpers_left(handle.client, TEST_INSTANCE) == []
-    assert dangling(handle) == before
+    assert stages and gone(handle, stages), stages
 
 
 @needs_dind
@@ -1018,10 +1042,10 @@ def test_copy_first_refuses_before_anything_stops_when_the_copy_would_not_fit(
     sh(box, STAGE_TREE, root)
     monkeypatch.setattr(capture, "STAGE_RESERVE_KIB", 1 << 50)
     container = handle.client.containers.create(
-        IMAGE, ["true"], labels={TEST_LABEL: "1"}, volumes=[f"{root}/d:/d"]
+        IMAGE, ["true"], labels=LABELS, volumes=[f"{root}/d:/d"]
     )
     stopped = []
-    before = dangling(handle)
+    stages = stage_volumes(monkeypatch)
     try:
         env = make_env(handle, tmp_path, Crypto((os.urandom(32),)), "sshhost")
         with pytest.raises(capture.CaptureError, match="Not enough free space on sshhost"):
@@ -1039,7 +1063,7 @@ def test_copy_first_refuses_before_anything_stops_when_the_copy_would_not_fit(
     assert stopped == []
     assert not (tmp_path / "full.tar.zst").exists()
     assert helpers_left(handle.client, TEST_INSTANCE) == []
-    assert dangling(handle) == before
+    assert gone(handle, stages), stages
 
 
 @needs_dind
@@ -1050,7 +1074,7 @@ def test_a_failed_copy_on_the_host_fails_the_run_with_its_error(
     sh(box, STAGE_TREE, root)
     monkeypatch.setattr(capture, "STAGE_SCRIPT", "echo 'tar: write error' >&2; exit 3")
     container = handle.client.containers.create(
-        IMAGE, ["true"], labels={TEST_LABEL: "1"}, volumes=[f"{root}/d:/d"]
+        IMAGE, ["true"], labels=LABELS, volumes=[f"{root}/d:/d"]
     )
     aborted = []
     try:
@@ -1086,7 +1110,7 @@ def test_copy_first_helpers_get_exactly_the_capabilities_they_need(
 
     monkeypatch.setattr(helper, "helper", recording)
     container = handle.client.containers.create(
-        IMAGE, ["true"], labels={TEST_LABEL: "1"}, volumes=[f"{root}/d:/d"]
+        IMAGE, ["true"], labels=LABELS, volumes=[f"{root}/d:/d"]
     )
     try:
         env = make_env(handle, tmp_path, Crypto((os.urandom(32),)), "sshhost")
@@ -1108,7 +1132,7 @@ def test_the_space_check_counts_a_sparse_file_at_its_full_size(dind, tmp_path: P
     handle, box, root = dind
     sh(box, 'mkdir -p "$1/d" && truncate -s 3G "$1/d/disk.img"', root)
     container = handle.client.containers.create(
-        IMAGE, ["true"], labels={TEST_LABEL: "1"}, volumes=[f"{root}/d:/d"]
+        IMAGE, ["true"], labels=LABELS, volumes=[f"{root}/d:/d"]
     )
     lines, log = collect()
     try:

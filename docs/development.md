@@ -28,6 +28,8 @@ docker compose -f compose.test.yaml down
 npm run check
 ```
 
+The suite runs on 8 pytest-xdist workers (`-n 8 --dist loadgroup`, in compose.test.yaml): about 8 minutes instead of 27 serially. Tests that use the sshhost, over SSH or through its dind daemon, carry `on_sshhost` (tests/docker_support.py; tests/conftest.py adds it to every dind test) and run on one worker, one at a time: each SSH test replaces its authorized_keys, one restarts sshd, and a restore there locks other workers' helpers that mount what it writes. A test that makes Docker objects names them uniquely and cleans up only its own; parametrized IDs must not be random, or the workers collect different tests. A single test runs serially: `docker compose -f compose.test.yaml run --rm tests uv run --no-sync pytest -k csrf`.
+
 There is no CI on push: the tests, audits and smoke test run locally before a push. The only workflow, `.forgejo/workflows/release.yml`, runs on a release tag (see Releases). The repository is pushed to GitHub too, without any workflow.
 
 The suite runs on the image's Python by default. To run it on another supported Python, set `DRYDOCK_TEST_PYTHON_IMAGE` to a digest-pinned `python:X.Y-slim` image.

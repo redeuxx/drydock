@@ -22,10 +22,11 @@ from tests.docker_support import (
     add_ssh_host,
     get_host,
     needs_docker,
+    on_sshhost,
     wait_until,
 )
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, on_sshhost]
 
 SIZE_MIB = 256
 LIMIT_MIB = 64  # a few channel windows (8 MiB each) and the reader's own chunks

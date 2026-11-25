@@ -58,6 +58,7 @@ from tests.docker_support import (
     labelled_stack,
     needs_docker,
     needs_ssh,
+    on_sshhost,
     recorded_events,
     remove_stack,
     sh,
@@ -79,7 +80,7 @@ from tests.test_runs_docker import (
     start_drydock,
 )
 
-pytestmark = [pytest.mark.anyio, needs_docker]
+pytestmark = [pytest.mark.anyio, needs_docker, on_sshhost]
 
 SERVICES = ("db", "redis", "app")  # in start order
 DB_DIR = "/var/lib/postgresql"  # where postgres 18 keeps its volume

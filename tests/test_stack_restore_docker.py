@@ -35,6 +35,7 @@ from tests.docker_support import (
     event_times,
     needs_docker,
     needs_ssh,
+    on_sshhost,
     recorded_events,
     sh,
     wait_until,
@@ -62,7 +63,7 @@ from tests.test_stacks_docker import (
     stack_job,
 )
 
-pytestmark = [pytest.mark.anyio, needs_docker, needs_ssh, needs_dind]
+pytestmark = [pytest.mark.anyio, needs_docker, needs_ssh, needs_dind, on_sshhost]
 
 COMPOSE_FILES = [".env", "compose.yaml"]
 NAME_RE = re.compile(r"^Name:\s*\S+\s*\nAddress:\s*([0-9.]+)", re.MULTILINE)
@@ -128,7 +129,7 @@ def check_compose_dir(stack: Stack, directory: str) -> None:
 def leftovers(stack: Stack, name: str) -> list[str]:
     """Containers, volumes and networks of the sshhost daemon named after name."""
     client = stack.handle.client
-    found = [c.name for c in client.containers.list(all=True)]
+    found = [c.name for c in client.containers.list(all=True, ignore_removed=True)]
     found += [v.name for v in client.volumes.list()]
     found += [n.name for n in client.networks.list()]
     return [n for n in found if n == name or n.startswith((f"{name}-", f"{name}_"))]

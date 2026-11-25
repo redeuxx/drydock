@@ -27,8 +27,9 @@ def test_missing_key_is_rejected() -> None:
     [
         "short",
         "not base64 at all!!!!!!!!!!!!!!!!!!!!!!!!!!!",
-        base64.urlsafe_b64encode(os.urandom(16)).decode(),
-        base64.urlsafe_b64encode(os.urandom(48)).decode(),
+        # Fixed bytes, not random: pytest-xdist workers must collect the same test IDs.
+        base64.urlsafe_b64encode(bytes(range(16))).decode(),  # too short
+        base64.urlsafe_b64encode(bytes(range(48))).decode(),  # too long
     ],
 )
 def test_malformed_key_is_rejected(key: str) -> None:
