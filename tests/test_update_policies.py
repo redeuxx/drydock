@@ -369,7 +369,7 @@ async def test_a_check_under_way_when_the_run_ends_is_followed_by_another(
     gate, second = anyio.Event(), anyio.Event()
     calls: list[int] = []
 
-    async def fake_check(host) -> HostChecks:
+    async def fake_check(host, paced: bool = True) -> HostChecks:
         calls.append(host.id)
         if len(calls) == 1:
             await gate.wait()

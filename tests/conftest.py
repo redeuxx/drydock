@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from drydock.config import Settings, load_settings
 from drydock.engine import capture
 from drydock.main import create_app
+from drydock.updates import check as update_check
 from tests.rclone_support import (
     SftpServer,
     SmbShare,
@@ -159,11 +160,12 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 @pytest.fixture(autouse=True)
 def no_registry_waits() -> Iterator[None]:
-    """Registry lookups are still asked again, without the waits between. Its own
+    """Registry lookups are still asked again and paced, without the waits between. Its own
     MonkeyPatch: an autouse fixture taking the shared one would set it up first, and so
     undo every test's patches only after the app's shutdown."""
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(capture, "DISTRIBUTION_RETRIES", (0, 0))
+        patch.setattr(update_check, "LOOKUP_GAP", 0.0)
         yield
 
 

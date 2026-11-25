@@ -12,7 +12,11 @@ Hosts are checked every update_check_hours (the settings page; the first time FI
 after start; never when 0), after each run of an update policy on them (policy_ran), and
 on demand from the containers, stacks and images pages, at most once per MIN_GAP per host.
 Registries limit lookups (Docker Hub counts them), so one lookup answers every container of
-the same image and reference, and is reused until the next check is due. Results live in
+the same image and reference, and is reused for half the interval (slots are at least that
+far apart, so every slot asks anew). They also limit
+how fast an address asks (ghcr.io answers 429), so the checks not asked for from a page
+wait LOOKUP_GAP between lookups, and each host has its own place in the interval
+(next_slot) rather than every host being checked at once. Results live in
 memory, like the status.
 """
 
@@ -20,7 +24,9 @@ import asyncio
 import contextlib
 import functools
 import logging
+import math
 import re
+import threading
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
@@ -54,6 +60,7 @@ CHECK_EVERY = 6 * 3600  # until the settings are read, and the lookups' reuse wh
 FIRST_CHECK = 120  # seconds after start: not in the way of startup recovery
 MIN_GAP = 60  # seconds between checks of a host asked for from the page
 LOOP_EVERY = 300
+LOOKUP_GAP = 2.0  # seconds between registry lookups, but in checks a page waits for
 TIMEOUT = 30
 THREADS = 2
 MAX_VERSIONS = 2000  # versions of new digests kept
@@ -185,19 +192,21 @@ def check(
     now: float,
     max_age: float = CHECK_EVERY,
     newer_version: Callable[[str, str, Platform], str] | None = None,
+    pause: Callable[[], object] | None = None,
 ) -> dict[str, Verdict]:
     """Blocking. Container ID to verdict for every container but this installation's
     helpers. cache maps (image ID, reference) to a verdict reused for max_age seconds;
     errors are not kept, and entries no container uses any more are dropped.
-    newer_version(ref, digest, platform) gives the version an update brings."""
+    newer_version(ref, digest, platform) gives the version an update brings; pause() is
+    called between two registry lookups."""
     verdicts: dict[str, Verdict] = {}
     digests: dict[str, list[str]] = {}
     images: dict[str, dict[str, Any]] = {}
-    budget = time.monotonic() + VERSION_BUDGET
+    budget = [time.monotonic() + VERSION_BUDGET]  # moved on by the pauses
 
     def version_of(ref: str, digest: str, platform: Platform) -> str:
         """newer_version, until this pass has spent VERSION_BUDGET on them."""
-        if newer_version is None or time.monotonic() > budget:
+        if newer_version is None or time.monotonic() > budget[0]:
             return ""
         return newer_version(ref, digest, platform)
 
@@ -206,6 +215,10 @@ def check(
 
     def registry(ref: str) -> str:
         if ref not in asked:
+            if pause is not None and asked:
+                began = time.monotonic()
+                pause()
+                budget[0] += time.monotonic() - began
             try:
                 # No retry: the next pass asks again (errors are not kept), and a page
                 # waits for this one.
@@ -255,11 +268,25 @@ def check(
             cache[key] = Cached(now, found)
         verdicts[listed["Id"]] = found
     for gone in cache.keys() - used:
-        del cache[gone]
+        cache.pop(gone, None)  # a page's check and a paced one may share the cache
     return verdicts
 
 
+def next_slot(last: float, epoch: float, every: float, index: int, count: int) -> float:
+    """When the host index of count is due after a check at last: its slots are epoch,
+    plus its share of the interval (index / count of it), plus whole intervals, and it
+    takes the first at least half an interval after last. So the hosts are checked
+    every interval but apart. A check between slots (asked from a page, or after a policy
+    run) moves none of them, but skips the next if it comes within half an interval."""
+    phase = epoch + every * index / count
+    return phase + every * math.ceil((last + every / 2 - phase) / every)
+
+
 # THE CHECKER
+
+
+class Stopped(Exception):
+    """The checker closed during a paced check."""
 
 
 @dataclass(frozen=True)
@@ -278,14 +305,20 @@ class UpdateChecker:
     def __init__(self, sessions: sessionmaker[Session], hosts: HostManager) -> None:
         self._sessions = sessions
         self._hosts = hosts
-        self._limiter = anyio.CapacityLimiter(THREADS)
+        self._limiter = anyio.CapacityLimiter(THREADS)  # checks a page waits for
+        self._paced = anyio.CapacityLimiter(THREADS)  # the rest: never in a page's way
+        self._stop = threading.Event()  # set by close: a paced check ends at its next pause
         self._results: dict[int, HostChecks] = {}
         self._caches: dict[int, dict[tuple[str, str], Cached]] = {}
         self._asked: dict[int, float] = {}  # host: when a page last asked for a check
-        self._busy: dict[int, asyncio.Task[HostChecks]] = {}
+        # (host, paced): its check under way. A page's never joins a paced one.
+        self._busy: dict[tuple[int, bool], asyncio.Task[HostChecks]] = {}
         self._task: asyncio.Task[None] | None = None
         self._after: set[asyncio.Task[None]] = set()  # checks after policy runs
         self._every = CHECK_EVERY  # seconds between checks; 0: never by itself
+        self._epoch = 0.0  # monotonic: the first loop, where the hosts' slots count from
+        self._checked: dict[int, float] = {}  # host: monotonic, its last check that worked
+        self._began: dict[int, float] = {}  # host: monotonic, when its result's check began
         # (repository, digest, platform): its version. A digest's never changes.
         self._versions: dict[tuple[str, str, Platform], str] = {}
 
@@ -298,6 +331,7 @@ class UpdateChecker:
         self._task = asyncio.create_task(self._run(), name="update-checker")
 
     async def close(self) -> None:
+        self._stop.set()
         tasks = [*self._busy.values(), *self._after, *([self._task] if self._task else [])]
         for task in tasks:
             task.cancel()
@@ -316,18 +350,19 @@ class UpdateChecker:
 
     async def check_now(self, host: Host) -> HostChecks:
         """A check asked for from the page (wait_before_asking said 0): every registry is
-        asked again, not answered from the hours-old lookups."""
+        asked again, not answered from the hours-old lookups. It runs at once, on threads
+        of its own, beside a paced check of the host under way rather than waiting for it."""
         self._asked[host.id] = time.monotonic()
-        running = self._busy.get(host.id)
+        running = self._busy.get((host.id, False))
         if running is None or running.done():
             self._caches.pop(host.id, None)
-        return await self.check_host(host)
+        return await self.check_host(host, paced=False)
 
     def policy_ran(self, policy_id: int) -> None:
         """An update policy's run ended (Dispatcher on_policy_end, on the event loop): its
         host is checked again, so the pages show what the run left and, with no interval
-        set, what else is new. Lookups younger than the interval (6 hours with none set)
-        are reused."""
+        set, what else is new. Lookups younger than half the interval (3 hours with none
+        set) are reused."""
         if self.running:
             task = asyncio.create_task(self._after_policy(policy_id), name="update-check")
             self._after.add(task)
@@ -339,10 +374,12 @@ class UpdateChecker:
             host_id = await client.run_blocking(self._policy_host, policy_id)
             for host in hosts:
                 if host.id == host_id:
-                    running = self._busy.get(host.id)
-                    if running is not None and not running.done():
-                        # It read the host before the run ended: wait it out, check again.
-                        await asyncio.shield(running)
+                    for paced in (True, False):
+                        running = self._busy.get((host.id, paced))
+                        if running is not None and not running.done():
+                            # It read the host before the run ended: wait it out, then
+                            # check again.
+                            await asyncio.shield(running)
                     await self.check_host(host)
         except Exception:
             log.exception("Checking for updates after policy %d's run failed", policy_id)
@@ -351,24 +388,28 @@ class UpdateChecker:
         with self._sessions() as db:
             return db.scalar(select(UpdatePolicy.host_id).where(UpdatePolicy.id == policy_id))
 
-    async def check_host(self, host: Host) -> HostChecks:
-        """Checks the host, or waits for the check of it already under way."""
-        running = self._busy.get(host.id)
+    async def check_host(self, host: Host, *, paced: bool = True) -> HostChecks:
+        """Checks the host, or waits for the check of it already under way. paced: with
+        LOOKUP_GAP between lookups; not when a page waits for it."""
+        key = (host.id, paced)
+        running = self._busy.get(key)
         if running is None or running.done():
-            running = self._busy[host.id] = asyncio.create_task(self._check(host))
+            running = self._busy[key] = asyncio.create_task(self._check(host, paced))
         return await asyncio.shield(running)
 
-    async def _check(self, host: Host) -> HostChecks:
+    async def _check(self, host: Host, paced: bool = True) -> HostChecks:
         cache = self._caches.setdefault(host.id, {})
         previous = self._results.get(host.id)
+        began = time.monotonic()
         try:
             url = self._hosts.docker_url(host)
             verdicts = await anyio.to_thread.run_sync(
-                functools.partial(self._read, url, cache),
-                limiter=self._limiter,
+                functools.partial(self._read, url, cache, self._pause if paced else None),
+                limiter=self._paced if paced else self._limiter,
                 abandon_on_cancel=True,
             )
             result = HostChecks(utcnow(), verdicts)
+            self._checked[host.id] = time.monotonic()
             if failed := result.count("error"):
                 # The page says so too; here for when a policy run later finds nothing.
                 log.warning("Host %s: %d containers could not be checked", host.id, failed)
@@ -387,18 +428,34 @@ class UpdateChecker:
                 previous.verdicts if previous else {},
                 error,
             )
-        self._results[host.id] = result
+        if self._began.get(host.id, -math.inf) <= began:
+            # Not over the result of a check begun after this one (a page's, beside this
+            # paced one), whichever ended first.
+            self._results[host.id] = result
+            self._began[host.id] = began
         return result
 
-    def _read(self, url: str, cache: dict[tuple[str, str], Cached]) -> dict[str, Verdict]:
+    def _pause(self) -> None:
+        """Blocking: LOOKUP_GAP between two lookups of a paced check. After close, its
+        abandoned thread ends here rather than asking the rest at once."""
+        if self._stop.wait(LOOKUP_GAP):
+            raise Stopped
+
+    def _read(
+        self,
+        url: str,
+        cache: dict[tuple[str, str], Cached],
+        pause: Callable[[], object] | None = None,
+    ) -> dict[str, Verdict]:
         with client.open_client(url, TIMEOUT) as handle:
             return check(
                 handle.client.api,
                 self._hosts.instance_id,
                 cache,
                 time.monotonic(),
-                self._every or CHECK_EVERY,
+                (self._every or CHECK_EVERY) / 2,  # next_slot: slots are further apart
                 self._newer_version,
+                pause,
             )
 
     def _newer_version(self, ref: str, digest: str, platform: Platform) -> str:
@@ -417,16 +474,26 @@ class UpdateChecker:
 
     async def _run(self) -> None:
         await asyncio.sleep(FIRST_CHECK)
+        self._epoch = time.monotonic()
         while True:
             try:
                 hosts = await client.run_blocking(self._load_hosts)
                 for gone in self._results.keys() - {h.id for h in hosts}:
                     self._results.pop(gone, None)
                     self._caches.pop(gone, None)
-                for host in hosts if self._every else []:  # 0: after policy runs, or asked
+                    self._checked.pop(gone, None)
+                    self._began.pop(gone, None)
+                every = self._every  # 0: after policy runs, or asked
+                for index, host in enumerate(hosts if every else []):
                     done = self._results.get(host.id)
-                    age = (utcnow() - done.checked_at).total_seconds() if done else None
-                    if age is None or age >= self._every or done.error is not None:
+                    last = self._checked.get(host.id)
+                    if (
+                        last is None  # since the start: every host once, for the pages
+                        or done is None
+                        or done.error is not None
+                        or time.monotonic()
+                        >= next_slot(last, self._epoch, every, index, len(hosts))
+                    ):
                         with contextlib.suppress(Exception):
                             await self.check_host(host)
             except Exception:

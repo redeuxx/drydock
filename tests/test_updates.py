@@ -196,6 +196,132 @@ def test_one_lookup_per_reference_even_when_it_fails() -> None:
     assert api.lookups == ["/distribution/nginx:1.27/json", "/distribution/redis:7/json"]
 
 
+def test_lookups_are_paced() -> None:
+    api = FakeApi("me")
+
+    def pause() -> None:
+        api.lookups.append("pause")
+
+    check.check(api, "me", {}, now=0.0, pause=pause)
+    assert api.lookups == [
+        "/distribution/nginx:1.27/json",
+        "pause",
+        "/distribution/redis:7/json",
+    ], "between two lookups only: none before the first, none for a reference asked"
+
+
+@pytest.mark.parametrize(
+    ("last", "index", "due"),
+    [
+        (0.1, 0, 6.0),  # the checks at the start: then each host in its own place
+        (0.1, 1, 8.0),
+        (0.1, 2, 4.0),
+        (4.0, 2, 10.0),  # then every interval
+        (7.0, 0, 12.0),  # asked between slots: the next slot stays
+        (2.0, 0, 6.0),
+    ],
+)
+def test_each_host_has_its_own_place_in_the_interval(last: float, index: int, due: float) -> None:
+    assert check.next_slot(last, 0.0, 6.0, index, 3) == pytest.approx(due)
+
+
+async def test_a_page_never_waits_for_paced_checks(admin: Browser, monkeypatch) -> None:
+    """Paced checks fill their threads (two hosts) and queue (a third); a page asking for
+    the third gets its own check at once, and the paced one ending later keeps it."""
+    import asyncio
+    import threading
+
+    import anyio
+
+    checker = admin.app.state.updates
+    monkeypatch.setattr(checker._hosts, "docker_url", lambda h: "unix:///nowhere")
+    release = threading.Event()
+    reading = anyio.Event()
+    paced_reads: list[int] = []
+
+    def read(url, cache, pause=None) -> dict:
+        if pause is None:
+            return {"page": Verdict("current", "Up to date.")}
+        paced_reads.append(1)
+        if len(paced_reads) == check.THREADS:
+            anyio.from_thread.run_sync(reading.set)
+        release.wait(10)
+        return {"paced": Verdict("current", "Up to date.")}
+
+    monkeypatch.setattr(checker, "_read", read)
+    hosts = [type("H", (), {"id": i})() for i in (1, 2, 3)]
+    background = [asyncio.create_task(checker.check_host(h)) for h in hosts]
+    try:
+        with anyio.fail_after(10):
+            await reading.wait()  # hosts 1 and 2 hold both paced threads; 3 waits
+            page = await checker.check_now(hosts[2])
+        assert set(page.verdicts) == {"page"}
+    finally:
+        release.set()
+        await asyncio.gather(*background)
+    assert set(checker.result(3).verdicts) == {"page"}, "not overwritten by the older one"
+    assert set(checker.result(1).verdicts) == {"paced"}
+
+
+async def test_the_result_of_the_check_begun_last_is_kept(admin: Browser, monkeypatch) -> None:
+    """A paced check that ends while a page's begun after it still runs does not keep its
+    result over the page's."""
+    import asyncio
+    import threading
+
+    import anyio
+
+    checker = admin.app.state.updates
+    monkeypatch.setattr(checker._hosts, "docker_url", lambda h: "unix:///nowhere")
+    gates = {"paced": threading.Event(), "page": threading.Event()}
+    began = {"paced": anyio.Event(), "page": anyio.Event()}
+
+    def read(url, cache, pause=None) -> dict:
+        kind = "paced" if pause is not None else "page"
+        anyio.from_thread.run_sync(began[kind].set)
+        gates[kind].wait(10)
+        return {kind: Verdict("current", "Up to date.")}
+
+    monkeypatch.setattr(checker, "_read", read)
+    host = type("H", (), {"id": 4})()
+    with anyio.fail_after(10):
+        paced = asyncio.create_task(checker.check_host(host))
+        await began["paced"].wait()
+        page = asyncio.create_task(checker.check_now(host))
+        await began["page"].wait()
+        gates["paced"].set()
+        await paced
+        assert set(checker.result(4).verdicts) == {"paced"}
+        gates["page"].set()
+        await page
+    assert set(checker.result(4).verdicts) == {"page"}
+
+
+async def test_closing_ends_a_paced_check_at_its_next_pause(admin: Browser) -> None:
+    checker = admin.app.state.updates
+    checker._stop.set()
+    with pytest.raises(check.Stopped):
+        checker._pause()
+
+
+async def test_the_lookups_are_reused_for_half_the_interval(admin: Browser, monkeypatch) -> None:
+    import contextlib
+
+    checker = admin.app.state.updates
+    ages: list[float] = []
+
+    @contextlib.contextmanager
+    def open_client(url, timeout):
+        yield type("Handle", (), {"client": type("C", (), {"api": None})()})()
+
+    monkeypatch.setattr(check.client, "open_client", open_client)
+    monkeypatch.setattr(check, "check", lambda api, me, cache, now, age, *rest: ages.append(age))
+    for hours in (6, 0):
+        monkeypatch.setattr(checker, "_every", hours * 3600)
+        checker._read("unix:///nowhere", {})
+    assert ages == [3 * 3600, check.CHECK_EVERY / 2], "next_slot keeps slots further apart"
+
+
 def test_a_container_docker_cannot_inspect_is_one_error_row() -> None:
     api = FakeApi("me")
     real = api.inspect_container
@@ -217,14 +343,18 @@ async def test_asking_from_the_page_skips_the_cached_lookups(admin: Browser, mon
     checker._caches[5] = {("x", "y"): Cached(0.0, Verdict("current", "Up to date."))}
     seen: list[dict] = []
 
-    async def fake_check(h) -> HostChecks:
+    paced: list[bool] = []
+
+    async def fake_check(h, pace: bool = True) -> HostChecks:
         seen.append(dict(checker._caches.get(5, {})))
+        paced.append(pace)
         return HostChecks(datetime.now(UTC))
 
     monkeypatch.setattr(checker, "_check", fake_check)
     await checker.check_host(host)
     await checker.check_now(host)
     assert seen == [{("x", "y"): Cached(0.0, Verdict("current", "Up to date."))}, {}]
+    assert paced == [True, False], "a page waits for its check: no pauses there"
 
 
 async def test_a_failed_check_keeps_the_last_verdicts_and_their_time(
