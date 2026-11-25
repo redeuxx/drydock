@@ -2,7 +2,8 @@
 {% from "_macros.html" import alerts, submit %}
 {% block title %}Settings{% endblock %}
 {% block content %}
-<h1 class="mb-4 text-3xl font-bold">Settings</h1>
+<h1 class="mb-1 text-3xl font-bold">Settings</h1>
+<p class="mb-4 max-w-prose opacity-70">These apply to all of drydock, for every user; any admin can change them, and each change is in the audit log. Your own password, preferences and sessions are under <a class="link" href="/account">Account</a>.</p>
 <section class="card bg-base-100 shadow-sm">
   <div class="card-body">
     {{ alerts(errors) }}

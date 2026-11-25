@@ -166,6 +166,31 @@ async def test_hsts_only_for_public_https(tmp_path, base_url: str, hsts: bool) -
             assert header == ("max-age=31536000" if hsts else None), path
 
 
+async def test_drydock_wide_pages_are_in_the_admin_menu(admin: Browser) -> None:
+    """The menu under your name holds your own pages; the Admin menu the drydock-wide
+    ones, shown by role."""
+    admin_pages = ('href="/settings"', 'href="/notifications"', 'href="/audit"')
+
+    def menus(html: str) -> tuple[str, str]:
+        header = html.split("</header>")[0]
+        nav, _, user = header.partition('id="user-menu"')
+        return nav, user
+
+    nav, user = menus((await admin.get("/")).text)
+    assert all(p in nav for p in (*admin_pages, 'href="/users"')) and ">Admin<" in nav
+    assert 'href="/account"' in user and not any(p in user for p in admin_pages)
+    await add_user(admin, "ada", "admin")
+    await admin.login("ada")
+    nav, _ = menus((await admin.get("/")).text)
+    assert all(p in nav for p in admin_pages) and 'href="/users"' not in nav
+    await admin.login("admin")
+    await add_user(admin, "runner", "operator")
+    await admin.login("runner")
+    nav, user = menus((await admin.get("/")).text)
+    assert ">Admin<" not in nav and 'href="/account"' in user
+    assert not any(p in nav + user for p in (*admin_pages, 'href="/users"'))
+
+
 async def test_error_pages_keep_the_logged_in_header(admin: Browser) -> None:
     await add_user(admin, "vic", "viewer")
     await admin.login("vic")

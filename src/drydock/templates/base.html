@@ -27,6 +27,8 @@
       {% set logs_menu = [("/runs", "Runs", Role.viewer), ("/logs", "Container logs", Role.admin)] %}
       {% set docker_menu = [("/containers", "Containers", Role.viewer), ("/stacks", "Stacks", Role.viewer), ("/images", "Images", Role.viewer), ("/updates", "Update policies", Role.operator)] %}
       {% set backups_menu = [("/jobs", "Jobs", Role.viewer), ("/backups", "Backups", Role.viewer), ("/restore", "Restore", Role.admin), ("/hooks", "Hooks", Role.admin), ("/hosts", "Hosts", Role.admin), ("/storage", "Storage", Role.admin)] %}
+      {# Drydock-wide pages; the menu under your name holds your own. #}
+      {% set admin_menu = [("/settings", "Settings", Role.admin), ("/users", "Users", Role.superadmin), ("/notifications", "Notification targets", Role.admin), ("/audit", "Audit log", Role.admin)] %}
       {% macro dropdown(title, items) %}
       {% set shown = items|selectattr(2, "le", auth.user.role)|list %}
       {% if shown %}
@@ -35,7 +37,7 @@
           <li>
             <details data-menu>
               <summary{% if ns.active %} class="menu-active"{% endif %}>{{ title }}</summary>
-              <ul class="z-30 w-44 rounded-box bg-base-100 p-2 shadow">
+              <ul class="z-30 w-52 rounded-box bg-base-100 p-2 shadow">
                 {% for href, label, minimum in shown %}
                 {% set active = current == href or current.startswith(href + "/") %}
                 <li><a href="{{ href }}"{% if active %} class="menu-active" aria-current="page"{% endif %}>{{ label }}</a></li>
@@ -52,6 +54,7 @@
           {{ dropdown("Backups", backups_menu) }}
           <li><a href="/activity"{% if current == "/activity" %} class="menu-active" aria-current="page"{% endif %}>Activity</a></li>
           {{ dropdown("Logs", logs_menu) }}
+          {{ dropdown("Admin", admin_menu) }}
         </ul>
       </nav>
       {% endif %}
@@ -65,12 +68,6 @@
         </summary>
         <ul class="menu dropdown-content z-30 mt-2 w-56 rounded-box bg-base-100 p-2 shadow">
           <li><a href="/account"{% if current.startswith("/account") %} class="menu-active" aria-current="page"{% endif %}>Account</a></li>
-          {% if auth.user.role >= Role.superadmin %}<li><a href="/users"{% if current.startswith("/users") %} class="menu-active" aria-current="page"{% endif %}>Users</a></li>{% endif %}
-          {% if auth.user.role >= Role.admin %}
-          <li><a href="/notifications"{% if current.startswith("/notifications") %} class="menu-active" aria-current="page"{% endif %}>Notification targets</a></li>
-          <li><a href="/settings"{% if current == "/settings" %} class="menu-active" aria-current="page"{% endif %}>Settings</a></li>
-          <li><a href="/audit"{% if current.startswith("/audit") %} class="menu-active" aria-current="page"{% endif %}>Audit log</a></li>
-          {% endif %}
           <li><a href="/about"{% if current == "/about" %} class="menu-active" aria-current="page"{% endif %}>About</a></li>
           <li>
             <form method="post" action="/logout" hx-post="/logout" hx-nonce="{{ csp_nonce }}" class="p-0">
