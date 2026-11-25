@@ -108,6 +108,7 @@ STATUSES: dict[str, tuple[str, Callable[[ContainerStatus, Verdicts], bool]]] = {
     "created": ("Created", lambda c, v: c.state == "created"),
     "unhealthy": ("Unhealthy", lambda c, v: c.health == "unhealthy"),
     "updates": ("Update available", lambda c, v: is_newer(v, c)),
+    "unchecked": ("Update check failed", lambda c, v: c.id in v and v[c.id].state == "error"),
 }
 
 

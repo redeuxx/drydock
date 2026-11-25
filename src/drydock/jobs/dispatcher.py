@@ -1925,10 +1925,13 @@ class Dispatcher:
                     keys = scoped(planned.plan.lock_keys, host.id, scope)
                     held = await self._acquire(keys, run_id, run_log)
                 active.started = True
-                planned = await run_blocking(plan_now)
+                # Under the locks: no waits between registry lookups (the first plan had them).
+                planned = await run_blocking(functools.partial(plan_now, retry=False))
                 for line in planned.notes:
                     run_log(line)
                 if planned.plan is None:
+                    if planned.unchecked:
+                        raise DispatchError(update_apply.unchecked_error(planned.unchecked))
                     await run_blocking(self._finish, run_id, run_log, "done", None)
                     return
                 if not set(scoped(planned.plan.lock_keys, host.id, scope)) <= set(held):
@@ -1945,7 +1948,12 @@ class Dispatcher:
                 await run_blocking(self._set_changes, run_id, planned.changes)
                 await run_blocking(self._mark_running, run_id)
                 await self._apply_update(active, handle, planned.plan, scope, run_log)
-                await run_blocking(self._finish, run_id, run_log, "done", None)
+                # Done (the rest is committed), with an error for those left alone, which
+                # notifies as a failure (notify.py).
+                error = None
+                if planned.unchecked:
+                    error = update_apply.unchecked_error(planned.unchecked)
+                await run_blocking(self._finish, run_id, run_log, "done", error)
                 try:  # only labels for the run pages: after "done", never in its way
                     changes = await run_blocking(update_apply.versions_after, api, planned.changes)
                     await run_blocking(self._set_changes, run_id, changes)
@@ -1995,18 +2003,25 @@ class Dispatcher:
                 self._hosts.instance_id,
                 own,
                 handle.api_version,
+                retry=False,  # each stack's own run asks again with waits
             )
             if planned.plan is None:
-                run_log(f"Stack {name}: nothing to update.")
+                if planned.unchecked:
+                    run_log(f"Stack {name}: {update_apply.unchecked_error(planned.unchecked)}")
+                    failed.append(f"{name} (registry not asked)")
+                else:
+                    run_log(f"Stack {name}: nothing to update.")
                 continue
             child = await self.submit_update(
                 host.id, [], triggered_by, f"stack {name}", project=name
             )
             run_log(f"Stack {name}: update run #{child}.")
             await self.wait(child)
-            status = dict(await run_blocking(self._job_run_statuses, child)).get(child)
+            status, error = await run_blocking(self._run_end, child)
             if status != "done":
                 failed.append(f"{name} (#{child} {status})")
+            elif error:
+                failed.append(f"{name} (#{child} in part)")
         if failed:
             raise DispatchError(f"Not every stack was updated: {', '.join(failed)}.")
         await run_blocking(self._finish, active.run_id, run_log, "done", None)
@@ -2956,6 +2971,12 @@ class Dispatcher:
                 doc = json_object(run.plan)
                 doc["changes"] = [asdict(c) for c in changes]
                 run.plan = json.dumps(doc)
+
+    def _run_end(self, run_id: int) -> tuple[str | None, str | None]:
+        """A run's status and error."""
+        with self._sessions() as db:
+            run = db.get(Run, run_id)
+            return (run.status, run.error) if run is not None else (None, None)
 
     def _job_run_statuses(self, first_run_id: int) -> list[tuple[int, str]]:
         with self._sessions() as db:

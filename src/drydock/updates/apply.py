@@ -66,6 +66,18 @@ class UpdateError(Exception):
     """The update cannot be planned. The message is safe to show."""
 
 
+class LookupRefused(UpdateError):
+    """The registry could not be asked for now (its rate limit, a server error, no
+    answer). Unlike a refusal that stays (a private image, a removed tag), the run says so."""
+
+
+def passing(exc: BaseException) -> bool:
+    """Whether a failed lookup may well work at the next run."""
+    if isinstance(exc, docker.errors.APIError):
+        return exc.status_code is None or exc.status_code == 429 or exc.status_code >= 500
+    return isinstance(exc, requests.RequestException)
+
+
 @dataclass(frozen=True)
 class Change:
     """One container an update moves to a new image, for the run pages."""
@@ -84,6 +96,18 @@ class Planned:
     plan: RestorePlan | None  # None: nothing to update
     notes: tuple[str, ...]  # what was left out and why, for the run log
     changes: tuple[Change, ...]
+    # Members left alone because their registry could not be asked: the run fails, so its
+    # notification says so, instead of ending done with nothing found.
+    unchecked: tuple[str, ...] = ()
+
+
+def unchecked_error(names: tuple[str, ...]) -> str:
+    """Why a run that left those members alone (Planned.unchecked) failed."""
+    them = "it was" if len(names) == 1 else "they were"
+    return (
+        f"The registry could not be asked about {', '.join(names)}, so {them} not "
+        "updated; it is asked again at the next run."
+    )
 
 
 def image_info(api: Any, ref: str) -> dict[str, Any]:
@@ -191,9 +215,11 @@ def stack_order(api: Any, project: str, instance_id: str) -> list[stacks.Member]
         raise UpdateError(f"Cannot read stack {project} from the Docker daemon.") from None
 
 
-def newest_digest(api: Any, info: dict[str, Any], ref: str) -> tuple[str | None, str]:
+def newest_digest(
+    api: Any, info: dict[str, Any], ref: str, retry: bool = True
+) -> tuple[str | None, str]:
     """Blocking. The digest to pull, or None and why not. Raises UpdateError when the
-    registry cannot be asked."""
+    registry cannot be asked (LookupRefused when that may pass)."""
     old_image = image_info(api, str(info.get("Image") or ""))
     current = {digest for _, digest in repo_digests(old_image)}
     if not current:
@@ -203,9 +229,9 @@ def newest_digest(api: Any, info: dict[str, Any], ref: str) -> tuple[str | None,
         if not newer or newer.get("Id") == info.get("Image") or not repo_digests(newer):
             return None, "built on the host (no registry digest), so not updated."
     try:
-        latest = distribution_digest(api, ref)
+        latest = distribution_digest(api, ref, retry=retry)
     except (docker.errors.DockerException, requests.RequestException) as exc:
-        raise UpdateError(lookup_error(exc)) from None
+        raise (LookupRefused if passing(exc) else UpdateError)(lookup_error(exc)) from None
     except ValueError, KeyError, TypeError:
         raise UpdateError("The registry answer was not understood.") from None
     if latest in current:
@@ -243,6 +269,7 @@ def plan_update(
     *,
     stack: bool = False,
     switch: Mapping[str, str] | None = None,
+    retry: bool = True,
 ) -> Planned:
     """Blocking. The plan that updates the containers that have a newer image, in the
     order given (a stack's: dependencies first). healthy_first maps a container ID to the
@@ -261,7 +288,8 @@ def plan_update(
 
     switch maps a container ID to the repository:tag it moves to (updates/switch.py). A
     switch that cannot be made (the registry does not know the tag) raises UpdateError,
-    in a stack too: nothing moves then."""
+    in a stack too: nothing moves then. retry: whether a refused registry lookup is asked
+    again (engine/capture.py distribution_digest); not while holding the locks."""
     waits = healthy_first or {}
     planned: dict[str, str] = {}  # container ID: name, of those this plan makes again
     images: list[ImageStep] = []
@@ -272,6 +300,7 @@ def plan_update(
     notes: list[str] = []
     warnings: list[str] = []
     changes: list[Change] = []
+    unchecked: list[str] = []
     pulls: dict[str, ImageStep] = {}  # one pull per reference
 
     def skip(name: str, why: str) -> None:
@@ -307,7 +336,7 @@ def plan_update(
         latest = None
         if moving_to is not None:
             try:
-                latest = distribution_digest(api, moving_to)
+                latest = distribution_digest(api, moving_to, retry=retry)
             except (docker.errors.DockerException, requests.RequestException) as exc:
                 raise UpdateError(f"{name}: {moving_to}: {lookup_error(exc)}") from None
             except ValueError, KeyError, TypeError:
@@ -319,9 +348,11 @@ def plan_update(
             why = "pinned by digest or image ID, so not updated."
         else:
             try:
-                latest, why = newest_digest(api, info, ref)
+                latest, why = newest_digest(api, info, ref, retry)
             except UpdateError as exc:
                 skip(name, str(exc))
+                if isinstance(exc, LookupRefused):
+                    unchecked.append(name)
                 why = ""
         if latest is None and not follows:
             if why:
@@ -411,7 +442,7 @@ def plan_update(
             projects.add(project)
             keys.add(f"name:{host_id}:project:{project}")
     if not changes:
-        return Planned(None, tuple(notes), ())
+        return Planned(None, tuple(notes), (), tuple(unchecked))
     # Outside the plan (another stack, or none): it would lose its network. ponytail:
     # only network_mode is in the container list; ipc and pid modes need an inspect each.
     users = namespace_users(api, planned)
@@ -439,7 +470,7 @@ def plan_update(
         projects=tuple(sorted(projects)),
         recreate=True,
     )
-    return Planned(plan, tuple(notes), tuple(changes))
+    return Planned(plan, tuple(notes), tuple(changes), tuple(unchecked))
 
 
 def plan_containers(
@@ -450,6 +481,7 @@ def plan_containers(
     api_version: str,
     *,
     tag: str | None = None,
+    retry: bool = True,
 ) -> Planned:
     """Blocking. plan_update for the containers; with tag, each switches to it
     (updates/switch.py). One made from an image ID has no repository: UpdateError."""
@@ -464,7 +496,7 @@ def plan_containers(
         if moving_to is None:
             raise UpdateError(f"{name}: made from an image ID, it has no repository to follow.")
         moves[str(info["Id"])] = moving_to
-    return plan_update(api, host_id, container_ids, own, api_version, switch=moves)
+    return plan_update(api, host_id, container_ids, own, api_version, switch=moves, retry=retry)
 
 
 def plan_stack(
@@ -477,6 +509,7 @@ def plan_stack(
     *,
     tag: str | None = None,
     main: str | None = None,
+    retry: bool = True,
 ) -> Planned:
     """Blocking. plan_update for the Compose project's containers on this daemon, found
     now and put in dependency order. With tag, the stack's main service (main, or the one
@@ -512,8 +545,9 @@ def plan_stack(
         {m.id: m.healthy for m in members},
         stack=True,
         switch=moves,
+        retry=retry,
     )
-    return Planned(planned.plan, (*notes, *planned.notes), planned.changes)
+    return Planned(planned.plan, (*notes, *planned.notes), planned.changes, planned.unchecked)
 
 
 def stack_names(api: Any, own: frozenset[str]) -> list[str]:

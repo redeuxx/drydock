@@ -134,9 +134,14 @@ async def test_rows_with_a_newer_image_are_marked_and_filtered(admin: Browser, m
         {
             "a" * 64: Verdict("update", "The registry has a newer nginx:1.27.", "nginx:1.27", NEW),
             "b" * 64: Verdict("current", "Up to date.", "postgres:17", OLD),
+            "c" * 64: Verdict("error", "The registry lookup failed (HTTP 429).", "redis:7"),
         },
     )
     page = (await admin.get(f"/containers?host={host_id}")).text
+    unchecked = f'href="/containers?host={host_id}&amp;status=unchecked">1 container could not'
+    assert unchecked in page and unchecked in (await admin.get(f"/stacks?host={host_id}")).text
+    failed = (await admin.get(f"/containers?host={host_id}&status=unchecked")).text
+    assert "1 of 4 containers" in failed and "HTTP 429" in failed
     assert page.count(">update</span>") == 1 and "1 with a newer image, checked just now" in page
     assert "The registry has a newer nginx:1.27." in page and "Not checked yet." in page
     filtered = (await admin.get(f"/containers?host={host_id}&status=updates")).text

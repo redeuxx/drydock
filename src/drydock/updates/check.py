@@ -206,7 +206,9 @@ def check(
     def registry(ref: str) -> str:
         if ref not in asked:
             try:
-                asked[ref] = distribution_digest(api, ref)
+                # No retry: the next pass asks again (errors are not kept), and a page
+                # waits for this one.
+                asked[ref] = distribution_digest(api, ref, retry=False)
             except Exception as exc:  # verdict() tells which kind; kept for the next ask
                 asked[ref] = exc
         found = asked[ref]
@@ -337,6 +339,9 @@ class UpdateChecker:
                 abandon_on_cancel=True,
             )
             result = HostChecks(utcnow(), verdicts)
+            if failed := result.count("error"):
+                # The page says so too; here for when a policy run later finds nothing.
+                log.warning("Host %s: %d containers could not be checked", host.id, failed)
         except Exception as exc:
             # The last verdicts stay, with when they were made; the loop tries again soon.
             if isinstance(exc, HostUnavailable):

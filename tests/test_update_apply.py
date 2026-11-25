@@ -13,7 +13,7 @@ from drydock.hosts.helper import helper_labels
 from drydock.restore.apply import ApplyError
 from drydock.updates import apply as update_apply
 from drydock.updates import versions
-from drydock.updates.apply import UpdateError, plan_update, settled
+from drydock.updates.apply import UpdateError, plan_update, settled, unchecked_error
 from drydock.updates.check import HostChecks, Verdict
 from tests.conftest import Browser, add_user
 from tests.test_status import a_host_with_containers
@@ -64,6 +64,8 @@ class Api:
     def _get(self, url: str, timeout: float) -> str:
         if self.latest == "fail":
             raise requests.ConnectionError("x")
+        if self.latest == "denied":
+            raise docker.errors.APIError("x", response=type("R", (), {"status_code": 401})())
         return url
 
     def _result(self, response: str, json: bool) -> dict[str, Any]:
@@ -316,6 +318,23 @@ def test_a_stack_leaves_alone_what_cannot_be_updated() -> None:
     assert (
         planned.notes[0] == "c4444: drydock does not update itself or its own project. Left alone."
     )
+
+
+def test_a_stack_names_the_members_whose_registry_could_not_be_asked() -> None:
+    web = "5" * 64
+    api = Api({web: inspect(web)}, latest="fail")
+    planned = plan_update(api, 1, [web], frozenset(), "1.47", stack=True)
+    assert planned.plan is None and planned.unchecked == ("c5555",)
+    assert planned.notes == ("c5555: The registry lookup failed. Left alone.",)
+    assert "could not be asked about c5555, so it was not updated" in unchecked_error(
+        planned.unchecked
+    )
+    assert plan_update(Api({web: inspect(web)}), 1, [web], frozenset(), "1.47").unchecked == ()
+    # A refusal that stays (a private image): a note as before, the run does not fail.
+    denied = plan_update(
+        Api({web: inspect(web)}, "denied"), 1, [web], frozenset(), "1.47", stack=True
+    )
+    assert denied.unchecked == () and "refused the lookup" in denied.notes[0]
 
 
 def test_containers_that_remove_themselves_are_never_updated() -> None:

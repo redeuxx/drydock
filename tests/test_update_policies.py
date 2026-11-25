@@ -214,24 +214,32 @@ async def test_policy_runs_tell_their_target(admin: Browser) -> None:
         db.add(policy)
         db.flush()
         runs = {}
-        for status in ("done", "failed"):
+        for key, status, error in (
+            ("done", "done", None),
+            ("failed", "failed", "boom"),
+            ("partial", "done", "The registry could not be asked about db"),
+        ):
             run = Run(
                 job_id=None,
                 kind="update",
                 status=status,
                 target_label="web",
                 plan=json.dumps({"update": {"policy_id": policy.id}}),
-                error="boom" if status == "failed" else None,
+                error=error,
             )
             db.add(run)
             db.flush()
-            runs[status] = run.id
+            runs[key] = run.id
         policy_id = policy.id
     notifier = admin.app.state.notifier
     assert notifier._load(runs["done"]) == [], "success is told only when asked"
     ((name, url, title, body, failure),) = notifier._load(runs["failed"])
     assert (name, url, failure) == ("ops", "ntfy://x/y", True)
     assert title == "drydock: update of web failed" and "Error: boom" in body
+    # Updated only in part: told like a failure.
+    ((_, _, title, body, failure),) = notifier._load(runs["partial"])
+    assert title == "drydock: update of web succeeded in part" and failure
+    assert "Error: The registry could not be asked about db" in body
     with admin.app.state.sessionmaker() as db, db.begin():
         db.get(UpdatePolicy, policy_id).notify_success = True
     assert notifier._load(runs["done"])[0][2] == "drydock: update of web succeeded"
@@ -337,11 +345,15 @@ async def test_a_policy_for_every_stack(admin: Browser, monkeypatch, tmp_path) -
     dispatcher = admin.app.state.dispatcher
     parent = dispatcher._create_policy_run(policy_id, "the schedule")
     assert admin.sql("SELECT target_label FROM runs WHERE id = ?", (parent,)) == [("every stack",)]
-    monkeypatch.setattr(dispatcher_module.update_apply, "stack_names", lambda api, own: list("abc"))
+    names = lambda api, own: list("abcd")  # noqa: E731
+    monkeypatch.setattr(dispatcher_module.update_apply, "stack_names", names)
     monkeypatch.setattr(
         dispatcher_module.update_apply,
         "plan_stack",
-        lambda api, host, name, *rest: SimpleNamespace(plan=None if name == "b" else object()),
+        lambda api, host, name, *rest, **kw: SimpleNamespace(
+            plan=None if name in "bd" else object(),
+            unchecked=("d-web-1",) if name == "d" else (),
+        ),
     )
     children: list[str] = []
 
@@ -351,6 +363,7 @@ async def test_a_policy_for_every_stack(admin: Browser, monkeypatch, tmp_path) -
             run = Run(
                 kind="update",
                 status="failed" if project == "c" else "done",
+                error="in part" if project == "a" else None,
                 triggered_by=by,
                 target_label=label,
             )
@@ -366,13 +379,15 @@ async def test_a_policy_for_every_stack(admin: Browser, monkeypatch, tmp_path) -
     active = dispatcher_module.ActiveRun(parent, None)
     handle = SimpleNamespace(client=SimpleNamespace(api=None), api_version="1.47")
     host = SimpleNamespace(id=host_id, name="web-host")
-    with pytest.raises(DispatchError, match=r"Not every stack was updated: c \(#\d+ failed\)"):
+    failed = r"Not every stack was updated: a \(#\d+ in part\), c \(#\d+ failed\), d \(registry"
+    with pytest.raises(DispatchError, match=failed):
         await dispatcher._update_every_stack(
             active, handle, host, frozenset(), "the schedule", RunLog(tmp_path / "run.log")
         )
     assert children == ["a", "c"], "b has nothing to update: no run"
     log = (tmp_path / "run.log").read_text()
-    assert "Stacks on web-host: a, b, c." in log and "Stack b: nothing to update." in log
+    assert "Stacks on web-host: a, b, c, d." in log and "Stack b: nothing to update." in log
+    assert "Stack d: The registry could not be asked about d-web-1" in log
 
 
 async def test_the_runs_pages_show_what_an_update_moved(admin: Browser) -> None:

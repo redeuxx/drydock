@@ -17,6 +17,7 @@ import uuid
 from collections.abc import Iterator
 from compression import zstd
 from pathlib import Path
+from typing import Any
 
 import docker
 import pytest
@@ -262,6 +263,46 @@ def test_reference_only_tries_each_digest_and_skips_malformed_ones() -> None:
     )
     assert entry.saved and api.asked == []
     assert "no registry digest" in lines[-1]
+
+
+def api_error(status: int) -> docker.errors.APIError:
+    return docker.errors.APIError("x", response=type("R", (), {"status_code": status})())
+
+
+@pytest.mark.parametrize(
+    ("answers", "found", "asks"),
+    [
+        ([api_error(429), DIGEST_A], DIGEST_A, 2),  # the registry's rate limit passed
+        ([api_error(500), requests.ReadTimeout("slow"), DIGEST_A], DIGEST_A, 3),
+        ([api_error(429)] * 3, "HTTP 429", 3),  # gives up after the retries
+        ([api_error(404), DIGEST_A], "HTTP 404", 1),  # no such tag: not asked again
+        ([api_error(401), DIGEST_A], "HTTP 401", 1),
+    ],
+)
+def test_registry_lookup_asks_again_when_refused_for_now(
+    monkeypatch: pytest.MonkeyPatch, answers: list[object], found: str, asks: int
+) -> None:
+    waits: list[float] = []
+    monkeypatch.setattr(capture, "DISTRIBUTION_RETRIES", (5, 30))
+    monkeypatch.setattr(capture.time, "sleep", waits.append)
+    api = RegistryAPI({})
+    queue = list(answers)
+
+    def answer(url: str, json: bool = False) -> dict[str, Any]:
+        given = queue.pop(0)
+        if isinstance(given, BaseException):
+            raise given
+        return {"Descriptor": {"digest": given}}
+
+    api._result = answer  # type: ignore[method-assign]
+    if found.startswith("HTTP"):
+        with pytest.raises(docker.errors.APIError) as raised:
+            capture.distribution_digest(api, "ghcr.io/me/app:v3")
+        assert f"HTTP {raised.value.status_code}" == found
+    else:
+        assert capture.distribution_digest(api, "ghcr.io/me/app:v3") == found
+    assert len(api.asked) == asks
+    assert waits == [5, 30][: asks - 1]
 
 
 def test_docker_py_private_api_used_for_registry_lookup() -> None:

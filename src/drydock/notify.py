@@ -445,8 +445,9 @@ class Notifier:
 
     def _update_message(self, db: Session, run: Run) -> tuple[list[Any], str, str, bool]:
         """The target of the update policy that started the run (failures always, success
-        when the policy asks), and the message."""
-        failure = run.status in FAILURE_STATUSES
+        when the policy asks), and the message. A done run with an error updated only some of
+        its containers (the registry could not be asked about the rest): sent as a failure."""
+        failure = run.status in FAILURE_STATUSES or (run.status == "done" and bool(run.error))
         if not failure and run.status not in SUCCESS_STATUSES:
             return [], "", "", failure
         try:
@@ -464,7 +465,10 @@ class Notifier:
         target = db.get(NotificationTarget, policy.notify_target_id)
         if target is None or not target.enabled:
             return [], "", "", failure
-        outcome = "succeeded" if run.status == "done" else run.status
+        if run.status == "done":
+            outcome = "succeeded in part" if run.error else "succeeded"
+        else:
+            outcome = run.status
         subject = run.target_label or policy.name
         lines = [f"Update run #{run.id} of {subject} ({policy.name}) {outcome}."]
         if run.error:

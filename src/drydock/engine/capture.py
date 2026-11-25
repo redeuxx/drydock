@@ -80,6 +80,7 @@ PLATFORM_API = (1, 48)
 GO_MODE_DIR = 1 << 31
 # Each registry lookup runs after the containers are stopped; keep a slow registry short.
 DISTRIBUTION_TIMEOUT = 10
+DISTRIBUTION_RETRIES = (5, 30)  # seconds before each new ask of a refused lookup
 REPO_DIGEST_RE = re.compile(r"[a-z0-9][a-z0-9._/:-]{0,254}@(sha256:[0-9a-f]{64})")
 SCOPE_PARTS = {
     "config": {"config"},
@@ -344,14 +345,30 @@ def add_compose_files(env: CaptureEnv, plan: Plan, log: Log) -> None:
 # MANIFEST
 
 
-def distribution_digest(api, ref: str) -> str:
+def distribution_digest(api, ref: str, *, retry: bool = True) -> str:
     """The digest the registry serves for ref (a tag or repo@digest reference), through the
     daemon: GET /distribution/<ref>/json, which the socket proxy allows as a read-only
     lookup. For a multi-platform image it is the index digest, as RepoDigests records it.
     Uses docker-py's private _get, _url and _result for the timeout. Raises a Docker or
-    requests error, or ValueError, KeyError or TypeError for an answer not understood."""
-    response = api._get(api._url("/distribution/{0}/json", ref), timeout=DISTRIBUTION_TIMEOUT)
-    return api._result(response, json=True)["Descriptor"]["digest"]
+    requests error, or ValueError, KeyError or TypeError for an answer not understood.
+
+    A refusal that passes (the registry's rate limit, HTTP 429, or a server error) or a
+    timeout is asked again after each of DISTRIBUTION_RETRIES seconds (unless retry is
+    False): registries such as ghcr.io limit anonymous lookups per public address, which
+    every machine behind the same router shares, so one busy minute must not skip an
+    update until the next run."""
+    waits = list(DISTRIBUTION_RETRIES) if retry else []
+    while True:
+        try:
+            response = api._get(
+                api._url("/distribution/{0}/json", ref), timeout=DISTRIBUTION_TIMEOUT
+            )
+            return api._result(response, json=True)["Descriptor"]["digest"]
+        except (docker.errors.APIError, requests.Timeout) as exc:
+            status = exc.status_code if isinstance(exc, docker.errors.APIError) else None
+            if not waits or (status is not None and status != 429 and status < 500):
+                raise
+            time.sleep(waits.pop(0))
 
 
 def registry_confirms(api, digests: list[str], cancel: threading.Event) -> tuple[str | None, str]:
@@ -370,7 +387,8 @@ def registry_confirms(api, digests: list[str], cancel: threading.Event) -> tuple
             reason = "its registry digest is malformed"
             continue
         try:
-            found = distribution_digest(api, repo_digest)
+            # No retry: a backup saves an image it cannot confirm, and must not wait.
+            found = distribution_digest(api, repo_digest, retry=False)
         except (docker.errors.DockerException, requests.RequestException) as exc:
             reason = f"the registry lookup failed ({type(exc).__name__})"
             continue

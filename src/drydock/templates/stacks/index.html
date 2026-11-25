@@ -134,7 +134,7 @@
 {% set ready = true %}
 {% endif %}
 {% if ready %}
-{% if operator and chosen %}{{ check_updates("/stacks/check-updates", checks, newer, "stack", {"status": status, "q": q}) }}{% endif %}
+{% if operator and chosen %}{{ check_updates("/stacks/check-updates", checks, newer, "stack", {"status": status, "q": q}, snap) }}{% endif %}
 {% if admin and chosen and stacks and not every %}
 <p class="mb-2 text-sm"><a class="link" href="/updates/new?{{ {'host': chosen.id, 'type': 'stack', 'target': '*'}|urlencode }}">Schedule updates of every stack on {{ chosen.name }}</a></p>
 {% endif %}

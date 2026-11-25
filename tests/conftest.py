@@ -13,6 +13,7 @@ import pytest
 from fastapi import FastAPI
 
 from drydock.config import Settings, load_settings
+from drydock.engine import capture
 from drydock.main import create_app
 from tests.rclone_support import (
     SftpServer,
@@ -137,6 +138,16 @@ def sqlite_ts(dt: datetime) -> str:
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+def no_registry_waits() -> Iterator[None]:
+    """Registry lookups are still asked again, without the waits between. Its own
+    MonkeyPatch: an autouse fixture taking the shared one would set it up first, and so
+    undo every test's patches only after the app's shutdown."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(capture, "DISTRIBUTION_RETRIES", (0, 0))
+        yield
 
 
 @pytest.fixture

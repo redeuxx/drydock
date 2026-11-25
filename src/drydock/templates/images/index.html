@@ -27,7 +27,7 @@
   </ul>
 </div>
 {% endif %}
-{% if operator and chosen %}{{ check_updates("/images/check-updates", checks, newer, "image") }}{% endif %}
+{% if operator and chosen %}{{ check_updates("/images/check-updates", checks, newer, "image", {}, snap) }}{% endif %}
 <div class="mb-2 flex flex-wrap items-center gap-2 text-sm">
   <span class="opacity-70">{{ count }} image{{ "" if count == 1 else "s" }}, {{ size|filesize or "0 bytes" }}</span>
   {% set prunable = chosen.enabled if chosen else hosts|selectattr("enabled")|list|length > 0 %}

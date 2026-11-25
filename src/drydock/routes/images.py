@@ -210,6 +210,8 @@ def page(
         hosts=hosts,
         chosen=chosen,
         host_value=host_value,
+        # Its containers as last read: "could not be checked" counts only those there.
+        snap=request.app.state.status.snapshot(chosen.id) if chosen is not None else None,
         images=shown,
         count=len(images),
         size=sum(i.size for i in images),

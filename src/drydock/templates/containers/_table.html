@@ -123,7 +123,7 @@
   <input type="hidden" name="stack" value="{{ stack }}">
   <input type="hidden" name="q" value="{{ q }}">
   <button type="submit" class="btn btn-xs"><span class="spinner" aria-hidden="true"></span>Check for updates</button>
-  <span class="opacity-70">{% if checks %}{{ checks.count("update", snap.containers|map(attribute="id")) }} with a newer image, checked {{ checks.checked_at|ago }}{% if checks.error %} ({{ checks.error }}){% endif %}{% else %}Not checked yet{% endif %}</span>
+  <span class="opacity-70">{% if checks %}{{ checks.count("update", snap.containers|map(attribute="id")) }} with a newer image, checked {{ checks.checked_at|ago }}{% if checks.error %} ({{ checks.error }}){% endif %}{% set failed = checks.count("error", snap.containers|map(attribute="id")) %}{% if failed %}; <a class="link text-warning" href="/containers?{{ {'host': chosen.id, 'status': 'unchecked'}|urlencode }}">{{ failed }} container{{ "" if failed == 1 else "s" }} could not be checked</a>{% endif %}{% else %}Not checked yet{% endif %}</span>
 </form>
 {% endif %}
 {{ confirm("confirm-stop", "stop", "Stop", "Stop the selected containers? Each gets its own stop timeout to shut down.") }}
