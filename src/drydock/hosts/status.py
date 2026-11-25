@@ -34,6 +34,7 @@ from typing import Any
 import anyio
 import anyio.to_thread
 import docker.errors
+import docker.utils
 import requests
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
@@ -44,6 +45,7 @@ from drydock.hosts.helper import is_helper
 from drydock.hosts.inventory import PROJECT_LABEL, SERVICE_LABEL
 from drydock.hosts.manager import HostManager, HostUnavailable
 from drydock.models import HealthAck, Host, utcnow
+from drydock.updates.versions import image_version
 
 log = logging.getLogger("drydock.hosts.status")
 
@@ -114,6 +116,7 @@ class ContainerStatus:
     labels: tuple[tuple[str, str], ...] = ()
     # It binds a host port (HostConfig.PortBindings), running or not, as last inspected.
     bound: bool = False
+    version: str = ""  # its image's version (updates/versions.py), "" when unknown
 
     @property
     def status_text(self) -> str:
@@ -206,6 +209,25 @@ class Reading:
     bound: dict[str, bool] = field(default_factory=dict)  # binds a host port, from it too
     # Containers whose every Compose label came from their image: no stack members.
     inherited: set[str] = field(default_factory=set)
+    versions: dict[str, str] = field(default_factory=dict)  # its image's version
+
+
+def version_of(api, image_id: str, created_from: str, cache: dict[tuple[str, str], str]) -> str:
+    """Blocking. The version (updates/versions.py) of the image a container made from the
+    reference created_from runs. Kept by image ID and repository, which fix it; raises
+    CONTAINER_ERRORS, which are not kept."""
+    if not image_id:
+        return ""
+    # An image ID or digest as created_from gives a repository no <NAME>_VERSION matches.
+    repository = docker.utils.parse_repository_tag(created_from.partition("@")[0])[0]
+    key = (image_id, repository)
+    if key not in cache:
+        try:
+            config = api.inspect_image(image_id).get("Config")
+        except docker.errors.NotFound:
+            config = None
+        cache[key] = image_version(config, repository)
+    return cache[key]
 
 
 def health_in(inspect: dict[str, Any]) -> str | None:
@@ -244,19 +266,23 @@ def read(
     inspected: dict[str, Inspected],
     now: float,
     image_labels: dict[str, dict[str, Any]] | None = None,
+    image_versions: dict[tuple[str, str], str] | None = None,
 ) -> Reading:
     """Blocking. Everything a snapshot needs from one daemon. inspected (what the last
-    inspect of each container found) and image_labels (by image ID) are kept between polls
-    and updated here; containers and images no longer in use are dropped from them.
+    inspect of each container found), image_labels (by image ID) and image_versions
+    (version_of) are kept between polls and updated here; containers and images no longer
+    in use are dropped from them.
 
     A container someone ran from an image Compose built carries the image's project label
     without being part of that project. Like stacks.discover, which backups and updates go
     by, the snapshot gives such a container no project, so the stacks page, stack actions
     and the containers page's covering jobs never count it. An image is inspected once
-    while containers use it (its ID is its content, so its labels never change), and only
-    for containers with a project label."""
+    while containers use it (its ID is its content, so its labels never change) for its
+    labels, only for containers with a project label, and once for its version."""
     if image_labels is None:
         image_labels = {}
+    if image_versions is None:
+        image_versions = {}
     info = api.info()
     containers = [
         c for c in api.containers(all=True) if not is_helper(c.get("Labels") or {}, instance_id)
@@ -268,6 +294,7 @@ def read(
     images: dict[str, str] = {}
     bound: dict[str, bool] = {}
     inherited: set[str] = set()
+    versions: dict[str, str] = {}
     # ponytail: one request per container, one after another. Fine for tens of containers
     # per host; send them concurrently (bounded by the collector's threads) if a host's
     # poll ever takes close to INTERVAL.
@@ -312,10 +339,20 @@ def read(
         health[cid] = seen.health
         images[cid] = seen.image
         bound[cid] = seen.bound
+        with contextlib.suppress(*CONTAINER_ERRORS):  # none this time, asked again next poll
+            versions[cid] = version_of(
+                api,
+                str(c.get("ImageID") or ""),
+                seen.image or str(c.get("Image", "")),
+                image_versions,
+            )
     for gone in inspected.keys() - {c["Id"] for c in containers}:
         del inspected[gone]
-    for gone in image_labels.keys() - {c.get("ImageID") for c in containers}:
+    used = {c.get("ImageID") for c in containers}
+    for gone in image_labels.keys() - used:
         del image_labels[gone]
+    for gone in [key for key in image_versions if key[0] not in used]:
+        del image_versions[gone]
     return Reading(
         info=info,
         containers=containers,
@@ -328,6 +365,7 @@ def read(
         images=images,
         bound=bound,
         inherited=inherited,
+        versions=versions,
     )
 
 
@@ -487,6 +525,7 @@ def summarize(
                 ports=ports_of(c),
                 labels=tuple(sorted((str(k), str(v)) for k, v in labels.items())),
                 bound=reading.bound.get(cid, False),
+                version=reading.versions.get(cid, ""),
             )
         )
     # ponytail: host CPU sums the containers with two samples, so for one poll it leaves
@@ -562,6 +601,7 @@ class HostCache:
     samples: dict[str, Sample] = field(default_factory=dict)
     inspected: dict[str, Inspected] = field(default_factory=dict)
     image_labels: dict[str, dict[str, Any]] = field(default_factory=dict)  # by image ID
+    image_versions: dict[tuple[str, str], str] = field(default_factory=dict)  # version_of
     # (CPU %, memory %) of the host, and (CPU %, memory bytes) of each container, per
     # reading; None where a reading had no value.
     history: deque[tuple[float | None, float | None]] = field(
@@ -826,6 +866,7 @@ class StatusCollector:
                     cache.inspected,
                     time.monotonic(),
                     cache.image_labels,
+                    cache.image_versions,
                 )
             except READ_ERRORS as exc:
                 cache.close_handle()

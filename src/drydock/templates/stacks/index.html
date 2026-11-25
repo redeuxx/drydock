@@ -141,13 +141,14 @@
 <p class="mb-2 text-sm opacity-70">{% if matched == total %}{{ total }} stack{{ "" if total == 1 else "s" }}{% else %}{{ matched }} of {{ total }} stacks{% endif %}</p>
 <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
   <table class="table table-zebra table-sm">
-    <thead><tr><th scope="col" abbr="Stack">Stack {{ about_button("about-main", "A stack's main service") }}</th>{% if not chosen %}<th scope="col">Host</th>{% endif %}<th scope="col">Running</th><th scope="col" abbr="Tags" class="max-sm:hidden">Tags {{ about_button("about-tags", "The tags a stack follows") }}</th><th scope="col">Updates</th><th scope="col" class="max-md:hidden">Backup jobs</th><th scope="col" class="max-lg:hidden">Auto-update</th>{% if operator %}<th scope="col">Actions</th>{% endif %}</tr></thead>
+    <thead><tr><th scope="col" abbr="Stack">Stack {{ about_button("about-main", "A stack's main service") }}</th>{% if not chosen %}<th scope="col">Host</th>{% endif %}<th scope="col">Running</th><th scope="col" abbr="Version" class="max-sm:hidden">Version {{ about_button("about-version", "A stack's version") }}</th><th scope="col" abbr="Tags" class="max-sm:hidden">Tags {{ about_button("about-tags", "The tags a stack follows") }}</th><th scope="col">Updates</th><th scope="col" class="max-md:hidden">Backup jobs</th><th scope="col" class="max-lg:hidden">Auto-update</th>{% if operator %}<th scope="col">Actions</th>{% endif %}</tr></thead>
     <tbody>
       {% for s in stacks %}
       <tr>
         <td class="font-semibold"><a class="link link-hover" href="/containers?{{ {'host': s.host.id, 'stack': s.name}|urlencode }}">{{ s.name }}</a>{% if s.main and s.total > 1 %}<div class="text-xs font-normal opacity-70">main: {{ s.main }}</div>{% endif %}</td>
         {% if not chosen %}<td>{{ s.host.name }}</td>{% endif %}
         <td>{{ s.running }} of {{ s.total }}</td>
+        <td class="max-sm:hidden break-words">{{ s.version }}</td>
         <td class="max-sm:hidden">{% for t in s.tags %}<span class="badge badge-soft badge-neutral badge-sm mr-1">{{ t }}</span>{% endfor %}</td>
         <td>{% if s.newer %}<span class="badge badge-soft badge-info badge-sm whitespace-nowrap" title="{{ s.newer }} of its containers {{ 'has' if s.newer == 1 else 'have' }} a newer image">{{ s.newer }} newer</span>
           <ul class="mt-1 text-xs opacity-70 break-words">{% for line in s.moves %}<li>{{ line }}</li>{% endfor %}</ul>{% endif %}</td>
@@ -169,7 +170,7 @@
         {% endif %}
       </tr>
       {% else %}
-      <tr><td colspan="{{ (7 if operator else 6) + (0 if chosen else 1) }}">{% if total %}No stack matches the filters.{% else %}No Compose stacks on {{ "this host" if chosen else "any host" }}.{% endif %}</td></tr>
+      <tr><td colspan="{{ (8 if operator else 7) + (0 if chosen else 1) }}">{% if total %}No stack matches the filters.{% else %}No Compose stacks on {{ "this host" if chosen else "any host" }}.{% endif %}</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -180,6 +181,9 @@
   <p>The service the rest of the stack is there for: the one no other service depends on (by <code>depends_on</code>), preferring one that binds a host port. It is named under each stack.</p>
   <p>Switching the stack's tag moves the main service and its replicas. Images of the same app from the same publisher on the same tag move with it (immich-server and immich-machine-learning), so an app and its workers stay on one version. A database or a cache keeps its own tag, and when the main service follows <code>latest</code>, or is one of Docker Hub's official images, it moves alone.</p>
   {% if operator %}<p>Pick another service in Switch tag{% if admin %}, or on an update policy,{% endif %} when drydock guesses wrong.</p>{% endif %}
+{% endcall %}
+{% call about_note("about-version", "A stack's version") %}
+  <p>The version of its main service's image, as the image names it: the <code>&lt;NAME&gt;_VERSION</code> variable of Docker's official images (<code>NGINX_VERSION</code>), else its <code>org.opencontainers.image.version</code> label. Blank when the image names none.</p>
 {% endcall %}
 {% call about_note("about-tags", "The tags a stack follows") %}
   <p>Each tag its containers' images name: <code>1.27</code> in <code>nginx:1.27</code>, <code>latest</code> when an image names none. Updates bring the newest image of each container's own tag.</p>

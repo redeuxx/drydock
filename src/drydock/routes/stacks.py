@@ -74,6 +74,7 @@ class Stack:
     tags: list[str]  # the tags its members follow; "pinned" for a digest or image ID
     main: str | None  # its main service (updates/switch.py), as the cache shows it
     main_tag: str | None  # the tag main follows; None when pinned
+    version: str  # main's image version (hosts/status.py), "" when unknown
     follow: list[str]  # the other members that switch tags with main
     services: list[str]
     jobs: list[Job]
@@ -161,6 +162,7 @@ def page(
         main = tag_switch.main_service(parts)
         moving = tag_switch.followers(parts, main, "next") if main is not None else {}
         names = {c.id: c.name for c in members}
+        versions = {c.id: c.version for c in members}
         stacks.append(
             Stack(
                 h,
@@ -176,6 +178,7 @@ def page(
                 sorted({followed_tag(c.image) or "pinned" for c in members}),
                 (main.service or names[main.id]) if main is not None else None,
                 followed_tag(main.image) if main is not None else None,
+                versions[main.id] if main is not None else "",
                 sorted(names[i] for i in moving if main is not None and i != main.id),
                 sorted({c.service for c in members if c.service}),
                 of(h)[0][("stack", name)],

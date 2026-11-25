@@ -11,11 +11,12 @@
    actions all submit #container-actions, and stop and restart ask first.
    Each row's container is "<host ID>:<container ID>" in the forms.
    Names, images, addresses and ports come from the host: autoescaped only. #}
-{# A glance only: the name (its stack under it), state, load and backups. The rest of a
+{# A glance only: the name (its stack under it), state, version, load and backups. The rest of a
    container is in its row's dialog. Name takes what the fixed columns leave. #}
 {% set columns = [
   ("name", "Name", ""),
   ("state", "State", "w-28 max-sm:hidden"),
+  (None, "Version", "w-32 max-xl:hidden"),
   ("cpu", "CPU", "w-24 max-sm:hidden"),
   ("memory", "Memory", "w-36 max-sm:hidden"),
   (None, "Last backup", "w-44 max-sm:w-28"),
@@ -177,13 +178,14 @@
         <td>
           <div class="flex min-w-0 items-center gap-1 font-semibold"><button type="button" class="truncate cursor-pointer after:absolute after:inset-0" commandfor="ctr-{{ loop.index }}" command="show-modal" aria-haspopup="dialog" title="{{ c.name }}">{{ c.name }}</button>{% if v and v.state == "update" %}<span class="badge badge-soft badge-info badge-xs shrink-0" title="{{ v.reason }} {{ v.moves }}">update</span>{% endif %}</div>
           {# On a phone the State column folds in here. #}
-          <div class="flex min-w-0 items-center gap-1 text-xs"><span class="badge badge-soft badge-xs sm:hidden {{ state_tones.get(c.state, 'badge-neutral') }}">{{ c.state }}{% if c.health %}, {{ c.health }}{% endif %}</span>{% if c.project %}<span class="truncate opacity-60" title="Stack {{ c.project }}">{{ c.project }}</span>{% endif %}</div>
+          <div class="flex min-w-0 items-center gap-1 text-xs"><span class="badge badge-soft badge-xs sm:hidden {{ state_tones.get(c.state, 'badge-neutral') }}">{{ c.state }}{% if c.health %}, {{ c.health }}{% endif %}</span>{% if c.project %}<span class="truncate opacity-60" title="Stack {{ c.project }}">{{ c.project }}</span>{% endif %}{% if c.version %}<span class="truncate opacity-60 xl:hidden" title="Version {{ c.version }}">{{ c.version }}</span>{% endif %}</div>
         </td>
         {% if not chosen %}<td class="truncate max-md:hidden" title="{{ r.host.name }}">{{ r.host.name }}</td>{% endif %}
         <td class="truncate max-sm:hidden" title="{{ c.status_text }}">
           <span class="badge badge-soft badge-sm {{ state_tones.get(c.state, 'badge-neutral') }}">{{ c.state }}</span>
           {% if c.health %}<span class="ml-1 inline-block size-2 rounded-full {{ health_tones[c.health] }}" title="{{ c.health }}"></span><span class="sr-only">, {{ c.health }}</span>{% endif %}
         </td>
+        <td class="truncate max-xl:hidden" title="{{ c.version }}">{{ c.version }}</td>
         {% set lines = r.lines %}
         <td class="truncate max-sm:hidden">{% if c.cpu_percent is not none %}{{ "%.1f"|format(c.cpu_percent) }}%{% endif %}{{ sparkline(lines[0], None, "block h-3 w-full", floor=1) }}</td>
         <td class="truncate max-sm:hidden">{% if c.mem_bytes is not none %}{{ c.mem_bytes|filesize }}{% if c.mem_limit %} / {{ c.mem_limit|filesize }}{% endif %}{% endif %}{{ sparkline(lines[1], c.mem_limit, "block h-3 w-full") }}</td>
@@ -234,7 +236,7 @@
       <dt class="font-semibold">Tag</dt><dd>{{ tag_badge(c.image) }} {{ about_button("about-tag", "The tag a container follows") }} <span class="text-xs opacity-70">{% if c.image|tag %}Updates bring the newest image of this tag.{% else %}It never changes by itself.{% endif %}</span></dd>
       {% set v = r.verdict %}
       <dt class="font-semibold">Updates</dt><dd>{% if v %}{{ v.reason }}{% if v.latest %} <span class="font-mono text-xs opacity-70">({{ v.latest[7:19] }})</span>{% endif %}{% else %}Not checked yet.{% endif %}</dd>
-      {% if v and v.version %}<dt class="font-semibold">Version</dt><dd class="break-words">{{ v.version }}</dd>{% endif %}
+      {% if c.version %}<dt class="font-semibold">Version</dt><dd class="break-words">{{ c.version }}</dd>{% endif %}
       {% if v and v.state == "update" %}<dt class="font-semibold">Update</dt><dd class="break-words">{{ v.moves }}</dd>{% endif %}
       <dt class="font-semibold">State</dt><dd>{{ c.state }}{% if c.health %}, {{ c.health }}{% endif %}</dd>
       <dt class="font-semibold">Status</dt><dd>{{ c.status }}</dd>

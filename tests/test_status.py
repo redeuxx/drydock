@@ -93,6 +93,7 @@ def reading(containers: list[dict], stats_by_id: dict[str, dict], **kwargs: Any)
         restarts=kwargs.get("restarts", {}),
         volumes=kwargs.get("volumes", 3),
         networks=kwargs.get("networks", 4),
+        versions=kwargs.get("versions", {}),
     )
 
 
@@ -314,6 +315,7 @@ class FakeApi:
     inspected: list[str] = field(default_factory=list)
     image_labels: dict[str, Any] = field(default_factory=dict)  # by image ID, or an error
     images_inspected: list[str] = field(default_factory=list)
+    image_env: dict[str, list[str]] = field(default_factory=dict)  # by image ID
 
     def info(self) -> dict[str, Any]:
         return INFO
@@ -346,7 +348,7 @@ class FakeApi:
             raise docker.errors.NotFound("no such image")
         if isinstance(found, Exception):
             raise found
-        return {"Config": {"Labels": found}}
+        return {"Config": {"Labels": found, "Env": self.image_env.get(image_id)}}
 
     def volumes(self) -> dict[str, Any]:
         return {"Volumes": None}
@@ -419,7 +421,10 @@ def test_compose_labels_that_all_came_from_the_image_make_no_stack_member() -> N
         image_labels={"sha256:built": built, "sha256:broken": docker.errors.APIError("boom")},
     )
     cache: dict[str, dict[str, Any]] = {"sha256:removed": {}}
-    snapshot, _ = status.summarize(1, status.read(api, INSTANCE, {}, 100.0, cache), {}, NOW)
+    # Versions known already, so only the label reads inspect images.
+    versions = {(i, "busybox"): "" for i in ("sha256:built", "sha256:broken", "sha256:plain")}
+    reading = status.read(api, INSTANCE, {}, 100.0, cache, versions)
+    snapshot, _ = status.summarize(1, reading, {}, NOW)
     found = by_name(snapshot)
     assert (found["app-web-1"].project, found["app-web-1"].service) == ("app", "web")
     for name in ("lure", "odd"):
@@ -428,8 +433,44 @@ def test_compose_labels_that_all_came_from_the_image_make_no_stack_member() -> N
     assert snapshot.stacks == (1, 0, 0)
     assert api.images_inspected == ["sha256:built", "sha256:broken"], "once, with a project"
     assert set(cache) == {"sha256:built"}, "unused images are forgotten, errors not kept"
-    status.read(api, INSTANCE, {}, 110.0, cache)
+    status.read(api, INSTANCE, {}, 110.0, cache, versions)
     assert api.images_inspected[2:] == ["sha256:broken"]
+
+
+def test_read_gives_each_container_its_image_version() -> None:
+    """From the image the container runs, read once per image while containers use it; an
+    image that cannot be read gives none and is asked again."""
+    api = FakeApi(
+        [
+            summary("a", "web-1", ImageID="sha256:nginx", Image="nginx:1.27"),
+            summary("b", "web-2", ImageID="sha256:nginx", Image="nginx:1.27"),
+            summary("c", "app", ImageID="sha256:app", Image=f"ghcr.io/me/app@sha256:{'0' * 64}"),
+            summary("d", "odd", ImageID="sha256:broken"),
+            summary("e", "gone", ImageID="sha256:gone"),
+        ],
+        image_labels={
+            "sha256:nginx": {},
+            "sha256:app": {"org.opencontainers.image.version": "2.1.0"},
+            "sha256:broken": docker.errors.APIError("boom"),
+        },
+        image_env={"sha256:nginx": ["PATH=/usr/bin", "NGINX_VERSION=1.27.3"]},
+    )
+    versions = {("sha256:removed", "x"): "9"}
+    reading = status.read(api, INSTANCE, {}, 100.0, None, versions)
+    snapshot, _ = status.summarize(1, reading, {}, NOW)
+    assert {c.name: c.version for c in snapshot.containers} == {
+        "web-1": "1.27.3",
+        "web-2": "1.27.3",
+        "app": "2.1.0",
+        "odd": "",
+        "gone": "",
+    }
+    assert api.images_inspected == ["sha256:nginx", "sha256:app", "sha256:broken", "sha256:gone"]
+    assert {key[0] for key in versions} == {"sha256:nginx", "sha256:app", "sha256:gone"}, (
+        "unused images are forgotten, errors not kept"
+    )
+    status.read(api, INSTANCE, {}, 110.0, None, versions)
+    assert api.images_inspected[4:] == ["sha256:broken"]
 
 
 def test_read_inspects_on_new_state_change_or_age_only(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1551,7 +1592,8 @@ def test_the_tag_an_image_reference_follows() -> None:
 
 
 def two_hosts(admin: Browser) -> tuple[int, int]:
-    """rigel: web and db (stack app). vega: web (stack app, pinned by digest) and cache."""
+    """rigel: web (1.27.3) and db (16.4, stack app). vega: web (stack app, pinned by digest)
+    and cache."""
     rigel = add_host(admin)
     vega = add_host(admin, name="vega")
     app = {status.PROJECT_LABEL: "app"}
@@ -1566,7 +1608,9 @@ def two_hosts(admin: Browser) -> tuple[int, int]:
             ],
         ),
     ]:
-        snap = status.summarize(host_id, reading(found, {}), {}, datetime.now(UTC))[0]
+        versions = {"a" * 64: "1.27.3", "b" * 64: "16.4"}
+        found_reading = reading(found, {}, versions=versions)
+        snap = status.summarize(host_id, found_reading, {}, datetime.now(UTC))[0]
         put(admin.app.state.status, snap)
     return rigel, vega
 
@@ -1578,6 +1622,8 @@ async def test_every_hosts_containers_on_one_page(admin: Browser, monkeypatch) -
     assert '<option value="" selected>All hosts</option>' in page
     assert names_in_order(page) == ["cache", "db", "web", "web"]
     assert 'title="vega">vega</td>' in page and "4 containers" in page
+    assert page.count('title="1.27.3">1.27.3</td>') == 1, "rigel's web, in its column"
+    assert 'title="Version 16.4">16.4</span>' in page, "and under the name on narrow screens"
     assert f'value="{rigel}:' + "a" * 64 in page and f'value="{vega}:' + "c" * 64 in page
     assert f'hx-get="/containers/{vega}/{"c" * 64}/inspect"' in page
     assert 'id="check-updates"' not in page, "one host at a time"
@@ -1648,6 +1694,7 @@ async def test_every_hosts_stacks(admin: Browser, monkeypatch) -> None:
     assert f'href="/containers?host={rigel}&amp;stack=app"' in page
     assert f'href="/containers?host={vega}&amp;stack=app"' in page
     assert ">1.37.0</span>" in page and ">pinned</span>" in page
+    assert page.count('<td class="max-sm:hidden break-words">16.4</td>') == 1, "rigel's main"
     assert "Schedule updates of every stack" not in page and "Check for updates" not in page
     menu = page.split('<ul id="stack-1-menu" popover', 1)[1].split("</ul>", 1)[0]
     assert 'popovertarget="stack-1-menu"' in page and 'commandfor="stack-1-restart"' in menu
