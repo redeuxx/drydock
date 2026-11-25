@@ -162,6 +162,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             on_end=notifier.run_ended,
             rclone=rclone,
             on_reconnect=app.state.mark_reconnect,
+            on_policy_end=updates.policy_ran,
         )
         # Alerts leave out containers a run holds, and are told to the bell and targets.
         events.use(

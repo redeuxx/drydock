@@ -1,12 +1,14 @@
 """Update policies: the pages, their checks, the scheduler, the backup first and the
 notifications of the runs they start."""
 
+import asyncio
 import json
 import re
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
+import anyio
 import pytest
 
 from drydock.jobs import dispatcher as dispatcher_module
@@ -14,6 +16,7 @@ from drydock.jobs import scheduler as scheduler_module
 from drydock.jobs.dispatcher import DispatchError
 from drydock.jobs.runlog import RunLog
 from drydock.models import NotificationTarget, Run, UpdatePolicy
+from drydock.updates.check import HostChecks
 from tests.conftest import Browser, add_user
 from tests.test_jobs import add_host, add_job
 
@@ -328,6 +331,64 @@ async def test_one_run_per_policy_at_a_time(admin: Browser, monkeypatch) -> None
     await __import__("asyncio").sleep(0.05)
     await dispatcher.submit_policy(policy_id, "c")
     gate.set()
+
+
+async def test_the_host_is_checked_again_after_a_policy_run(admin: Browser, monkeypatch) -> None:
+    host_id = add_host(admin, "web-host")
+    assert (await admin.post("/updates", policy_form(host_id))).status_code == 303
+    ((policy_id,),) = admin.sql("SELECT id FROM update_policies")
+    dispatcher, checker = admin.app.state.dispatcher, admin.app.state.updates
+    assert checker.running
+    checked = anyio.Event()
+    hosts: list[int] = []
+
+    async def check_host(host) -> None:
+        hosts.append(host.id)
+        checked.set()
+
+    async def ran(active, by) -> None:
+        pass
+
+    monkeypatch.setattr(checker, "check_host", check_host)
+    monkeypatch.setattr(dispatcher, "_execute_update", ran)
+    await dispatcher.submit_policy(policy_id, "the schedule")
+    with anyio.fail_after(5):
+        await checked.wait()
+    assert hosts == [host_id]
+
+
+async def test_a_check_under_way_when_the_run_ends_is_followed_by_another(
+    admin: Browser, monkeypatch
+) -> None:
+    """A check that began before the run ended read the host before the update: the
+    post-run check waits it out and checks again, rather than joining it."""
+    host_id = add_host(admin, "web-host")
+    assert (await admin.post("/updates", policy_form(host_id))).status_code == 303
+    ((policy_id,),) = admin.sql("SELECT id FROM update_policies")
+    checker = admin.app.state.updates
+    gate, second = anyio.Event(), anyio.Event()
+    calls: list[int] = []
+
+    async def fake_check(host) -> HostChecks:
+        calls.append(host.id)
+        if len(calls) == 1:
+            await gate.wait()
+        else:
+            second.set()
+        return HostChecks(datetime.now(UTC))
+
+    monkeypatch.setattr(checker, "_check", fake_check)
+    host = SimpleNamespace(id=host_id)
+    first = asyncio.create_task(checker.check_host(host))
+    await anyio.sleep(0.05)
+    checker.policy_ran(policy_id)
+    await anyio.sleep(0.05)
+    assert calls == [host_id], "waits for the check under way"
+    gate.set()
+    with anyio.fail_after(5):
+        await second.wait()
+    await first
+    assert calls == [host_id, host_id]
 
 
 async def test_a_policy_for_every_stack(admin: Browser, monkeypatch, tmp_path) -> None:

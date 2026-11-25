@@ -9,10 +9,11 @@ image ID, and images built locally (no registry digest). A private registry answ
 "unauthorized" through the daemon's API, which drydock reports as an error.
 
 Hosts are checked every update_check_hours (the settings page; the first time FIRST_CHECK
-after start; never when 0), and on demand from the containers, stacks and images pages, at
-most once per MIN_GAP per host. Registries limit lookups (Docker Hub counts them), so one
-lookup answers every container of the same image and reference, and is reused until the
-next check is due. Results live in memory, like the status.
+after start; never when 0), after each run of an update policy on them (policy_ran), and
+on demand from the containers, stacks and images pages, at most once per MIN_GAP per host.
+Registries limit lookups (Docker Hub counts them), so one lookup answers every container of
+the same image and reference, and is reused until the next check is due. Results live in
+memory, like the status.
 """
 
 import asyncio
@@ -38,7 +39,7 @@ from drydock.engine.capture import distribution_digest
 from drydock.hosts import client
 from drydock.hosts.helper import is_helper
 from drydock.hosts.manager import HostManager, HostUnavailable
-from drydock.models import Host, Installation, utcnow
+from drydock.models import Host, Installation, UpdatePolicy, utcnow
 from drydock.updates.versions import (
     Platform,
     describe,
@@ -283,6 +284,7 @@ class UpdateChecker:
         self._asked: dict[int, float] = {}  # host: when a page last asked for a check
         self._busy: dict[int, asyncio.Task[HostChecks]] = {}
         self._task: asyncio.Task[None] | None = None
+        self._after: set[asyncio.Task[None]] = set()  # checks after policy runs
         self._every = CHECK_EVERY  # seconds between checks; 0: never by itself
         # (repository, digest, platform): its version. A digest's never changes.
         self._versions: dict[tuple[str, str, Platform], str] = {}
@@ -296,7 +298,7 @@ class UpdateChecker:
         self._task = asyncio.create_task(self._run(), name="update-checker")
 
     async def close(self) -> None:
-        tasks = [*self._busy.values(), *([self._task] if self._task else [])]
+        tasks = [*self._busy.values(), *self._after, *([self._task] if self._task else [])]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -320,6 +322,34 @@ class UpdateChecker:
         if running is None or running.done():
             self._caches.pop(host.id, None)
         return await self.check_host(host)
+
+    def policy_ran(self, policy_id: int) -> None:
+        """An update policy's run ended (Dispatcher on_policy_end, on the event loop): its
+        host is checked again, so the pages show what the run left and, with no interval
+        set, what else is new. Lookups younger than the interval (6 hours with none set)
+        are reused."""
+        if self.running:
+            task = asyncio.create_task(self._after_policy(policy_id), name="update-check")
+            self._after.add(task)
+            task.add_done_callback(self._after.discard)
+
+    async def _after_policy(self, policy_id: int) -> None:
+        try:
+            hosts = await client.run_blocking(self._load_hosts)
+            host_id = await client.run_blocking(self._policy_host, policy_id)
+            for host in hosts:
+                if host.id == host_id:
+                    running = self._busy.get(host.id)
+                    if running is not None and not running.done():
+                        # It read the host before the run ended: wait it out, check again.
+                        await asyncio.shield(running)
+                    await self.check_host(host)
+        except Exception:
+            log.exception("Checking for updates after policy %d's run failed", policy_id)
+
+    def _policy_host(self, policy_id: int) -> int | None:
+        with self._sessions() as db:
+            return db.scalar(select(UpdatePolicy.host_id).where(UpdatePolicy.id == policy_id))
 
     async def check_host(self, host: Host) -> HostChecks:
         """Checks the host, or waits for the check of it already under way."""
@@ -393,7 +423,7 @@ class UpdateChecker:
                 for gone in self._results.keys() - {h.id for h in hosts}:
                     self._results.pop(gone, None)
                     self._caches.pop(gone, None)
-                for host in hosts if self._every else []:  # 0: only when asked
+                for host in hosts if self._every else []:  # 0: after policy runs, or asked
                     done = self._results.get(host.id)
                     age = (utcnow() - done.checked_at).total_seconds() if done else None
                     if age is None or age >= self._every or done.error is not None:

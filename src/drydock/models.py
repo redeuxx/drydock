@@ -173,7 +173,7 @@ class Host(Base):
     alert_target_id: Mapped[int | None] = mapped_column(Integer, default=None)
 
 
-# The choices the settings page offers; 0: never by itself, only when asked.
+# The choices the settings page offers; 0: only after update policy runs and when asked.
 UPDATE_CHECK_HOURS = (0, 1, 3, 6, 12, 24)
 
 

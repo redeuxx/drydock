@@ -587,6 +587,7 @@ class Dispatcher:
         on_end: Callable[[int], None] | None = None,
         rclone: RcloneDaemon | None = None,
         on_reconnect: Callable[[int, str], None] | None = None,
+        on_policy_end: Callable[[int], None] | None = None,
     ) -> None:
         self.settings = settings
         self._rclone = rclone  # remote storage transfers; None leaves them refused
@@ -594,6 +595,9 @@ class Dispatcher:
         self._on_reconnect = on_reconnect
         # Told the ID of each run whose end was committed (notify.Notifier.run_ended).
         self._on_end = on_end
+        # Told the ID of each update policy whose run ended, on the event loop
+        # (updates.check.UpdateChecker.policy_ran).
+        self._on_policy_end = on_policy_end
         self._sessions = sessions
         self._crypto = crypto
         self._hosts = hosts
@@ -744,8 +748,16 @@ class Dispatcher:
         active.task = asyncio.create_task(
             self._execute_update(active, triggered_by), name=f"run-{run_id}"
         )
-        active.task.add_done_callback(lambda _: self._policies.discard(policy_id))
+        active.task.add_done_callback(lambda _: self._policy_ended(policy_id))
         return run_id
+
+    def _policy_ended(self, policy_id: int) -> None:
+        self._policies.discard(policy_id)
+        if self._on_policy_end is not None:
+            try:
+                self._on_policy_end(policy_id)
+            except Exception:
+                log.exception("Telling that policy %d's run ended failed", policy_id)
 
     async def execute_restore(
         self,
