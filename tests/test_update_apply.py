@@ -118,6 +118,10 @@ def test_what_is_left_alone_and_what_is_refused() -> None:
         "cbbbb: pinned by digest or image ID, so not updated.",
         "ccccc: already runs the newest nginx:1.27.",
     )
+    assert [(c.name, c.old, c.new, c.old_ref) for c in planned.current] == [
+        ("cbbbb", OLD, OLD, ""),
+        ("ccccc", OLD, OLD, "nginx:1.27"),
+    ], "what is left as it is, with the image it runs"
     for cid, message in [
         (own, "drydock does not update itself"),
         (helper, "helper containers are left to drydock"),
@@ -427,3 +431,8 @@ def test_versions_come_from_the_image_labels() -> None:
 
     (after,) = update_apply.versions_after(Broken({}), [change])
     assert after.new_version == "", "a label it cannot read never fails the update"
+
+    newest = plan_update(Labelled({WEB: inspect(WEB)}, latest=OLD), 3, [WEB], frozenset(), "1.47")
+    assert newest.plan is None and newest.changes == ()
+    (kept,) = newest.current
+    assert (kept.name, kept.old_version, kept.new_version) == ("caaaa", "1.27.2", "1.27.2")

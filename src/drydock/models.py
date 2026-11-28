@@ -459,6 +459,15 @@ class Run(Base):
     # run, so the same as id for a job with one target). None for restores.
     first_run_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
 
+    @property
+    def outcome(self) -> str:
+        """The status the pages and notifications give: up_to_date for an update that
+        found nothing newer, which ends done without ever starting (jobs/dispatcher.py
+        _execute_update), else the status."""
+        if self.kind == "update" and self.status == "done" and self.started_at is None:
+            return "up_to_date"
+        return self.status
+
 
 UPLOAD_STATUSES = ("receiving", "complete")
 

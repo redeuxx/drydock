@@ -23,6 +23,7 @@
           <a class="link" href="{{ item.link }}">{{ item.title }}</a>
           {% if item.job_run %}
           {% set facts = job_run_facts(item.job_run) %}{% if facts %}<div class="text-xs opacity-70">{{ facts }}</div>{% endif %}
+          {% for line in item.job_run.versions %}<div class="text-xs opacity-70">{{ line }}</div>{% endfor %}
           {% if item.job_run.error %}<div class="text-xs text-error">{{ item.job_run.error|truncate(200) }}</div>{% endif %}
           {% endif %}
         </td>

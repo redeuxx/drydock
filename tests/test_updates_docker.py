@@ -4,6 +4,7 @@ proxy, as drydock does it."""
 
 import contextlib
 import functools
+import json
 import secrets
 import time
 import uuid
@@ -195,6 +196,20 @@ async def test_an_update_replaces_a_container_or_puts_it_back(admin: Browser) ->
         assert now["State"]["Running"]
         with pytest.raises(docker.errors.NotFound):
             await docker_client.run_blocking(api.inspect_container, good.id)
+        ((started, plan),) = admin.sql("SELECT started_at, plan FROM runs WHERE id = ?", (run_id,))
+        assert started is not None
+        assert [c["name"] for c in json.loads(plan)["changes"]] == [good.name]
+
+        # Nothing newer: done without starting, with the image it runs recorded.
+        run_id = await dispatcher.submit_update(host_id, [now["Id"]], "tester", good.name)
+        await dispatcher.wait(run_id)
+        ((status, started, plan),) = admin.sql(
+            "SELECT status, started_at, plan FROM runs WHERE id = ?", (run_id,)
+        )
+        assert (status, started) == ("done", None)
+        doc = json.loads(plan)
+        assert doc["changes"] == [] and [c["name"] for c in doc["current"]] == [good.name]
+        assert doc["current"][0]["old_ref"] == tagged
 
         run_id = await dispatcher.submit_update(host_id, [bad.id], "tester", bad.name)
         await dispatcher.wait(run_id)
@@ -293,6 +308,8 @@ async def test_a_stack_update_is_all_or_nothing(admin: Browser) -> None:
         log = (admin.app.state.settings.data_dir / "logs" / f"{run_id}.log").read_text()
         assert f"Updating {project}-db-1:" in log and f"Updating {project}-app-1:" in log
         assert f"{project}-side-1: pinned by digest or image ID, so not updated." in log
+        ((plan,),) = admin.sql("SELECT plan FROM runs WHERE id = ?", (run_id,))
+        assert [c["name"] for c in json.loads(plan)["current"]] == [f"{project}-side-1"]
         assert log.index(f"Creating container {project}-db-1.") < log.index(
             f"Creating container {project}-app-1."
         ), "dependencies first"

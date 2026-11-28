@@ -35,6 +35,7 @@
           {%- else %} <span class="font-mono text-xs break-all">{{ run.archive_name }}</span>{% endif %}</td>
         {% elif run.kind == "update" %}
         <td class="break-words">Update of {{ run.target_label or "" }}
+          {%- if run.outcome == "up_to_date" %}<div class="text-xs opacity-70">Nothing to update</div>{% endif %}
           {%- if changes[run.id] %}
           <ul class="text-xs opacity-70 max-sm:hidden">{% for line in changes[run.id] %}<li>{{ line }}</li>{% endfor %}</ul>
           {%- endif %}</td>
@@ -44,7 +45,7 @@
           {%- else %}<span class="opacity-70">deleted job</span>{% endif -%}
           {%- if run.kind == "backup" and run.target_label %} <span class="text-xs opacity-70">{{ run.target_label }}</span>{% endif %}</td>
         {% endif %}
-        <td class="truncate">{{ run_status_badge(run.status) }}</td>
+        <td class="truncate">{{ run_status_badge(run.outcome) }}</td>
         <td class="truncate max-lg:hidden" title="{{ run.triggered_by or '' }}">{{ run.triggered_by or "" }}</td>
         <td class="truncate max-sm:hidden" title="{{ when(run.created_at) }}">{{ run.created_at|stamp(false) }}</td>
         <td class="truncate max-lg:hidden" title="{{ when(run.finished_at) }}">{{ run.finished_at|stamp(false) }}</td>

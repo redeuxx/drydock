@@ -53,6 +53,7 @@ from drydock.models import (
     StorageTarget,
     UpdatePolicy,
 )
+from drydock.updates.versions import update_changes, update_current
 
 log = logging.getLogger("drydock.notify")
 # Apprise logs recipients, topics and partly masked URLs; drydock logs outcomes itself.
@@ -221,8 +222,9 @@ class Outcome:
     detail: str  # service names and statuses, never the URL
 
 
-def send(name: str, url: str, title: str, body: str, *, failure: bool) -> Outcome:
-    """Sends one message to one target; never raises."""
+def send(name: str, url: str, title: str, body: str, *, failure: bool | None) -> Outcome:
+    """Sends one message to one target; never raises. failure None: neither a failure nor
+    a success (an update that found nothing to update), sent as info."""
     try:
         plugin = service(url)
         notifier = apprise.Apprise(asset=ASSET)
@@ -231,7 +233,11 @@ def send(name: str, url: str, title: str, body: str, *, failure: bool) -> Outcom
         result = notifier.notify(
             body=body,
             title=title,
-            notify_type=apprise.NotifyType.FAILURE if failure else apprise.NotifyType.SUCCESS,
+            notify_type=apprise.NotifyType.FAILURE
+            if failure
+            else apprise.NotifyType.INFO
+            if failure is None
+            else apprise.NotifyType.SUCCESS,
             body_format=apprise.NotifyFormat.TEXT,
             interpret_escapes=False,
             timeout=NOTIFY_TIMEOUT,
@@ -410,13 +416,13 @@ class Notifier:
         log.log(level, "Storage %d: notification %s: %s", storage_id, target, outcome.detail)
 
     def _send_one(
-        self, run_id: int, target: str, url: str, title: str, body: str, failure: bool
+        self, run_id: int, target: str, url: str, title: str, body: str, failure: bool | None
     ) -> None:
         outcome = send(target, url, title, body, failure=failure)
         level = logging.INFO if outcome.ok else logging.WARNING
         log.log(level, "Run %d: notification %s: %s", run_id, target, outcome.detail)
 
-    def _load(self, run_id: int) -> list[tuple[str, str, str, str, bool]]:
+    def _load(self, run_id: int) -> list[tuple[str, str, str, str, bool | None]]:
         """(target name, url, title, body, failure) for each target to tell about the run."""
         with self._sessions() as db:
             run = db.get(Run, run_id)
@@ -443,7 +449,7 @@ class Notifier:
             title, body = message(run, job, db.get(Host, job.host_id), self._settings.base_url)
         return self._decrypted(run_id, rows, title, body, failure)
 
-    def _update_message(self, db: Session, run: Run) -> tuple[list[Any], str, str, bool]:
+    def _update_message(self, db: Session, run: Run) -> tuple[list[Any], str, str, bool | None]:
         """The target of the update policy that started the run (failures always, success
         when the policy asks), and the message. A done run with an error updated only some of
         its containers (the registry could not be asked about the rest): sent as a failure."""
@@ -465,22 +471,28 @@ class Notifier:
         target = db.get(NotificationTarget, policy.notify_target_id)
         if target is None or not target.enabled:
             return [], "", "", failure
-        if run.status == "done":
+        if run.outcome == "up_to_date":
+            outcome = "found nothing to update"
+        elif run.status == "done":
             outcome = "succeeded in part" if run.error else "succeeded"
         else:
             outcome = run.status
         subject = run.target_label or policy.name
         lines = [f"Update run #{run.id} of {subject} ({policy.name}) {outcome}."]
+        lines += update_changes(run)
+        if run.outcome == "up_to_date":
+            lines += update_current(run)
         if run.error:
             error = run.error if len(run.error) <= MAX_ERROR else run.error[:MAX_ERROR] + "..."
             lines.append(f"Error: {error}")
         lines.append(f"{self._settings.base_url}/runs/{run.id}")
         body = "\n".join(lines)
-        return [target], f"drydock: update of {subject} {outcome}", body, failure
+        title = f"drydock: update of {subject} {outcome}"
+        return [target], title, body, None if run.outcome == "up_to_date" else failure
 
     def _decrypted(
-        self, run_id: int, rows: list[Any], title: str, body: str, failure: bool
-    ) -> list[tuple[str, str, str, str, bool]]:
+        self, run_id: int, rows: list[Any], title: str, body: str, failure: bool | None
+    ) -> list[tuple[str, str, str, str, bool | None]]:
         sends = []
         for target in rows:
             try:

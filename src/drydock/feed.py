@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from drydock.jobs.targets import MAX_TARGETS
 from drydock.models import AuditEvent, Job, Run, User
 from drydock.security.rbac import Role
+from drydock.updates.versions import update_changes, update_current
 
 DROPDOWN = 8
 PAGE = 100
@@ -64,13 +65,24 @@ class JobRun:
 
     @property
     def level(self) -> str:
-        """error, warning, success, or info while a target has not ended."""
+        """error, warning, success, or info while a target has not ended or for an
+        update that found nothing to update."""
+        if self.first.outcome == "up_to_date":
+            return "info"
         statuses = {r.status for r in self.runs}
         if statuses - {"done", "cancelled", *OPEN}:
             return "error"
         if "cancelled" in statuses:
             return "warning"
         return "success" if statuses == {"done"} else "info"
+
+    @property
+    def versions(self) -> list[str]:
+        """What an update moved each container from and to, or what each runs when it
+        found nothing to update."""
+        if self.first.outcome == "up_to_date":
+            return update_current(self.first)
+        return update_changes(self.first) if self.first.kind == "update" else []
 
     @property
     def size(self) -> int | None:
@@ -98,7 +110,10 @@ class JobRun:
         if self.first.kind == "restore":
             return f"Restore #{self.first.id}: {self.first.status.replace('_', ' ')}"
         if self.first.kind == "update":
-            return f"Update of {self.first.target_label or 'containers'}: {self.first.status}"
+            return (
+                f"Update of {self.first.target_label or 'containers'}: "
+                f"{self.first.outcome.replace('_', ' ')}"
+            )
         name = self.job_name or "a deleted job"
         if len(self.runs) == 1:
             return f"Backup of {name}: {self.first.status}"

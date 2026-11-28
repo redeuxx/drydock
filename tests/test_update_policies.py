@@ -198,6 +198,34 @@ async def test_the_backup_first_must_succeed_unless_told_otherwise(
     assert "updating anyway" in (tmp_path / "x.log").read_text()
 
 
+DIGEST = "sha256:" + "ab" * 32
+CHANGES = [
+    {
+        "name": "web",
+        "old": "sha256:" + "12" * 32,
+        "new": DIGEST,
+        "old_ref": "nginx:1.27",
+        "new_ref": "nginx:1.27",
+        "old_version": "1.27.2",
+        "new_version": "<b>1.27.3</b>",
+    },
+    {
+        "name": "db",
+        "old": "",
+        "new": DIGEST,
+        "old_ref": "postgres:16",
+        "new_ref": "postgres:17",
+        "old_version": "",
+        "new_version": "",
+    },
+]
+# What an update left as it is: the same image before and after.
+KEPT = [
+    {"name": "db", "old": DIGEST, "new": DIGEST, "old_version": "16.4", "new_version": "16.4"},
+    {"name": "side", "old": "sha256:" + "12" * 32, "old_version": ""},
+]
+
+
 async def test_policy_runs_tell_their_target(admin: Browser) -> None:
     host_id = add_host(admin, "web-host")
     with admin.app.state.sessionmaker() as db, db.begin():
@@ -221,14 +249,19 @@ async def test_policy_runs_tell_their_target(admin: Browser) -> None:
             ("done", "done", None),
             ("failed", "failed", "boom"),
             ("partial", "done", "The registry could not be asked about db"),
+            ("nothing", "done", None),
         ):
             run = Run(
                 job_id=None,
                 kind="update",
                 status=status,
                 target_label="web",
-                plan=json.dumps({"update": {"policy_id": policy.id}}),
+                plan=json.dumps(
+                    {"update": {"policy_id": policy.id}, "changes": CHANGES[:1], "current": KEPT}
+                ),
                 error=error,
+                # An update that found nothing newer ends without starting.
+                started_at=None if key == "nothing" else datetime.now(UTC),
             )
             db.add(run)
             db.flush()
@@ -239,13 +272,21 @@ async def test_policy_runs_tell_their_target(admin: Browser) -> None:
     ((name, url, title, body, failure),) = notifier._load(runs["failed"])
     assert (name, url, failure) == ("ops", "ntfy://x/y", True)
     assert title == "drydock: update of web failed" and "Error: boom" in body
+    assert "web: 1.27.2 → <b>1.27.3</b> (not applied)" in body, "plain text"
+    assert "db: 16.4" not in body, "what was left alone only when nothing was updated"
     # Updated only in part: told like a failure.
     ((_, _, title, body, failure),) = notifier._load(runs["partial"])
     assert title == "drydock: update of web succeeded in part" and failure
     assert "Error: The registry could not be asked about db" in body
     with admin.app.state.sessionmaker() as db, db.begin():
         db.get(UpdatePolicy, policy_id).notify_success = True
-    assert notifier._load(runs["done"])[0][2] == "drydock: update of web succeeded"
+    ((_, _, title, body, _),) = notifier._load(runs["done"])
+    assert title == "drydock: update of web succeeded"
+    assert "web: 1.27.2 → <b>1.27.3</b>\n" in body
+    ((_, _, title, body, failure),) = notifier._load(runs["nothing"])
+    assert title == "drydock: update of web found nothing to update"
+    assert failure is None, "sent as info: neither a failure nor a success"
+    assert "found nothing to update." in body and "db: 16.4" in body
 
 
 async def test_a_missed_policy_fire_is_audited_and_rung(admin: Browser) -> None:
@@ -449,37 +490,39 @@ async def test_a_policy_for_every_stack(admin: Browser, monkeypatch, tmp_path) -
     log = (tmp_path / "run.log").read_text()
     assert "Stacks on web-host: a, b, c, d." in log and "Stack b: nothing to update." in log
     assert "Stack d: The registry could not be asked about d-web-1" in log
+    ((started,),) = admin.sql("SELECT started_at FROM runs WHERE id = ?", (parent,))
+    assert started is not None, "running from its first stack run"
+
+    # No stack has anything to update: no stack run, and the policy's run is up to date.
+    quiet = dispatcher._create_policy_run(policy_id, "the schedule")
+    monkeypatch.setattr(
+        dispatcher_module.update_apply,
+        "plan_stack",
+        lambda *args, **kw: SimpleNamespace(plan=None, unchecked=()),
+    )
+    children.clear()
+    await dispatcher._update_every_stack(
+        dispatcher_module.ActiveRun(quiet, None),
+        handle,
+        host,
+        frozenset(),
+        "the schedule",
+        RunLog(tmp_path / "quiet.log"),
+    )
+    assert children == []
+    with admin.app.state.sessionmaker() as db:
+        assert db.get(Run, quiet).outcome == "up_to_date"
 
 
 async def test_the_runs_pages_show_what_an_update_moved(admin: Browser) -> None:
-    digest = "sha256:" + "ab" * 32
-    changes = [
-        {
-            "name": "web",
-            "old": "sha256:" + "12" * 32,
-            "new": digest,
-            "old_ref": "nginx:1.27",
-            "new_ref": "nginx:1.27",
-            "old_version": "1.27.2",
-            "new_version": "<b>1.27.3</b>",
-        },
-        {
-            "name": "db",
-            "old": "",
-            "new": digest,
-            "old_ref": "postgres:16",
-            "new_ref": "postgres:17",
-            "old_version": "",
-            "new_version": "",
-        },
-        "junk",
-    ]
     with admin.app.state.sessionmaker() as db, db.begin():
         run = Run(
             kind="update",
             status="done",
             target_label="stack app",
-            plan=json.dumps({"update": {}, "changes": changes}),
+            plan=json.dumps({"update": {}, "changes": [*CHANGES, "junk"], "current": KEPT}),
+            started_at=datetime.now(UTC),
+            finished_at=datetime.now(UTC),
         )
         db.add(run)
         db.flush()
@@ -487,7 +530,37 @@ async def test_the_runs_pages_show_what_an_update_moved(admin: Browser) -> None:
     for page in ((await admin.get("/runs")).text, (await admin.get(f"/runs/{run_id}")).text):
         assert "web: 1.27.2 → &lt;b&gt;1.27.3&lt;/b&gt;" in page
         assert "db: 16 unknown → 17 abababababab" in page
+        assert "Nothing to update" not in page and ">done</span>" in page
+    page = (await admin.get(f"/runs/{run_id}")).text
+    assert "Unchanged" in page and "db: 16.4" in page and "side: 121212121212" in page
+    feed = (await admin.get("/feed")).text
+    assert "Update of stack app: done" in feed and "web: 1.27.2 → &lt;b&gt;1.27.3" in feed
     with admin.app.state.sessionmaker() as db, db.begin():
         db.get(Run, run_id).status = "failed"
     page = (await admin.get(f"/runs/{run_id}")).text
     assert "Planned" in page and "1.27.2 \u2192 &lt;b&gt;1.27.3&lt;/b&gt; (not applied)" in page
+
+
+async def test_an_update_that_found_nothing_newer_says_so(admin: Browser) -> None:
+    """Done without ever starting: up to date on the runs pages and the bell, not done."""
+    with admin.app.state.sessionmaker() as db, db.begin():
+        run = Run(
+            kind="update",
+            status="done",
+            target_label="stack app",
+            plan=json.dumps({"update": {}, "changes": [], "current": KEPT}),
+            finished_at=datetime.now(UTC),
+        )
+        db.add(run)
+        db.flush()
+        run_id = run.id
+    listing = (await admin.get("/runs")).text
+    assert ">up to date</span>" in listing and "Nothing to update" in listing
+    page = (await admin.get(f"/runs/{run_id}")).text
+    assert ">up to date</span>" in page and ">done</span>" not in page
+    assert "Nothing to update: no newer image was found." in page
+    assert "Unchanged" in page and "db: 16.4" in page and "side: 121212121212" in page
+    assert "Started" not in page, "it never started; not 'not yet'"
+    feed = (await admin.get("/feed")).text
+    assert "Update of stack app: up to date" in feed and "db: 16.4" in feed
+    assert "Update of stack app: done" not in feed

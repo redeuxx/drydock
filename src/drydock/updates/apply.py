@@ -99,6 +99,9 @@ class Planned:
     # Members left alone because their registry could not be asked: the run fails, so its
     # notification says so, instead of ending done with nothing found.
     unchecked: tuple[str, ...] = ()
+    # Members left as they are (already the newest, pinned, built on the host), with the
+    # image they run: old and new are the same.
+    current: tuple[Change, ...] = ()
 
 
 def unchecked_error(names: tuple[str, ...]) -> str:
@@ -301,6 +304,7 @@ def plan_update(
     warnings: list[str] = []
     changes: list[Change] = []
     unchecked: list[str] = []
+    current: list[Change] = []
     pulls: dict[str, ImageStep] = {}  # one pull per reference
 
     def skip(name: str, why: str) -> None:
@@ -354,11 +358,15 @@ def plan_update(
                 if isinstance(exc, LookupRefused):
                     unchecked.append(name)
                 why = ""
+        old_image = image_info(api, str(info.get("Image") or ""))
         if latest is None and not follows:
             if why:
                 notes.append(f"{name}: {why}")
+                repository = docker.utils.parse_repository_tag(ref)[0] if ref else ""
+                digest = own_digest(old_image.get("RepoDigests"), repository)
+                version = image_version(old_image.get("Config"), repository)
+                current.append(Change(name, digest, digest, old_ref, old_ref, version, version))
             continue
-        old_image = image_info(api, str(info.get("Image") or ""))
         if latest is not None and ref is not None:
             repository, _ = docker.utils.parse_repository_tag(ref)
             step = pulls.get(ref)
@@ -442,7 +450,7 @@ def plan_update(
             projects.add(project)
             keys.add(f"name:{host_id}:project:{project}")
     if not changes:
-        return Planned(None, tuple(notes), (), tuple(unchecked))
+        return Planned(None, tuple(notes), (), tuple(unchecked), tuple(current))
     # Outside the plan (another stack, or none): it would lose its network. ponytail:
     # only network_mode is in the container list; ipc and pid modes need an inspect each.
     users = namespace_users(api, planned)
@@ -470,7 +478,7 @@ def plan_update(
         projects=tuple(sorted(projects)),
         recreate=True,
     )
-    return Planned(plan, tuple(notes), tuple(changes), tuple(unchecked))
+    return Planned(plan, tuple(notes), tuple(changes), tuple(unchecked), tuple(current))
 
 
 def plan_containers(
@@ -547,7 +555,7 @@ def plan_stack(
         switch=moves,
         retry=retry,
     )
-    return Planned(planned.plan, (*notes, *planned.notes), planned.changes, planned.unchecked)
+    return replace(planned, notes=(*notes, *planned.notes))
 
 
 def stack_names(api: Any, own: frozenset[str]) -> list[str]:

@@ -27,6 +27,8 @@ import docker.errors
 import docker.utils
 import requests
 
+from drydock.models import Run
+
 log = logging.getLogger("drydock.updates")
 
 VERSION_LABEL = "org.opencontainers.image.version"
@@ -64,6 +66,8 @@ MAX_BODY = 4 * 1024 * 1024
 MAX_REDIRECTS = 3
 
 Platform = tuple[str, str, str]  # os, architecture, variant ("" for none)
+UPDATE_FIELDS = ("name", "old", "new", "old_ref", "new_ref", "old_version", "new_version")
+UNFINISHED = ("failed", "cancelled", "interrupted")  # an update that ended so put all back
 
 
 def clean(text: str) -> str:
@@ -135,6 +139,51 @@ def describe(
         old = f"{old_ref.rpartition(':')[2] or 'pinned'} {old}"
         new = f"{new_ref.rpartition(':')[2]} {new}"
     return f"{old} → {new}"
+
+
+def plan_object(text: str | None) -> dict[str, Any]:
+    try:
+        doc = json.loads(text or "{}")
+    except ValueError:
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def update_entries(run: Run, key: str) -> list[dict[str, str]]:
+    """An update run's recorded containers (dispatcher _set_changes), each field a string."""
+    entries = plan_object(run.plan).get(key) if run.kind == "update" else None
+    return [
+        {k: v if isinstance(v := entry.get(k), str) else "" for k in UPDATE_FIELDS}
+        for entry in (entries if isinstance(entries, list) else [])
+        if isinstance(entry, dict)
+    ]
+
+
+def update_current(run: Run) -> list[str]:
+    """The version each container an update left as it is runs, one line each."""
+    return [
+        f"{get['name']}: {get['old_version'] or short_digest(get['old']) or 'unknown'}"
+        for get in update_entries(run, "current")
+    ]
+
+
+def update_changes(run: Run) -> list[str]:
+    """What an update moved each container from and to, one line each
+    (updates/versions.py describe)."""
+    lines = []
+    for get in update_entries(run, "changes"):
+        moved = describe(
+            get["old_version"],
+            get["old"],
+            get["new_version"],
+            get["new"],
+            get["old_ref"],
+            get["new_ref"],
+        )
+        # All or nothing: a run that did not finish put every container back.
+        undone = " (not applied)" if run.status in UNFINISHED else ""
+        lines.append(f"{get['name']}: {moved}{undone}")
+    return lines
 
 
 class Reader:

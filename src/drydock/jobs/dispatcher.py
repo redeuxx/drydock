@@ -1942,6 +1942,8 @@ class Dispatcher:
                 for line in planned.notes:
                     run_log(line)
                 if planned.plan is None:
+                    # Left without starting: the pages show it as up to date (Run.outcome).
+                    await run_blocking(self._set_changes, run_id, (), planned.current)
                     if planned.unchecked:
                         raise DispatchError(update_apply.unchecked_error(planned.unchecked))
                     await run_blocking(self._finish, run_id, run_log, "done", None)
@@ -1957,7 +1959,7 @@ class Dispatcher:
                         f"Updating {change.name}: "
                         f"{change.old[:19] or 'an image with no digest'} to {change.new[:19]}."
                     )
-                await run_blocking(self._set_changes, run_id, planned.changes)
+                await run_blocking(self._set_changes, run_id, planned.changes, planned.current)
                 await run_blocking(self._mark_running, run_id)
                 await self._apply_update(active, handle, planned.plan, scope, run_log)
                 # Done (the rest is committed), with an error for those left alone, which
@@ -1965,12 +1967,16 @@ class Dispatcher:
                 error = None
                 if planned.unchecked:
                     error = update_apply.unchecked_error(planned.unchecked)
-                await run_blocking(self._finish, run_id, run_log, "done", error)
-                try:  # only labels for the run pages: after "done", never in its way
+                ended = await run_blocking(
+                    functools.partial(self._finish, run_id, run_log, "done", error, notice=False)
+                )
+                try:  # only labels, after "done": never in its way
                     changes = await run_blocking(update_apply.versions_after, api, planned.changes)
-                    await run_blocking(self._set_changes, run_id, changes)
+                    await run_blocking(self._set_changes, run_id, changes, planned.current)
                 except Exception:
                     log.warning("Run %d: recording the new versions failed", run_id, exc_info=True)
+                if ended:  # once they are recorded: the notifications give them
+                    await run_blocking(self._ended_notice, run_id)
             finally:
                 self._release(held)
                 await run_blocking(handle.close)
@@ -2001,9 +2007,9 @@ class Dispatcher:
         api = handle.client.api
         names = await run_blocking(update_apply.stack_names, api, own)
         active.started = True
-        await run_blocking(self._mark_running, active.run_id)
         run_log(f"Stacks on {host.name}: {', '.join(names) or 'none'}.")
         failed = []
+        marked = False  # running from the first stack run: none ends up to date (Run.outcome)
         for name in names:
             if active.cancel.is_set():
                 raise Cancelled("The run was cancelled.")
@@ -2024,6 +2030,9 @@ class Dispatcher:
                 else:
                     run_log(f"Stack {name}: nothing to update.")
                 continue
+            if not marked:
+                await run_blocking(self._mark_running, active.run_id)
+                marked = True
             child = await self.submit_update(
                 host.id, [], triggered_by, f"stack {name}", project=name
             )
@@ -2975,13 +2984,20 @@ class Dispatcher:
             doc = json_object(run.plan if run is not None else None).get("update")
         return doc if isinstance(doc, dict) else {}
 
-    def _set_changes(self, run_id: int, changes: Iterable[update_apply.Change]) -> None:
-        """Keeps what the update moves from and to in the run's plan, for the run pages."""
+    def _set_changes(
+        self,
+        run_id: int,
+        changes: Iterable[update_apply.Change],
+        current: Iterable[update_apply.Change],
+    ) -> None:
+        """Keeps what the update moves from and to, and what it leaves as it is, in the
+        run's plan, for the run pages."""
         with self._sessions() as db, db.begin():
             run = db.get(Run, run_id)
             if run is not None:
                 doc = json_object(run.plan)
                 doc["changes"] = [asdict(c) for c in changes]
+                doc["current"] = [asdict(c) for c in current]
                 run.plan = json.dumps(doc)
 
     def _run_end(self, run_id: int) -> tuple[str | None, str | None]:
@@ -3177,11 +3193,21 @@ class Dispatcher:
             },
         )
 
-    def _finish(self, run_id: int, run_log: RunLog, status: str, error: str | None) -> None:
+    def _finish(
+        self,
+        run_id: int,
+        run_log: RunLog,
+        status: str,
+        error: str | None,
+        *,
+        notice: bool = True,
+    ) -> bool:
+        """Records a run's end; whether it was still open. notice False: the caller queues
+        its notifications (_ended_notice) itself."""
         with self._sessions() as db, db.begin():
             run = db.get(Run, run_id)
             if run is None or run.status not in OPEN_STATUSES:
-                return
+                return False
             run.status = status
             run.error = error
             run.finished_at = utcnow()
@@ -3189,8 +3215,9 @@ class Dispatcher:
             backup = run.kind in ("backup", "update")
             # Before the commit: once the status changes, the log page stops polling.
             run_log(f"Run {status}." if error is None else f"Run {status}: {error}")
-        if backup:
+        if backup and notice:
             self._ended_notice(run_id)
+        return True
 
     def _ended_notice(self, run_id: int) -> None:
         """After a run's end is committed: queues its notifications. Never raises."""

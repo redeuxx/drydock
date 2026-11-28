@@ -20,6 +20,8 @@ If anything fails, or the check does not pass, everything is put back: the new c
 
 An update holds the same locks as a backup or restore of the container, so they never overlap: an update waits for a backup of that container to end, and the other way round. Drydock does not back the container up first on its own.
 
+An update run's page, and its row on the Runs page, give each container's version before and after (`1.30.4 → 1.31.0`; the short digests when the image names no version, both when it is the same version rebuilt). A run that found nothing newer changes nothing and shows **up to date** instead of done, with the version each container runs; so do the bell and the notification target ("found nothing to update").
+
 ## Updating a stack
 
 On the **Stacks** page (under Docker), or with a Compose stack chosen in the containers page's stack filter, operators can **Update stack** when any of its containers has a newer image. Drydock finds the stack's containers when the run starts and orders them by their `depends_on` (dependencies first), then:
@@ -49,7 +51,7 @@ A policy may name a **Tag to follow**: its next run switches the container, or t
 A stack policy whose target is `*` updates every Compose stack on its host, drydock's own left out, so stacks added later are covered too. When it fires, drydock lists the stacks and checks each one; every stack with something to update gets its own stack update run as above, one after another, so a failed stack is put back without touching the others. The policy's run lists them and fails if any of them did, and only it tells the notification target. It cannot back up first (no single job covers every stack): pair it with backup jobs on their own schedule. On the **Stacks** page, each stack lists the policies that update it, and admins can schedule one stack or every stack from there.
 
 - **Back up first:** pick a job that backs up that container or stack on that host. Drydock runs it and waits for every one of its targets. If any of them does not end done, the update does not run (the run fails and says why), unless you untick "Do not update when the backup first fails".
-- **Tell:** a notification target hears about every failed or interrupted update, and about successful ones too if you tick that.
+- **Tell:** a notification target hears about every failed or interrupted update, and about successful ones too if you tick that (with the versions each container moved from and to, or that nothing needed updating).
 - A fire missed while drydock was stopped runs late if it was less than an hour ago; an older one is skipped, recorded in the audit log and shown in the bell, like a job's.
 
 The dashboard's "Next scheduled runs" includes the policies, and a container's dialog on the containers page shows which policy updates it, with its next run. Every create, edit, delete and run now is in the audit log.
