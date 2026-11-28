@@ -53,7 +53,7 @@ from drydock.models import (
     StorageTarget,
     UpdatePolicy,
 )
-from drydock.updates.versions import update_changes, update_current
+from drydock.updates.versions import stack_runs, update_changes, update_current
 
 log = logging.getLogger("drydock.notify")
 # Apprise logs recipients, topics and partly masked URLs; drydock logs outcomes itself.
@@ -276,6 +276,12 @@ def message(run: Run, job: Job, host: Host | None, base_url: str) -> tuple[str, 
     return title, "\n".join(lines)
 
 
+def versions(run: Run) -> list[str]:
+    """What an update moved each container from and to; what each runs when it found
+    nothing to update."""
+    return update_current(run) if run.outcome == "up_to_date" else update_changes(run)
+
+
 class Notifier:
     def __init__(self, settings: Settings, sessions: sessionmaker[Session], crypto: Crypto) -> None:
         self._settings = settings
@@ -479,9 +485,11 @@ class Notifier:
             outcome = run.status
         subject = run.target_label or policy.name
         lines = [f"Update run #{run.id} of {subject} ({policy.name}) {outcome}."]
-        lines += update_changes(run)
-        if run.outcome == "up_to_date":
-            lines += update_current(run)
+        lines += versions(run)
+        for child in filter(None, (db.get(Run, i) for i in stack_runs(run))):
+            told = child.outcome.replace("_", " ")
+            lines.append(f"{child.target_label or 'A stack'}, run #{child.id}: {told}")
+            lines += [f"  {line}" for line in versions(child)]
         if run.error:
             error = run.error if len(run.error) <= MAX_ERROR else run.error[:MAX_ERROR] + "..."
             lines.append(f"Error: {error}")

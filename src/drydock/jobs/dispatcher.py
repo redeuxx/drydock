@@ -2037,6 +2037,7 @@ class Dispatcher:
                 host.id, [], triggered_by, f"stack {name}", project=name
             )
             run_log(f"Stack {name}: update run #{child}.")
+            await run_blocking(self._add_stack_run, active.run_id, child)
             await self.wait(child)
             status, error = await run_blocking(self._run_end, child)
             if status != "done":
@@ -2998,6 +2999,16 @@ class Dispatcher:
                 doc = json_object(run.plan)
                 doc["changes"] = [asdict(c) for c in changes]
                 doc["current"] = [asdict(c) for c in current]
+                run.plan = json.dumps(doc)
+
+    def _add_stack_run(self, run_id: int, child: int) -> None:
+        """Keeps the stack update runs an every-stack run started in its plan, for its
+        notification (notify.py)."""
+        with self._sessions() as db, db.begin():
+            run = db.get(Run, run_id)
+            if run is not None:
+                doc = json_object(run.plan)
+                doc["stacks"] = [*(doc.get("stacks") or []), child]
                 run.plan = json.dumps(doc)
 
     def _run_end(self, run_id: int) -> tuple[str | None, str | None]:

@@ -17,6 +17,7 @@ from drydock.jobs.dispatcher import DispatchError
 from drydock.jobs.runlog import RunLog
 from drydock.models import NotificationTarget, Run, UpdatePolicy
 from drydock.updates.check import HostChecks
+from drydock.updates.versions import stack_runs
 from tests.conftest import Browser, add_user
 from tests.test_jobs import add_host, add_job
 
@@ -468,6 +469,8 @@ async def test_a_policy_for_every_stack(admin: Browser, monkeypatch, tmp_path) -
                 error="in part" if project == "a" else None,
                 triggered_by=by,
                 target_label=label,
+                plan=json.dumps({"update": {}, "changes": CHANGES[:1]}),
+                started_at=datetime.now(UTC),
             )
             db.add(run)
             db.flush()
@@ -492,6 +495,20 @@ async def test_a_policy_for_every_stack(admin: Browser, monkeypatch, tmp_path) -
     assert "Stack d: The registry could not be asked about d-web-1" in log
     ((started,),) = admin.sql("SELECT started_at FROM runs WHERE id = ?", (parent,))
     assert started is not None, "running from its first stack run"
+
+    # Its notification tells each stack run's versions.
+    with admin.app.state.sessionmaker() as db, db.begin():
+        target = NotificationTarget(
+            name="ops", kind="ntfy", url_enc=admin.app.state.crypto.encrypt("ntfy://x/y")
+        )
+        db.add(target)
+        db.flush()
+        db.get(UpdatePolicy, policy_id).notify_target_id = target.id
+        db.get(Run, parent).status = "failed"
+        first, second = stack_runs(db.get(Run, parent))
+    ((_, _, _, body, _),) = admin.app.state.notifier._load(parent)
+    assert f"stack a, run #{first}: done\n  web: 1.27.2 → <b>1.27.3</b>\n" in body
+    assert f"stack c, run #{second}: failed\n  web: 1.27.2 → <b>1.27.3</b> (not applied)" in body
 
     # No stack has anything to update: no stack run, and the policy's run is up to date.
     quiet = dispatcher._create_policy_run(policy_id, "the schedule")

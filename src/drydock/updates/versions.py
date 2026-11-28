@@ -167,6 +167,13 @@ def update_current(run: Run) -> list[str]:
     ]
 
 
+def stack_runs(run: Run) -> list[int]:
+    """The stack update runs an every-stack update run started (dispatcher
+    _add_stack_run)."""
+    ids = plan_object(run.plan).get("stacks") if run.kind == "update" else None
+    return [i for i in ids if type(i) is int] if isinstance(ids, list) else []
+
+
 def update_changes(run: Run) -> list[str]:
     """What an update moved each container from and to, one line each
     (updates/versions.py describe)."""
